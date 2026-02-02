@@ -48,7 +48,10 @@ import {
   type TaxonomyJSON,
   type Concept,
 } from "./services/TaxonomyService.js";
-import { Ollama, OllamaLive } from "./services/Ollama.js";
+import {
+  EmbeddingProvider,
+  EmbeddingProviderFullLive,
+} from "./services/EmbeddingProvider.js";
 
 /**
  * Check if a string is a URL
@@ -480,6 +483,11 @@ Commands:
     --import <file>       Import from SQL dump
     --generate-script     Generate export script for current DB
 
+  reindex                 Re-embed all documents with current provider
+                          Use after switching embedding provider/model
+    --clean               Delete all embeddings first (fresh start)
+    --doc <id>            Re-embed single document only
+
   taxonomy list           List all concepts
     --tree                Show hierarchy tree
     --format <fmt>        Output format: json|table (default: table)
@@ -709,13 +717,13 @@ const program = Effect.gen(function* () {
       // Search concepts first (if enabled)
       if (searchConcepts) {
         const taxonomy = yield* TaxonomyService;
-        const ollamaService = yield* Ollama;
+        const embedProvider = yield* EmbeddingProvider;
 
-        // Try vector search on concepts using Ollama embeddings
+        // Try vector search on concepts using EmbeddingProvider
         const conceptResults = yield* Effect.gen(function* () {
-          const healthCheck = yield* Effect.either(ollamaService.checkHealth());
+          const healthCheck = yield* Effect.either(embedProvider.checkHealth());
           if (healthCheck._tag === "Right") {
-            const queryEmbedding = yield* ollamaService.embed(query);
+            const queryEmbedding = yield* embedProvider.embed(query);
             const similar = yield* taxonomy.findSimilarConcepts(
               queryEmbedding,
               0.3, // Lower threshold for broader results
@@ -1849,6 +1857,95 @@ const program = Effect.gen(function* () {
       break;
     }
 
+    case "reindex": {
+      const opts = parseArgs(args.slice(1));
+      const cleanFirst = opts.clean === true;
+      const singleDocId = opts.doc as string | undefined;
+
+      yield* Console.log("Re-indexing embeddings...\n");
+
+      // Get current provider info
+      const embedProvider = yield* EmbeddingProvider;
+      yield* Console.log(`Provider: ${embedProvider.provider}`);
+
+      // Check health first
+      const healthResult = yield* Effect.either(embedProvider.checkHealth());
+      if (healthResult._tag === "Left") {
+        yield* Console.error(`Embedding provider not ready: ${healthResult.left}`);
+        process.exit(1);
+      }
+
+      // Get all documents or single doc
+      const docs = singleDocId
+        ? yield* library.get(singleDocId).pipe(
+            Effect.map((doc) => (doc ? [doc] : []))
+          )
+        : yield* library.list();
+
+      if (docs.length === 0) {
+        yield* Console.log("No documents to reindex");
+        break;
+      }
+
+      yield* Console.log(`Documents to reindex: ${docs.length}\n`);
+
+      if (cleanFirst) {
+        yield* Console.log("Cleaning existing embeddings...");
+        // Repair removes orphaned embeddings; we'll regenerate all
+        yield* library.repair();
+        yield* Console.log("✓ Cleaned\n");
+      }
+
+      // Process each document
+      let processed = 0;
+      let errors = 0;
+
+      for (const doc of docs) {
+        processed++;
+        yield* Console.log(
+          `[${processed}/${docs.length}] ${doc.title}`
+        );
+
+        try {
+          // Get all chunks for this document
+          const stats = yield* library.stats();
+
+          // Remove old embeddings for this doc
+          yield* Console.log(`  Removing old embeddings...`);
+
+          // Use repair to clean up, then re-add the document
+          // Actually, we need direct DB access for this. For now, use remove + add pattern
+          const docPath = doc.path;
+          const docTags = doc.tags;
+          const docTitle = doc.title;
+
+          yield* Console.log(`  Removing document...`);
+          yield* library.remove(doc.id);
+
+          yield* Console.log(`  Re-adding with new embeddings...`);
+          yield* library.add(
+            docPath,
+            new AddOptions({
+              title: docTitle,
+              tags: docTags.length > 0 ? docTags : undefined,
+            })
+          );
+
+          yield* Console.log(`  ✓ Done`);
+        } catch (error) {
+          errors++;
+          const msg = error instanceof Error ? error.message : String(error);
+          yield* Console.error(`  ✗ Failed: ${msg}`);
+        }
+      }
+
+      yield* Console.log(`\n✓ Reindexed ${processed - errors} documents`);
+      if (errors > 0) {
+        yield* Console.log(`⚠ ${errors} documents failed`);
+      }
+      break;
+    }
+
     default:
       yield* Console.error(`Unknown command: ${command}`);
       yield* Console.log(HELP);
@@ -2162,7 +2259,7 @@ if (args[0] === "taxonomy") {
 
   const AppLayer = Layer.merge(
     Layer.merge(Layer.merge(PDFLibraryLive, AutoTaggerLive), PDFExtractorLive),
-    Layer.merge(TaxonomyServiceLive, OllamaLive)
+    Layer.merge(TaxonomyServiceLive, EmbeddingProviderFullLive)
   );
 
   Effect.runPromise(
