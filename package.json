@@ -1,6 +1,6 @@
 {
   "name": "pdf-brain",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Local PDF & Markdown knowledge base with semantic search, AI enrichment, and SKOS taxonomy",
   "type": "module",
   "main": "src/index.ts",
@@ -9,6 +9,9 @@
   },
   "scripts": {
     "build": "bun build src/index.ts src/cli.ts --outdir dist --target bun",
+    "compile": "./scripts/compile.sh",
+    "compile:all": "./scripts/compile.sh --all",
+    "release:binaries": "./scripts/release-binaries.sh",
     "dev": "bun run src/cli.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit",

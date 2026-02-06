@@ -30,8 +30,8 @@ import {
   EmbeddingProvider,
   EmbeddingProviderLive,
   EmbeddingProviderFullLive,
-  EmbeddingError,
 } from "./services/EmbeddingProvider.js";
+import type { EmbeddingError } from "./services/EmbeddingProvider.js";
 import { GatewayLive } from "./services/Gateway.js";
 import { PDFExtractor, PDFExtractorLive } from "./services/PDFExtractor.js";
 import {
@@ -53,8 +53,8 @@ export {
   EmbeddingProvider,
   EmbeddingProviderLive,
   EmbeddingProviderFullLive,
-  EmbeddingError,
 } from "./services/EmbeddingProvider.js";
+export type { EmbeddingError } from "./services/EmbeddingProvider.js";
 export { PDFExtractor, PDFExtractorLive } from "./services/PDFExtractor.js";
 export {
   MarkdownExtractor,
@@ -365,49 +365,31 @@ export class PDFLibrary extends Effect.Service<PDFLibrary>()("PDFLibrary", {
             .sort((a, b) => b.score - a.score)
             .slice(0, limit);
 
-          // Expand context if requested
-          if (expandChars > 0) {
-            // Dedupe expansion: track which (docId, chunkIndex) ranges we've already expanded
-            // to avoid fetching overlapping chunks multiple times
-            const expandedRanges = new Map<
+          // Expand context if requested (default to 500 chars for useful snippets)
+          const effectiveExpand = expandChars > 0 ? expandChars : 500;
+          {
+            // Dedupe expansion: track which (docId, page range) we've already expanded
+            const expandedCache = new Map<
               string,
-              { start: number; end: number; content: string }
+              { startChunk: string; endChunk: string; content: string }
             >();
 
             finalResults = yield* Effect.all(
               finalResults.map((result) =>
                 Effect.gen(function* () {
-                  const key = `${result.docId}`;
-
-                  // Check if this chunk is already covered by a previous expansion
-                  const existing = expandedRanges.get(key);
-                  if (
-                    existing &&
-                    result.chunkIndex >= existing.start &&
-                    result.chunkIndex <= existing.end
-                  ) {
-                    // Already have this context, reuse it
-                    return new SearchResult({
-                      ...result,
-                      expandedContent: existing.content,
-                      expandedRange: {
-                        start: existing.start,
-                        end: existing.end,
-                      },
-                    });
-                  }
-
                   // Fetch expanded context
                   const expanded = yield* db.getExpandedContext(
                     result.docId,
+                    result.page,
                     result.chunkIndex,
-                    { maxChars: expandChars },
+                    { maxChars: effectiveExpand },
                   );
 
-                  // Cache for deduplication
-                  expandedRanges.set(key, {
-                    start: expanded.startIndex,
-                    end: expanded.endIndex,
+                  // Cache key includes page for dedup
+                  const key = `${result.docId}:p${result.page}:c${result.chunkIndex}`;
+                  expandedCache.set(key, {
+                    startChunk: expanded.startChunk,
+                    endChunk: expanded.endChunk,
                     content: expanded.content,
                   });
 
@@ -415,8 +397,8 @@ export class PDFLibrary extends Effect.Service<PDFLibrary>()("PDFLibrary", {
                     ...result,
                     expandedContent: expanded.content,
                     expandedRange: {
-                      start: expanded.startIndex,
-                      end: expanded.endIndex,
+                      start: 0,
+                      end: 0,
                     },
                   });
                 }),
@@ -547,7 +529,7 @@ export class PDFLibrary extends Effect.Service<PDFLibrary>()("PDFLibrary", {
       checkpoint: () => db.checkpoint(),
     };
   }),
-  dependencies: [EmbeddingProviderLive, PDFExtractorLive, MarkdownExtractorLive],
+  dependencies: [EmbeddingProviderFullLive, PDFExtractorLive, MarkdownExtractorLive],
 }) {}
 
 // ============================================================================

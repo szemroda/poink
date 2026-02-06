@@ -8,7 +8,8 @@
 import { Context, Effect, Layer } from "effect";
 import { createClient, type Client, type InValue } from "@libsql/client";
 import { DatabaseError } from "../types.js";
-import { EmbeddingProvider, EmbeddingError } from "./EmbeddingProvider.js";
+import { EmbeddingProvider } from "./EmbeddingProvider.js";
+import type { EmbeddingError } from "./EmbeddingProvider.js";
 
 // ============================================================================
 // Types
@@ -657,9 +658,7 @@ export const generateConceptEmbedding = (concept: Concept) =>
     Effect.mapError(
       (e): TaxonomyError =>
         new TaxonomyError(
-          `Failed to generate embedding: ${
-            e._tag === "EmbeddingError" ? e.reason : String(e)
-          }`
+          `Failed to generate embedding: ${String(e)}`
         )
     )
   );

@@ -1,5 +1,20 @@
 # pdf-brain
 
+## 1.3.0
+
+### Minor Changes
+
+- feat: HATEOAS-style agent hints, standalone binaries, self-updating CLI
+
+  - Every command now appends contextual next-action hints (suppress with --quiet)
+  - Rich agent-optimized --help replaces ASCII art banner, includes live stats
+  - `bun run compile` produces standalone binary (no bun/node required)
+  - Cross-platform builds: darwin-arm64, darwin-x64, linux-x64, linux-arm64, windows-x64
+  - `pdf-brain update` self-updates from GitHub releases
+  - Background auto-update checks once/day, silently replaces binary
+  - curl install script for zero-dependency installation
+  - Fixed pre-existing TS errors in EmbeddingProvider dependencies and TaxonomyService
+
 ## 1.2.0
 
 ### Minor Changes

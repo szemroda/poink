@@ -28,10 +28,18 @@ import {
 import { PDFExtractor, PDFExtractorLive } from "./services/PDFExtractor.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const pkg = JSON.parse(
-  readFileSync(join(__dirname, "..", "package.json"), "utf-8")
-);
-const VERSION = pkg.version;
+let VERSION = "0.0.0";
+try {
+  const pkg = JSON.parse(
+    readFileSync(join(__dirname, "..", "package.json"), "utf-8")
+  );
+  VERSION = pkg.version;
+} catch {
+  // Compiled binary — package.json not on disk.
+  // Version injected via --define at build time.
+  VERSION = typeof __PDF_BRAIN_VERSION__ !== "undefined" ? __PDF_BRAIN_VERSION__ : "0.0.0-compiled";
+}
+declare const __PDF_BRAIN_VERSION__: string;
 import {
   PDFLibrary,
   PDFLibraryLive,
@@ -52,6 +60,10 @@ import {
   EmbeddingProvider,
   EmbeddingProviderFullLive,
 } from "./services/EmbeddingProvider.js";
+import { type CommandResult, generateHints } from "./agent/hints.js";
+import { formatHintBlock } from "./agent/format.js";
+import { renderHelp } from "./agent/manifest.js";
+import { backgroundUpdateCheck, runUpdate } from "./updater.js";
 
 /**
  * Check if a string is a URL
@@ -410,122 +422,6 @@ function downloadFile(url: string, destPath: string) {
   });
 }
 
-const HELP = `
-                 ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-                 ┃                                                ┃
-    ██████╗      ┃   Local knowledge base with vector search      ┃
-    ██╔══██╗     ┃   ─────────────────────────────────────────    ┃
-    ██████╔╝     ┃   PDFs & Markdown → Chunks → Embeddings        ┃
-    ██╔═══╝      ┃   Powered by LibSQL + Ollama                   ┃
-    ██║          ┃                                                ┃
-    ╚═╝  BRAIN   ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
-
-Usage:
-  pdf-brain <command> [options]
-
-Commands:
-  add <path|url>          Add a PDF or Markdown file (local path or URL)
-    --title <title>       Custom title (default: filename or frontmatter)
-    --tags <tags>         Comma-separated tags
-    --no-enrich           Skip LLM enrichment (title/summary/tags extraction)
-
-  search <query>          Unified search across documents and concepts
-    --limit <n>           Max results (default: 10)
-    --tag <tag>           Filter documents by tag
-    --fts                 Full-text search only (skip embeddings)
-    --expand <chars>      Expand context around matches (max: 4000)
-                          Returns surrounding chunks up to char budget
-    --concepts-only       Search only taxonomy concepts
-    --docs-only           Search only documents (skip concepts)
-    --include-clusters    Multi-scale retrieval with cluster summaries
-
-  list                    List all documents in the library
-    --tag <tag>           Filter by tag
-
-  read <id|title>         Get document details and metadata
-
-  remove <id|title>       Remove a document from the library
-
-  tag <id|title> <tags>   Set tags on a document
-
-  stats                   Show library statistics
-                          Documents, chunks, embeddings count
-
-  config show             Display all configuration settings
-  config get <path>       Get specific config value (e.g. embedding.model)
-  config set <path> <val> Set specific config value
-
-  check                   Verify Ollama is running and model available
-
-  doctor                  Comprehensive health check (WAL, corrupted dirs, Ollama, orphaned data)
-    --fix                 Auto-repair detected issues
-
-  repair                  Fix database integrity issues
-                           Removes orphaned chunks/embeddings
-
-  ingest <directory>      Batch ingest PDFs/Markdown from directory
-    --recursive           Include subdirectories (default: true)
-    --tags <tags>         Apply tags to all ingested files
-    --auto-tag            Auto-generate tags using LLM (local first)
-    --enrich              Full enrichment: title, summary, tags (slower)
-    --sample <n>          Process only first N files (for testing)
-    --checkpoint-interval <n>  Checkpoint every N docs (default: 50)
-    --no-tui              Disable TUI, use simple progress output
-
-  export                  Export library for backup or sharing
-    --output <path>       Output file (default: ./pdf-brain-export.tar.gz)
-
-  import <file>           Import library from export archive
-    --force               Overwrite existing library
-
-  migrate                 Database migration utilities
-    --check               Check if migration is needed
-    --import <file>       Import from SQL dump
-    --generate-script     Generate export script for current DB
-
-  reindex                 Re-embed all documents with current provider
-                          Use after switching embedding provider/model
-    --clean               Delete all embeddings first (fresh start)
-    --doc <id>            Re-embed single document only
-
-  taxonomy list           List all concepts
-    --tree                Show hierarchy tree
-    --format <fmt>        Output format: json|table (default: table)
-
-  taxonomy tree [id]      Show visual concept tree (box-drawing)
-                          If id provided, shows subtree from that concept
-
-  taxonomy add <id>       Add a new concept
-    --label <label>       Preferred label (required)
-    --broader <parent>    Parent concept ID
-    --definition <text>   Concept definition
-
-  taxonomy assign <doc-id> <concept-id>
-                          Assign concept to document
-    --confidence <0-1>    Confidence score (default: 1.0)
-
-  taxonomy search <query> Find concepts by label/altLabel
-
-  taxonomy seed           Load taxonomy from JSON file
-    --file <path>         JSON file path (default: data/taxonomy.json)
-
-Options:
-  --help, -h              Show this help
-  --version, -v           Show version
-
-Examples:
-  pdf-brain add ./book.pdf --tags "programming,rust"
-  pdf-brain add ./notes.md --tags "docs,api"
-  pdf-brain add https://example.com/paper.pdf --title "Research Paper"
-  pdf-brain search "machine learning" --limit 5
-  pdf-brain search "error handling" --expand 2000
-  pdf-brain search "design patterns" --concepts-only  # Search concepts only
-  pdf-brain search "react hooks" --docs-only          # Search documents only
-  pdf-brain stats
-  pdf-brain ingest ~/Documents/books --tags "books"
-  pdf-brain ingest ./papers --auto-tag --sample 5
-  pdf-brain ingest ./books --enrich  # Full metadata extraction
-`;
 
 export function parseArgs(args: string[]) {
   const result: Record<string, string | boolean> = {};
@@ -551,9 +447,14 @@ export function parseArgs(args: string[]) {
 
 const program = Effect.gen(function* () {
   const args = process.argv.slice(2);
+  const quiet = args.includes("--quiet") || args.includes("--no-hints");
+  let agentResult: CommandResult | null = null;
 
   if (args.length === 0 || args.includes("--help") || args.includes("-h")) {
-    yield* Console.log(HELP);
+    const library = yield* PDFLibrary;
+    const stats = yield* Effect.either(library.stats());
+    const statsData = stats._tag === "Right" ? stats.right : undefined;
+    yield* Console.log(renderHelp(statsData));
     return;
   }
 
@@ -677,6 +578,7 @@ const program = Effect.gen(function* () {
         `  Size: ${(doc.sizeBytes / 1024 / 1024).toFixed(2)} MB`
       );
       if (doc.tags.length) yield* Console.log(`  Tags: ${doc.tags.join(", ")}`);
+      agentResult = { _tag: "add", title: doc.title, id: doc.id };
       break;
     }
 
@@ -707,6 +609,10 @@ const program = Effect.gen(function* () {
         : docsOnly
         ? " (docs only)"
         : "";
+
+      // Track results for agent hints
+      let hintDocResults: { title: string; docId: string; score: number }[] = [];
+      let hintConceptResults: { id: string; prefLabel: string }[] = [];
 
       yield* Console.log(
         `Searching: "${query}"${ftsOnly ? " (FTS only)" : ""}${modeLabel}${
@@ -747,6 +653,8 @@ const program = Effect.gen(function* () {
             .slice(0, limit);
         }).pipe(Effect.catchAll(() => Effect.succeed([] as Concept[])));
 
+        hintConceptResults = conceptResults.map((c) => ({ id: c.id, prefLabel: c.prefLabel }));
+
         if (conceptResults.length > 0) {
           yield* Console.log(`📚 Concepts (${conceptResults.length}):\n`);
           for (const c of conceptResults) {
@@ -778,6 +686,8 @@ const program = Effect.gen(function* () {
               })
             );
 
+        hintDocResults = results.map((r) => ({ title: r.title, docId: (r as any).docId || "", score: r.score }));
+
         if (results.length > 0) {
           if (searchConcepts) {
             yield* Console.log(`📄 Documents (${results.length}):\n`);
@@ -787,18 +697,19 @@ const program = Effect.gen(function* () {
               `[${r.score.toFixed(3)}] ${r.title} (p.${r.page})`
             );
 
-            if (r.expandedContent && expandChars > 0) {
-              // Show expanded content with range info
-              const rangeInfo = r.expandedRange
-                ? ` [chunks ${r.expandedRange.start}-${r.expandedRange.end}]`
-                : "";
-              yield* Console.log(`  --- Expanded context${rangeInfo} ---`);
-              yield* Console.log(
-                `  ${r.expandedContent.replace(/\n/g, "\n  ")}`
-              );
-              yield* Console.log(`  --- End context ---`);
+            if (r.expandedContent) {
+              // Show expanded content (always available now, larger with --expand)
+              const content = r.expandedContent.replace(/\n/g, "\n  ");
+              if (expandChars > 0) {
+                yield* Console.log(`  ${content}`);
+              } else {
+                // Default: show first 500 chars of expanded content
+                const truncated = content.length > 500
+                  ? content.slice(0, 500) + "..."
+                  : content;
+                yield* Console.log(`  ${truncated}`);
+              }
             } else {
-              // Default: truncated snippet
               yield* Console.log(
                 `  ${r.content.slice(0, 200).replace(/\n/g, " ")}...`
               );
@@ -810,12 +721,15 @@ const program = Effect.gen(function* () {
         }
       }
 
-      // If no results at all
-      if (conceptsOnly) {
-        // Already handled above
-      } else if (docsOnly) {
-        // Already handled above
-      }
+      // Build agent result for hints
+      agentResult = {
+        _tag: "search",
+        query,
+        results: hintDocResults,
+        concepts: hintConceptResults,
+        hadExpand: expandChars > 0,
+        wasFts: ftsOnly,
+      };
       break;
     }
 
@@ -837,6 +751,12 @@ const program = Effect.gen(function* () {
           yield* Console.log(`  ID: ${doc.id}`);
         }
       }
+      agentResult = {
+        _tag: "list",
+        count: docs.length,
+        tag,
+        firstDoc: docs.length > 0 ? { title: docs[0].title, id: docs[0].id } : undefined,
+      };
       break;
     }
 
@@ -865,6 +785,7 @@ const program = Effect.gen(function* () {
       yield* Console.log(
         `Tags: ${doc.tags.length ? doc.tags.join(", ") : "(none)"}`
       );
+      agentResult = { _tag: "read", title: doc.title, id: doc.id, tags: [...doc.tags] };
       break;
     }
 
@@ -877,6 +798,7 @@ const program = Effect.gen(function* () {
 
       const doc = yield* library.remove(id);
       yield* Console.log(`✓ Removed: ${doc.title}`);
+      agentResult = { _tag: "remove", title: doc.title };
       break;
     }
 
@@ -893,6 +815,7 @@ const program = Effect.gen(function* () {
       yield* Console.log(
         `✓ Updated tags for "${doc.title}": ${tagList.join(", ")}`
       );
+      agentResult = { _tag: "tag", title: doc.title, tags: tagList };
       break;
     }
 
@@ -904,6 +827,12 @@ const program = Effect.gen(function* () {
       yield* Console.log(`Chunks:     ${stats.chunks}`);
       yield* Console.log(`Embeddings: ${stats.embeddings}`);
       yield* Console.log(`Location:   ${stats.libraryPath}`);
+      agentResult = {
+        _tag: "stats",
+        documents: stats.documents,
+        chunks: stats.chunks,
+        embeddings: stats.embeddings,
+      };
       break;
     }
 
@@ -1014,6 +943,7 @@ const program = Effect.gen(function* () {
         yield* Console.error("Available: show, get, set");
         process.exit(1);
       }
+      agentResult = { _tag: "config", subcommand: subcommand || "show" };
       break;
     }
 
@@ -1172,12 +1102,14 @@ const program = Effect.gen(function* () {
           );
         }
       }
+      agentResult = { _tag: "doctor", healthy: doctorHealth.healthy };
       break;
     }
 
     case "check": {
       yield* library.checkReady();
       yield* Console.log("✓ Ollama is ready");
+      agentResult = { _tag: "check", reachable: true };
       break;
     }
 
@@ -1291,6 +1223,11 @@ const program = Effect.gen(function* () {
         }
         yield* Console.log("\n✓ Database repaired");
       }
+      agentResult = {
+        _tag: "repair",
+        orphanedChunks: result.orphanedChunks,
+        orphanedEmbeddings: result.orphanedEmbeddings,
+      };
       break;
     }
 
@@ -1943,13 +1880,26 @@ const program = Effect.gen(function* () {
       if (errors > 0) {
         yield* Console.log(`⚠ ${errors} documents failed`);
       }
+      agentResult = { _tag: "reindex", count: processed - errors, errors };
       break;
     }
 
     default:
       yield* Console.error(`Unknown command: ${command}`);
-      yield* Console.log(HELP);
+      yield* Console.log(renderHelp());
       process.exit(1);
+  }
+
+  // Render HATEOAS hints after command output
+  if (!quiet && agentResult) {
+    const hints = generateHints(agentResult);
+    if (hints.length > 0) {
+      const statsResult = yield* Effect.either(library.stats());
+      const statsData = statsResult._tag === "Right"
+        ? { documents: statsResult.right.documents }
+        : undefined;
+      yield* Console.log(formatHintBlock(hints, statsData));
+    }
   }
 });
 
@@ -1977,12 +1927,23 @@ process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
 // Handle taxonomy command separately (don't need full PDFLibrary)
 const args = process.argv.slice(2);
 
-if (args[0] === "taxonomy") {
+// Background update check (fire-and-forget, once per day)
+backgroundUpdateCheck(VERSION);
+
+// Handle update command before Effect machinery
+if (args[0] === "update") {
+  runUpdate(VERSION).catch((err) => {
+    console.error(`Update failed: ${err}`);
+    process.exit(1);
+  });
+} else if (args[0] === "taxonomy") {
+  const quiet = args.includes("--quiet") || args.includes("--no-hints");
   const taxonomyProgram = Effect.gen(function* () {
     const subcommand = args[1];
     const opts = parseArgs(args.slice(2));
     const config = LibraryConfig.fromEnv();
     const taxonomy = yield* TaxonomyService;
+    let agentResult: CommandResult | null = null;
 
     switch (subcommand) {
       case "list": {
@@ -2021,6 +1982,7 @@ if (args[0] === "taxonomy") {
             }
           }
         }
+        agentResult = { _tag: "taxonomyList", count: concepts.length };
         break;
       }
 
@@ -2042,6 +2004,7 @@ if (args[0] === "taxonomy") {
             }
           }
         }
+        agentResult = { _tag: "taxonomyTree", rootId: conceptId };
         break;
       }
 
@@ -2137,6 +2100,11 @@ if (args[0] === "taxonomy") {
             }
           }
         }
+        agentResult = {
+          _tag: "taxonomySearch",
+          query,
+          matches: matches.map((c) => ({ id: c.id, prefLabel: c.prefLabel })),
+        };
         break;
       }
 
@@ -2174,6 +2142,15 @@ if (args[0] === "taxonomy") {
           "Run 'pdf-brain --help' to see available commands"
         );
         process.exit(1);
+    }
+
+    // Render HATEOAS hints for taxonomy commands
+    if (!quiet && agentResult) {
+      const hints = generateHints(agentResult);
+      if (hints.length > 0) {
+        const concepts = yield* taxonomy.listConcepts();
+        yield* Console.log(formatHintBlock(hints, { documents: 0, concepts: concepts.length }));
+      }
     }
   });
 
