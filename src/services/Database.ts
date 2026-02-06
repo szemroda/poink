@@ -64,10 +64,11 @@ export class Database extends Context.Tag("Database")<
     // Context expansion
     readonly getExpandedContext: (
       docId: string,
+      page: number,
       chunkIndex: number,
       options?: { maxChars?: number; direction?: "before" | "after" | "both" }
     ) => Effect.Effect<
-      { content: string; startIndex: number; endIndex: number },
+      { content: string; startChunk: string; endChunk: string },
       DatabaseError
     >;
 

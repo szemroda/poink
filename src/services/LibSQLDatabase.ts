@@ -456,79 +456,72 @@ export class LibSQLDatabase {
               catch: (e) => new DatabaseError({ reason: String(e) }),
             }),
 
-          getExpandedContext: (docId, chunkIndex, options) =>
+          getExpandedContext: (docId, page, chunkIndex, options) =>
             Effect.tryPromise({
               try: async () => {
                 const { maxChars = 2000, direction = "both" } = options || {};
 
-                // Get target chunk
+                // Get target chunk uniquely by (doc_id, page, chunk_index)
                 const targetResult = await client.execute({
-                  sql: "SELECT chunk_index, content FROM chunks WHERE doc_id = ? AND chunk_index = ?",
-                  args: [docId, chunkIndex],
+                  sql: "SELECT id, page, chunk_index, content FROM chunks WHERE doc_id = ? AND page = ? AND chunk_index = ?",
+                  args: [docId, page, chunkIndex],
                 });
 
                 if (targetResult.rows.length === 0) {
                   return {
                     content: "",
-                    startIndex: chunkIndex,
-                    endIndex: chunkIndex,
+                    startChunk: `p${page}c${chunkIndex}`,
+                    endChunk: `p${page}c${chunkIndex}`,
                   };
                 }
 
-                let totalContent = (targetResult.rows[0] as any).content;
-                let startIdx = chunkIndex;
-                let endIdx = chunkIndex;
+                const target = targetResult.rows[0] as any;
+                let totalContent: string = target.content;
+                let startPage = page;
+                let startChunkIdx = chunkIndex;
+                let endPage = page;
+                let endChunkIdx = chunkIndex;
 
-                // Expand before
+                // Expand before: get preceding chunks in document order
                 if (direction === "before" || direction === "both") {
-                  let beforeIdx = chunkIndex - 1;
-                  while (totalContent.length < maxChars && beforeIdx >= 0) {
-                    const beforeResult = await client.execute({
-                      sql: "SELECT content FROM chunks WHERE doc_id = ? AND chunk_index = ?",
-                      args: [docId, beforeIdx],
-                    });
-                    if (beforeResult.rows.length === 0) break;
+                  const beforeResult = await client.execute({
+                    sql: `SELECT page, chunk_index, content FROM chunks
+                          WHERE doc_id = ? AND (page < ? OR (page = ? AND chunk_index < ?))
+                          ORDER BY page DESC, chunk_index DESC LIMIT 20`,
+                    args: [docId, page, page, chunkIndex],
+                  });
 
-                    const beforeContent = (beforeResult.rows[0] as any).content;
-                    if (
-                      totalContent.length + beforeContent.length >
-                      maxChars * 1.2
-                    )
-                      break;
-
-                    totalContent = beforeContent + "\n" + totalContent;
-                    startIdx = beforeIdx;
-                    beforeIdx--;
+                  for (const row of beforeResult.rows) {
+                    const content = (row as any).content as string;
+                    if (totalContent.length + content.length > maxChars * 1.2) break;
+                    totalContent = content + "\n" + totalContent;
+                    startPage = Number((row as any).page);
+                    startChunkIdx = Number((row as any).chunk_index);
                   }
                 }
 
-                // Expand after
+                // Expand after: get following chunks in document order
                 if (direction === "after" || direction === "both") {
-                  let afterIdx = chunkIndex + 1;
-                  while (totalContent.length < maxChars) {
-                    const afterResult = await client.execute({
-                      sql: "SELECT content FROM chunks WHERE doc_id = ? AND chunk_index = ?",
-                      args: [docId, afterIdx],
-                    });
-                    if (afterResult.rows.length === 0) break;
+                  const afterResult = await client.execute({
+                    sql: `SELECT page, chunk_index, content FROM chunks
+                          WHERE doc_id = ? AND (page > ? OR (page = ? AND chunk_index > ?))
+                          ORDER BY page ASC, chunk_index ASC LIMIT 20`,
+                    args: [docId, page, page, chunkIndex],
+                  });
 
-                    const afterContent = (afterResult.rows[0] as any).content;
-                    if (
-                      totalContent.length + afterContent.length >
-                      maxChars * 1.2
-                    )
-                      break;
-
-                    totalContent = totalContent + "\n" + afterContent;
-                    endIdx = afterIdx;
-                    afterIdx++;
+                  for (const row of afterResult.rows) {
+                    const content = (row as any).content as string;
+                    if (totalContent.length + content.length > maxChars * 1.2) break;
+                    totalContent = totalContent + "\n" + content;
+                    endPage = Number((row as any).page);
+                    endChunkIdx = Number((row as any).chunk_index);
                   }
                 }
 
                 return {
                   content: totalContent,
-                  startIndex: startIdx,
-                  endIndex: endIdx,
+                  startChunk: `p${startPage}c${startChunkIdx}`,
+                  endChunk: `p${endPage}c${endChunkIdx}`,
                 };
               },
               catch: (e) => new DatabaseError({ reason: String(e) }),
