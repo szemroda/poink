@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO="joelhooks/pdf-library"
+REPO="joelhooks/pdf-brain"
 BINARY="pdf-brain"
 INSTALL_DIR="${PDF_BRAIN_INSTALL_DIR:-/usr/local/bin}"
 

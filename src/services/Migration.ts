@@ -162,7 +162,7 @@ Migration scripts are provided in the repository.
    bun run scripts/migration/regenerate-embeddings.ts
 
 For detailed instructions, see:
-https://github.com/joelhooks/pdf-library#migration
+https://github.com/joelhooks/pdf-brain#migration
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 `,

@@ -1,5 +1,14 @@
 # pdf-brain
 
+## 1.3.1
+
+### Patch Changes
+
+- fix: update all repo references from pdf-library to pdf-brain
+
+  GitHub repo was renamed. Updated remote URL, install script, self-updater,
+  migration docs, and README to point at joelhooks/pdf-brain.
+
 ## 1.3.0
 
 ### Minor Changes

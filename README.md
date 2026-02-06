@@ -28,7 +28,7 @@ Local **PDF & Markdown** knowledge base with semantic search and AI-powered enri
 
 ```bash
 # 1. Install (standalone binary, no runtime needed)
-curl -fsSL https://raw.githubusercontent.com/joelhooks/pdf-library/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/joelhooks/pdf-brain/main/scripts/install.sh | bash
 
 # 2. Install Ollama (macOS)
 brew install ollama
@@ -81,7 +81,7 @@ ollama serve
 
 ```bash
 # Standalone binary (no runtime needed)
-curl -fsSL https://raw.githubusercontent.com/joelhooks/pdf-library/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/joelhooks/pdf-brain/main/scripts/install.sh | bash
 
 # or via npm
 npm install -g pdf-brain
