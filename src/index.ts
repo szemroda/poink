@@ -40,6 +40,8 @@ import {
 } from "./services/MarkdownExtractor.js";
 import { Database } from "./services/Database.js";
 import { LibSQLDatabase } from "./services/LibSQLDatabase.js";
+import { logDebug } from "./logger.js";
+import { buildChunkerMetadata } from "./chunking.js";
 
 // Re-export types and services
 export * from "./types.js";
@@ -215,16 +217,23 @@ export class PDFLibrary extends Effect.Service<PDFLibrary>()("PDFLibrary", {
           }
 
           // Create document
+          const chunker = buildChunkerMetadata(fileType, config);
+          const mergedMetadata: Record<string, unknown> = {
+            ...(options.metadata ?? {}),
+            // Always stamp the chunker used to generate the current chunks/embeddings.
+            chunker,
+          };
+
           const doc = new Document({
             id,
             title,
             path: resolvedPath,
-            addedAt: new Date(),
+            addedAt: options.addedAt ?? new Date(),
             pageCount,
             sizeBytes: stat.size,
             tags: options.tags || [],
             fileType,
-            metadata: options.metadata,
+            metadata: mergedMetadata,
           });
 
           // Add document to DB
@@ -315,6 +324,224 @@ export class PDFLibrary extends Effect.Service<PDFLibrary>()("PDFLibrary", {
         }),
 
       /**
+       * Replace/rebuild an existing document in-place (non-destructive).
+       *
+       * This is the agent-safe primitive used by `pdf-brain rechunk`.
+       * The DB update is performed as a single transaction: doc upsert +
+       * delete old chunks + insert new chunks + insert new embeddings.
+       */
+      replace: (pdfPath: string, options: AddOptions = new AddOptions({})) =>
+        Effect.gen(function* () {
+          // Resolve path
+          const resolvedPath = pdfPath.startsWith("~")
+            ? pdfPath.replace("~", process.env.HOME || "")
+            : pdfPath;
+
+          // Require existing doc (this is "replace", not "add")
+          const existing = yield* db.getDocumentByPath(resolvedPath);
+          if (!existing) {
+            return yield* Effect.fail(
+              new DocumentNotFoundError({ query: resolvedPath }),
+            );
+          }
+
+          // Check embedding provider before doing any work
+          yield* embedProvider.checkHealth();
+
+          const stat = statSync(resolvedPath);
+          const id = existing.id;
+
+          // Detect file type and route to appropriate extractor
+          const isMarkdown = isMarkdownFile(resolvedPath);
+          const fileType = isMarkdown
+            ? ("markdown" as const)
+            : ("pdf" as const);
+
+          // Preserve existing title/tags/metadata by default
+          const title = options.title ?? existing.title;
+          const tags = options.tags ?? existing.tags;
+          const baseMetadata: Record<string, unknown> =
+            options.metadata ?? (existing.metadata ?? {});
+
+          // Process file with appropriate extractor
+          let pageCount: number;
+          let chunks: Array<{
+            page: number;
+            chunkIndex: number;
+            content: string;
+          }>;
+
+          if (isMarkdown) {
+            const processResult = yield* Effect.either(
+              markdownExtractor.process(resolvedPath),
+            );
+            if (processResult._tag === "Left") {
+              return yield* Effect.fail(processResult.left);
+            }
+            pageCount = processResult.right.pageCount;
+            chunks = processResult.right.chunks;
+          } else {
+            const processResult = yield* Effect.either(
+              pdfExtractor.process(resolvedPath),
+            );
+            if (processResult._tag === "Left") {
+              return yield* Effect.fail(processResult.left);
+            }
+            pageCount = processResult.right.pageCount;
+            chunks = processResult.right.chunks;
+          }
+
+          if (chunks.length === 0) {
+            return yield* Effect.fail(
+              new DocumentNotFoundError({
+                query: `No text content extracted from ${fileType}`,
+              }),
+            );
+          }
+
+          // Stamp current chunker metadata (always overwrite)
+          const chunker = buildChunkerMetadata(fileType, config);
+          const mergedMetadata: Record<string, unknown> = {
+            ...baseMetadata,
+            chunker,
+          };
+
+          const doc = new Document({
+            id,
+            title,
+            path: resolvedPath,
+            addedAt: options.addedAt ?? existing.addedAt,
+            pageCount,
+            sizeBytes: stat.size,
+            tags,
+            fileType,
+            metadata: mergedMetadata,
+          });
+
+          const chunkRecords = chunks.map((chunk, i) => ({
+            id: `${id}-${i}`,
+            docId: id,
+            page: chunk.page,
+            chunkIndex: chunk.chunkIndex,
+            content: chunk.content,
+          }));
+
+          // Generate all embeddings before touching the DB (non-destructive).
+          const batchSize = DEFAULT_QUEUE_CONFIG.batchSize;
+          const contents = chunks.map((c) => c.content);
+
+          const embeddingRecords: Array<{ chunkId: string; embedding: number[] }> = [];
+
+          for (
+            let batchIdx = 0;
+            batchIdx * batchSize < contents.length;
+            batchIdx++
+          ) {
+            const batchStart = batchIdx * batchSize;
+            const batchEnd = Math.min(batchStart + batchSize, contents.length);
+            const batchContents = contents.slice(batchStart, batchEnd);
+
+            const batchEmbeddings = yield* embedProvider.embedBatch(
+              batchContents,
+              DEFAULT_QUEUE_CONFIG.concurrency,
+            );
+
+            for (let i = 0; i < batchEmbeddings.length; i++) {
+              const chunkIndex = batchIdx * batchSize + i;
+              embeddingRecords.push({
+                chunkId: `${id}-${chunkIndex}`,
+                embedding: batchEmbeddings[i],
+              });
+            }
+
+            if (batchEnd < contents.length) {
+              yield* Effect.sleep(
+                Duration.millis(DEFAULT_QUEUE_CONFIG.batchDelayMs),
+              );
+            }
+          }
+
+          // Atomic DB replacement
+          yield* db.replaceDocument(doc, chunkRecords, embeddingRecords);
+          yield* db.checkpoint();
+
+          return doc;
+        }),
+
+      /**
+       * Re-generate embeddings for an existing document using the current
+       * embedding provider and model, without touching the document row or
+       * chunks (non-destructive).
+       *
+       * This is the agent-safe primitive used by `pdf-brain reindex`.
+       *
+       * Note: we upsert embeddings by chunkId, so repeated calls are safe.
+       */
+      reindexEmbeddings: (docId: string) =>
+        Effect.gen(function* () {
+          // Require embedding provider (reindex is meaningless without it)
+          yield* embedProvider.checkHealth();
+
+          const existing = yield* db.getDocument(docId);
+          if (!existing) {
+            return yield* Effect.fail(new DocumentNotFoundError({ query: docId }));
+          }
+
+          const chunks = yield* db.listChunksByDocument(docId);
+          if (chunks.length === 0) {
+            return yield* Effect.fail(
+              new DocumentNotFoundError({
+                query: `No chunks found for document ${docId}`,
+              }),
+            );
+          }
+
+          const batchSize = DEFAULT_QUEUE_CONFIG.batchSize;
+          const embeddingRecords: Array<{ chunkId: string; embedding: number[] }> =
+            [];
+
+          for (
+            let batchIdx = 0;
+            batchIdx * batchSize < chunks.length;
+            batchIdx++
+          ) {
+            const batchStart = batchIdx * batchSize;
+            const batchEnd = Math.min(batchStart + batchSize, chunks.length);
+            const batchChunks = chunks.slice(batchStart, batchEnd);
+            const batchContents = batchChunks.map((c) => c.content);
+
+            const batchEmbeddings = yield* embedProvider.embedBatch(
+              batchContents,
+              DEFAULT_QUEUE_CONFIG.concurrency,
+            );
+
+            for (let i = 0; i < batchEmbeddings.length; i++) {
+              embeddingRecords.push({
+                chunkId: batchChunks[i]!.id,
+                embedding: batchEmbeddings[i]!,
+              });
+            }
+
+            if (batchEnd < chunks.length) {
+              yield* Effect.sleep(
+                Duration.millis(DEFAULT_QUEUE_CONFIG.batchDelayMs),
+              );
+            }
+          }
+
+          // Atomic upsert for this document's embeddings.
+          yield* db.addEmbeddings(embeddingRecords);
+          yield* db.checkpoint();
+
+          return {
+            docId: existing.id,
+            title: existing.title,
+            chunks: chunks.length,
+            embeddings: embeddingRecords.length,
+          };
+        }),
+
+      /**
        * Search the library
        */
       search: (query: string, options: SearchOptions = new SearchOptions({})) =>
@@ -348,11 +575,19 @@ export class PDFLibrary extends Effect.Service<PDFLibrary>()("PDFLibrary", {
               if (!exists) {
                 results.push(fts);
               } else {
-                // Boost score for matches in both
+                // Combine signals for matches found in both vector + FTS.
+                const vectorScore = exists.vectorScore ?? exists.score;
+                const ftsScore = fts.score; // already normalized 0..1
+                const combined = Math.min(1, Math.max(vectorScore, ftsScore) * 1.05);
+
                 const boosted = new SearchResult({
                   ...exists,
-                  score: Math.min(1, exists.score * 1.2),
+                  score: combined,
                   matchType: "hybrid",
+                  scoreType: "hybrid",
+                  rawScore: combined,
+                  vectorScore,
+                  ftsRank: fts.ftsRank ?? fts.rawScore,
                 });
                 const idx = results.indexOf(exists);
                 results[idx] = boosted;
@@ -416,6 +651,17 @@ export class PDFLibrary extends Effect.Service<PDFLibrary>()("PDFLibrary", {
         query: string,
         options: SearchOptions = new SearchOptions({}),
       ) => db.ftsSearch(query, options),
+
+      /**
+       * Get a chunk by its unique chunk ID
+       */
+      getChunk: (chunkId: string) => db.getChunk(chunkId),
+
+      /**
+       * List chunks for a document (optionally filter by page)
+       */
+      listChunksByDocument: (docId: string, opts?: { page?: number }) =>
+        db.listChunksByDocument(docId, opts),
 
       /**
        * List all documents
@@ -517,6 +763,13 @@ export class PDFLibrary extends Effect.Service<PDFLibrary>()("PDFLibrary", {
         }),
 
       /**
+       * Cheap aggregation helper for agent workflows (planning/estimation).
+       * Avoids loading chunk bodies into memory just to count.
+       */
+      countChunksByDocumentIds: (docIds: string[]) =>
+        db.countChunksByDocumentIds(docIds),
+
+      /**
        * Repair database integrity issues
        * Removes orphaned chunks and embeddings
        */
@@ -579,8 +832,8 @@ export const PDFLibraryLive = (() => {
     const { loadConfig } = require("./types.js");
     const config = loadConfig();
     embeddingDim = getModelDimension(config.embedding.model);
-    console.log(
-      `[PDFLibrary] Using embedding dimension ${embeddingDim} for model ${config.embedding.model}`,
+    logDebug(
+      `Using embedding dimension ${embeddingDim} for model ${config.embedding.model}`,
     );
   } catch {
     // Config not available yet, use default

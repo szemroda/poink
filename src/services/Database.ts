@@ -9,6 +9,7 @@ import { Context, Effect } from "effect";
 import type {
   DatabaseError,
   Document,
+  PDFChunk,
   SearchOptions,
   SearchResult,
 } from "../types.js";
@@ -47,8 +48,29 @@ export class Database extends Context.Tag("Database")<
         content: string;
       }>
     ) => Effect.Effect<void, DatabaseError>;
+    readonly getChunk: (
+      chunkId: string
+    ) => Effect.Effect<PDFChunk | null, DatabaseError>;
+    readonly listChunksByDocument: (
+      docId: string,
+      opts?: { page?: number }
+    ) => Effect.Effect<PDFChunk[], DatabaseError>;
     readonly addEmbeddings: (
       embeddings: Array<{ chunkId: string; embedding: number[] }>
+    ) => Effect.Effect<void, DatabaseError>;
+
+    // Atomic rebuild/replace (non-destructive): replace a document's chunks+embeddings
+    // in a single transaction so agents can safely rerun chunking algorithms.
+    readonly replaceDocument: (
+      doc: Document,
+      chunks: Array<{
+        id: string;
+        docId: string;
+        page: number;
+        chunkIndex: number;
+        content: string;
+      }>,
+      embeddings: Array<{ chunkId: string; embedding: number[] }>,
     ) => Effect.Effect<void, DatabaseError>;
 
     // Search operations
@@ -77,6 +99,11 @@ export class Database extends Context.Tag("Database")<
       { documents: number; chunks: number; embeddings: number },
       DatabaseError
     >;
+
+    // Cheap aggregation helpers (avoid loading full chunk content into memory)
+    readonly countChunksByDocumentIds: (
+      docIds: string[]
+    ) => Effect.Effect<Record<string, number>, DatabaseError>;
 
     // Maintenance
     readonly repair: () => Effect.Effect<

@@ -26,6 +26,9 @@ Local **PDF & Markdown** knowledge base with semantic search and AI-powered enri
 
 ## Quick Start
 
+> Note: `pdf-brain` is agent-first and emits a single JSON envelope to stdout by default.  
+> Use `--format text` for human-readable output (and TUI/progress rendering), or inspect the machine contract via `pdf-brain capabilities`.
+
 ```bash
 # 1. Install (standalone binary, no runtime needed)
 curl -fsSL https://raw.githubusercontent.com/joelhooks/pdf-brain/main/scripts/install.sh | bash
@@ -88,6 +91,21 @@ npm install -g pdf-brain
 ```
 
 ## CLI Reference
+
+### Agent Output (Default)
+
+`pdf-brain` is optimized for agentic workflows: stdout is machine-readable by default.
+
+- `--format json|ndjson|text` (default: `json`)
+- `--pretty` pretty-print JSON
+- `--quiet` (alias: `--no-hints`) omit `nextActions`
+- `--log-level silent|error|info|debug` (logs go to stderr)
+
+Discover the full command/tool contract (including JSON Schemas) at runtime:
+
+```bash
+pdf-brain capabilities
+```
 
 ### Basic Commands
 
@@ -382,6 +400,8 @@ pdf-brain config set enrichment.model anthropic/claude-haiku-4-5
 | `PDF_LIBRARY_PATH`   | `~/Documents/.pdf-library` | Library storage location |
 | `OLLAMA_HOST`        | `http://localhost:11434`   | Ollama API endpoint      |
 | `AI_GATEWAY_API_KEY` | -                          | API key for AI Gateway   |
+| `PDF_BRAIN_LOG_LEVEL` | `silent`                  | stderr logging verbosity |
+| `PDF_BRAIN_QUERY_EMBED_CACHE_SIZE` | `256`        | Query embedding LRU cache size (0 disables) |
 
 ### AI Gateway
 

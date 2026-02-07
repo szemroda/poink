@@ -56,3 +56,7 @@ No provider setup needed - uses `AI_GATEWAY_API_KEY` env var automatically.
 - `src/services/TaxonomyService.ts` - SKOS concept management
 - `src/cli.ts` - CLI commands
 - `data/taxonomy.json` - Starter taxonomy seed data
+
+## Docs
+
+- `docs/agentic-cli-roadmap.md` - Agent-only CLI roadmap (machine-readable output contract, MCP plan, and workflow primitives)

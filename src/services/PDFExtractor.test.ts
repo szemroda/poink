@@ -3,7 +3,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { sanitizeText } from "./PDFExtractor.js";
+import { sanitizeText, chunkText } from "./PDFExtractor.js";
 
 // ============================================================================
 // sanitizeText() Tests
@@ -54,5 +54,44 @@ describe("sanitizeText", () => {
     expect(result).not.toContain("\x00");
     // Should preserve the rest
     expect(result).toBe("Textwithnullbytes");
+  });
+});
+
+// ============================================================================
+// chunkText() Tests
+// ============================================================================
+
+describe("chunkText", () => {
+  test("preserves paragraph boundaries (does not collapse all whitespace)", () => {
+    const input = [
+      "Para 1 line one",
+      "Para 1 line two",
+      "",
+      "Para 2 line one",
+      "Para 2 line two",
+      "",
+    ].join("\n");
+
+    const chunks = chunkText(input, 10_000, 0);
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0]).toBe(
+      "Para 1 line one Para 1 line two\n\nPara 2 line one Para 2 line two"
+    );
+  });
+
+  test("removes common PDF hyphenation artifacts at line breaks", () => {
+    const input = "This is inter-\nnational text.";
+    const chunks = chunkText(input, 10_000, 0);
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0]).toBe("This is international text.");
+  });
+
+  test("filters tiny chunks (<20 chars)", () => {
+    const input = ["Short", "", "This is a longer paragraph that should remain."]
+      .join("\n");
+    const chunks = chunkText(input, 25, 0);
+    // With the small chunk size, the long paragraph will be split or kept,
+    // but the tiny "Short" paragraph should be filtered out.
+    expect(chunks.join("\n")).not.toContain("Short");
   });
 });

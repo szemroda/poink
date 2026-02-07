@@ -295,6 +295,145 @@ describe("LibSQLDatabase", () => {
       expect(stats.chunks).toBe(1);
       expect(stats.embeddings).toBe(0);
     });
+
+    test("countChunksByDocumentIds returns per-doc chunk counts (including 0s)", async () => {
+      const program = Effect.gen(function* () {
+        const db = yield* Database;
+
+        // Add documents
+        yield* db.addDocument(
+          new Document({
+            id: "doc-a",
+            title: "Doc A",
+            path: "/path/a.pdf",
+            addedAt: new Date(),
+            pageCount: 1,
+            sizeBytes: 100,
+            tags: [],
+          }),
+        );
+        yield* db.addDocument(
+          new Document({
+            id: "doc-b",
+            title: "Doc B",
+            path: "/path/b.pdf",
+            addedAt: new Date(),
+            pageCount: 1,
+            sizeBytes: 100,
+            tags: [],
+          }),
+        );
+
+        // Add chunks for each
+        yield* db.addChunks([
+          {
+            id: "chunk-a-1",
+            docId: "doc-a",
+            page: 1,
+            chunkIndex: 0,
+            content: "A1",
+          },
+          {
+            id: "chunk-a-2",
+            docId: "doc-a",
+            page: 1,
+            chunkIndex: 1,
+            content: "A2",
+          },
+          {
+            id: "chunk-b-1",
+            docId: "doc-b",
+            page: 1,
+            chunkIndex: 0,
+            content: "B1",
+          },
+        ]);
+
+        const counts = yield* db.countChunksByDocumentIds([
+          "doc-a",
+          "doc-b",
+          "doc-missing",
+        ]);
+        return counts;
+      });
+
+      const layer = LibSQLDatabase.make({ url: ":memory:" });
+      const counts = await Effect.runPromise(Effect.provide(program, layer));
+
+      expect(counts["doc-a"]).toBe(2);
+      expect(counts["doc-b"]).toBe(1);
+      expect(counts["doc-missing"]).toBe(0);
+    });
+
+    test("replaceDocument atomically replaces chunks+embeddings for an existing doc", async () => {
+      const url = "file::memory:?cache=shared";
+      const layer = LibSQLDatabase.make({ url });
+
+      const program = Effect.gen(function* () {
+        const db = yield* Database;
+
+        const doc = new Document({
+          id: "doc-replace",
+          title: "Replace Me",
+          path: "/path/replace.pdf",
+          addedAt: new Date("2025-01-01T00:00:00Z"),
+          pageCount: 1,
+          sizeBytes: 100,
+          tags: [],
+          metadata: {},
+        });
+
+        // Seed initial doc/chunks/embeddings
+        yield* db.addDocument(doc);
+        yield* db.addChunks([
+          { id: "doc-replace-0", docId: "doc-replace", page: 1, chunkIndex: 0, content: "old-0" },
+          { id: "doc-replace-1", docId: "doc-replace", page: 1, chunkIndex: 1, content: "old-1" },
+        ]);
+
+        const mkEmbedding = (seed: number) =>
+          Array.from({ length: 1024 }, (_, i) => seed + i * 0.00001);
+
+        yield* db.addEmbeddings([
+          { chunkId: "doc-replace-0", embedding: mkEmbedding(0.1) },
+          { chunkId: "doc-replace-1", embedding: mkEmbedding(0.2) },
+        ]);
+
+        // Now atomically replace with 3 chunks + 3 embeddings
+        const updatedDoc = new Document({
+          ...doc,
+          pageCount: 2,
+          sizeBytes: 200,
+          metadata: { chunker: { id: "test", version: 1, unit: "chars", chunkSize: 1, chunkOverlap: 0 } },
+        });
+
+        yield* db.replaceDocument(
+          updatedDoc,
+          [
+            { id: "doc-replace-0", docId: "doc-replace", page: 1, chunkIndex: 0, content: "new-0" },
+            { id: "doc-replace-1", docId: "doc-replace", page: 1, chunkIndex: 1, content: "new-1" },
+            { id: "doc-replace-2", docId: "doc-replace", page: 2, chunkIndex: 0, content: "new-2" },
+          ],
+          [
+            { chunkId: "doc-replace-0", embedding: mkEmbedding(1.1) },
+            { chunkId: "doc-replace-1", embedding: mkEmbedding(1.2) },
+            { chunkId: "doc-replace-2", embedding: mkEmbedding(1.3) },
+          ],
+        );
+
+        const chunks = yield* db.listChunksByDocument("doc-replace");
+        const stats = yield* db.getStats();
+
+        return { chunks, stats };
+      });
+
+      const result = await Effect.runPromise(Effect.provide(program, layer));
+
+      expect(result.stats.documents).toBe(1);
+      expect(result.stats.chunks).toBe(3);
+      expect(result.stats.embeddings).toBe(3);
+
+      expect(result.chunks.map((c) => c.content)).toEqual(["new-0", "new-1", "new-2"]);
+    });
   });
 
   describe("taxonomy schema (SKOS)", () => {

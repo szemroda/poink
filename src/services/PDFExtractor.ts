@@ -75,18 +75,49 @@ export function sanitizeText(text: string): string {
 /**
  * Chunk text with intelligent splitting
  */
-function chunkText(
+export function chunkText(
   text: string,
   chunkSize: number,
   chunkOverlap: number
 ): string[] {
   const chunks: string[] = [];
 
-  // Clean up text - sanitize first, then normalize whitespace
-  const cleaned = sanitizeText(text)
-    .replace(/\s+/g, " ")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
+  // Clean up text - sanitize first, then normalize while preserving paragraph structure.
+  //
+  // IMPORTANT: Do NOT collapse `\s+` here. In PDFs, newlines often carry meaning
+  // (paragraph breaks). Collapsing all whitespace nukes paragraph boundaries and
+  // makes chunking far worse.
+  const cleaned = (() => {
+    let t = sanitizeText(text);
+
+    // Normalize newlines from various PDF extractors/platforms.
+    t = t.replace(/\r\n/g, "\n").replace(/\r/g, "\n").replace(/\f/g, "\n");
+
+    // Normalize non-breaking spaces.
+    t = t.replace(/\u00a0/g, " ");
+
+    // Remove common hyphenation artifacts at line breaks: "inter-\nnational"
+    t = t.replace(/([A-Za-z])-\n([A-Za-z])/g, "$1$2");
+
+    // Trim trailing/leading whitespace per line.
+    t = t
+      .split("\n")
+      .map((line) => line.trim())
+      .join("\n");
+
+    // Collapse long blank runs.
+    t = t.replace(/\n{3,}/g, "\n\n");
+
+    // Reconstruct paragraphs:
+    // - split on blank lines
+    // - within a paragraph, join wrapped lines with spaces
+    const paragraphs = t
+      .split(/\n\s*\n+/)
+      .map((p) => p.replace(/\n+/g, " ").replace(/[ \t]+/g, " ").trim())
+      .filter(Boolean);
+
+    return paragraphs.join("\n\n").trim();
+  })();
 
   if (cleaned.length <= chunkSize) {
     return cleaned ? [cleaned] : [];

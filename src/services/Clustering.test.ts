@@ -24,18 +24,32 @@ import {
  * Generate synthetic embeddings for testing
  * Creates distinct clusters in low-dimensional space for fast testing
  */
+function makeSeededRng(seed: number): () => number {
+  // Deterministic, fast PRNG for tests (mulberry32).
+  // We want stable cluster sizes so tests don't flake based on Math.random().
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
 function generateTestEmbeddings(
   numPerCluster: number = 10,
-  dims: number = 4
+  dims: number = 4,
+  seed: number = 42
 ): { id: string; vector: number[] }[] {
   const embeddings: { id: string; vector: number[] }[] = [];
+  const rand = makeSeededRng(seed);
 
   // Cluster 1: centered around [1, 0, 0, 0]
   for (let i = 0; i < numPerCluster; i++) {
     embeddings.push({
       id: `chunk-a-${i}`,
       vector: Array.from({ length: dims }, (_, d) =>
-        d === 0 ? 1 + Math.random() * 0.2 : Math.random() * 0.2
+        d === 0 ? 1 + rand() * 0.2 : rand() * 0.2
       ),
     });
   }
@@ -45,7 +59,7 @@ function generateTestEmbeddings(
     embeddings.push({
       id: `chunk-b-${i}`,
       vector: Array.from({ length: dims }, (_, d) =>
-        d === 1 ? 1 + Math.random() * 0.2 : Math.random() * 0.2
+        d === 1 ? 1 + rand() * 0.2 : rand() * 0.2
       ),
     });
   }
@@ -55,7 +69,7 @@ function generateTestEmbeddings(
     embeddings.push({
       id: `chunk-c-${i}`,
       vector: Array.from({ length: dims }, (_, d) =>
-        d === 2 ? 1 + Math.random() * 0.2 : Math.random() * 0.2
+        d === 2 ? 1 + rand() * 0.2 : rand() * 0.2
       ),
     });
   }
@@ -381,7 +395,7 @@ describe("ClusteringService - Mini-Batch K-Means", () => {
     const fullResult = await Effect.runPromise(
       Effect.gen(function* () {
         const service = yield* ClusteringService;
-        return yield* service.cluster(embeddings, { k: 3 });
+        return yield* service.cluster(embeddings, { k: 3, seed: 123 });
       }).pipe(Effect.provide(ClusteringServiceImpl.Default))
     );
 
@@ -391,6 +405,7 @@ describe("ClusteringService - Mini-Batch K-Means", () => {
         return yield* service.clusterMiniBatch(embeddings, {
           k: 3,
           batchSize: 10,
+          seed: 123,
         });
       }).pipe(Effect.provide(ClusteringServiceImpl.Default))
     );

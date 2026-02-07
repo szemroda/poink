@@ -28,12 +28,16 @@ describe("Unified Search Types", () => {
   describe("DocumentSearchResult", () => {
     test("should create valid document search result", () => {
       const result = new DocumentSearchResult({
+        chunkId: "doc-123-0",
         docId: "doc-123",
         title: "Test Document",
         page: 1,
         chunkIndex: 0,
         content: "Test content",
         score: 0.95,
+        rawScore: 0.95,
+        scoreType: "cosine_similarity",
+        vectorScore: 0.95,
         matchType: "vector",
         entityType: "document",
       });
@@ -45,12 +49,16 @@ describe("Unified Search Types", () => {
 
     test("should support optional expanded content", () => {
       const result = new DocumentSearchResult({
+        chunkId: "doc-123-0",
         docId: "doc-123",
         title: "Test Document",
         page: 1,
         chunkIndex: 0,
         content: "Test content",
         score: 0.95,
+        rawScore: 0.95,
+        scoreType: "cosine_similarity",
+        vectorScore: 0.95,
         matchType: "vector",
         entityType: "document",
         expandedContent: "Expanded test content",
@@ -69,6 +77,8 @@ describe("Unified Search Types", () => {
         prefLabel: "Machine Learning",
         definition: "A subset of artificial intelligence...",
         score: 0.88,
+        rawScore: 0.88,
+        scoreType: "cosine_similarity",
         entityType: "concept",
       });
 
@@ -82,12 +92,16 @@ describe("Unified Search Types", () => {
   describe("UnifiedSearchResult", () => {
     test("should accept DocumentSearchResult", () => {
       const docResult: UnifiedSearchResult = new DocumentSearchResult({
+        chunkId: "doc-123-0",
         docId: "doc-123",
         title: "Test Document",
         page: 1,
         chunkIndex: 0,
         content: "Test content",
         score: 0.95,
+        rawScore: 0.95,
+        scoreType: "cosine_similarity",
+        vectorScore: 0.95,
         matchType: "vector",
         entityType: "document",
       });
@@ -101,6 +115,8 @@ describe("Unified Search Types", () => {
         prefLabel: "Machine Learning",
         definition: "A subset of artificial intelligence...",
         score: 0.88,
+        rawScore: 0.88,
+        scoreType: "cosine_similarity",
         entityType: "concept",
       });
 
@@ -110,12 +126,16 @@ describe("Unified Search Types", () => {
     test("should discriminate by entityType", () => {
       const results: UnifiedSearchResult[] = [
         new DocumentSearchResult({
+          chunkId: "doc-123-0",
           docId: "doc-123",
           title: "Test Document",
           page: 1,
           chunkIndex: 0,
           content: "Test content",
           score: 0.95,
+          rawScore: 0.95,
+          scoreType: "cosine_similarity",
+          vectorScore: 0.95,
           matchType: "vector",
           entityType: "document",
         }),
@@ -124,6 +144,8 @@ describe("Unified Search Types", () => {
           prefLabel: "Machine Learning",
           definition: "A subset of artificial intelligence...",
           score: 0.88,
+          rawScore: 0.88,
+          scoreType: "cosine_similarity",
           entityType: "concept",
         }),
       ];

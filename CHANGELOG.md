@@ -1,5 +1,15 @@
 # pdf-brain
 
+## 2.0.0
+
+### Major Changes
+
+- Agent-first CLI overhaul: default JSON/NDJSON envelope output with stable `nextActions`, a self-describing `capabilities` command (JSON Schemas), and a real stdio MCP server (`pdf-brain mcp`) with contract-tested tool outputs.
+
+  Adds progressive disclosure commands (`chunk get`, `doc chunks`, `page get`), `search-pack`, safe `rechunk` (atomic replace with chunker metadata stamps), safe `reindex` (in-place embedding upserts), and an MCP-session query embedding cache (`PDF_BRAIN_QUERY_EMBED_CACHE_SIZE`).
+
+  **Breaking:** default output is now machine JSON. Use `--format text` for human-friendly output.
+
 ## 1.3.1
 
 ### Patch Changes

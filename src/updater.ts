@@ -9,6 +9,7 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, unlinkSync, chmodSync } from "fs";
 import { join } from "path";
+import { logInfo } from "./logger.js";
 
 const REPO = "joelhooks/pdf-brain";
 const STATE_DIR = join(process.env.HOME || "~", ".pdf-brain");
@@ -112,6 +113,10 @@ async function downloadAndReplace(version: string): Promise<boolean> {
  * Current invocation keeps running the old code — new version takes effect next run.
  */
 export function backgroundUpdateCheck(currentVersion: string): void {
+  // Agent-first default: disable background updates unless explicitly enabled.
+  // Background network calls + non-deterministic stderr output are a footgun for tool callers.
+  if (process.env.PDF_BRAIN_BACKGROUND_UPDATE !== "1") return;
+
   // Don't auto-update in dev mode
   if (currentVersion.includes("compiled") || currentVersion === "0.0.0") return;
 
@@ -135,8 +140,8 @@ export function backgroundUpdateCheck(currentVersion: string): void {
       if (ok) {
         newState.lastAutoUpdate = now;
         newState.latestVersion = latest;
-        // Brief note so they know why behavior might change
-        console.error(`\x1b[2mUpdated pdf-brain v${currentVersion} → v${latest}\x1b[0m`);
+        // Brief note so they know why behavior might change (stderr only).
+        logInfo(`Updated pdf-brain v${currentVersion} -> v${latest}`);
       }
     }
 

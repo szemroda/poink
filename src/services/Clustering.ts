@@ -55,6 +55,11 @@ export interface ClusterOptions {
   k: number;
   /** Maximum iterations for k-means (default: 100) */
   maxIterations?: number;
+  /**
+   * Optional deterministic seed for centroid initialization.
+   * Useful for reproducible runs and non-flaky tests.
+   */
+  seed?: number;
 }
 
 /**
@@ -67,6 +72,11 @@ export interface MiniBatchClusterOptions {
   batchSize?: number;
   /** Maximum iterations (default: 100) */
   maxIterations?: number;
+  /**
+   * Optional deterministic seed for centroid initialization + batch sampling.
+   * Useful for reproducible runs and non-flaky tests.
+   */
+  seed?: number;
 }
 
 // ============================================================================
@@ -227,13 +237,31 @@ function softmax(distances: number[], temperature = 1.0): number[] {
 // K-Means Algorithm
 // ============================================================================
 
+function makeSeededRng(seed: number): () => number {
+  // Deterministic, fast PRNG (mulberry32). Useful for reproducible clustering.
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function getRng(seed?: number): () => number {
+  return typeof seed === "number" && Number.isFinite(seed)
+    ? makeSeededRng(seed)
+    : Math.random;
+}
+
 /**
  * K-means clustering algorithm
  */
 function kMeans(
   vectors: number[][],
   k: number,
-  maxIterations = 100
+  maxIterations = 100,
+  rng: () => number = Math.random
 ): { centroids: number[][]; assignments: number[] } {
   if (vectors.length === 0) {
     throw new Error("Cannot cluster empty vector array");
@@ -246,7 +274,7 @@ function kMeans(
   }
 
   // Initialize centroids with k-means++ for better convergence
-  const centroids = kMeansPlusPlusInit(vectors, k);
+  const centroids = kMeansPlusPlusInit(vectors, k, rng);
   let assignments = new Array(vectors.length).fill(0);
 
   for (let iter = 0; iter < maxIterations; iter++) {
@@ -283,11 +311,15 @@ function kMeans(
 /**
  * K-means++ initialization for better centroid selection
  */
-function kMeansPlusPlusInit(vectors: number[][], k: number): number[][] {
+function kMeansPlusPlusInit(
+  vectors: number[][],
+  k: number,
+  rng: () => number = Math.random
+): number[][] {
   const centroids: number[][] = [];
 
   // First centroid: random
-  const firstIdx = Math.floor(Math.random() * vectors.length);
+  const firstIdx = Math.floor(rng() * vectors.length);
   centroids.push([...vectors[firstIdx]]);
 
   // Remaining centroids: weighted by distance squared
@@ -300,7 +332,7 @@ function kMeansPlusPlusInit(vectors: number[][], k: number): number[][] {
     });
 
     const totalDist = distances.reduce((a, b) => a + b, 0);
-    let threshold = Math.random() * totalDist;
+    let threshold = rng() * totalDist;
 
     for (let j = 0; j < vectors.length; j++) {
       threshold -= distances[j];
@@ -312,7 +344,7 @@ function kMeansPlusPlusInit(vectors: number[][], k: number): number[][] {
 
     // Fallback if we didn't select (shouldn't happen)
     if (centroids.length === i) {
-      centroids.push([...vectors[Math.floor(Math.random() * vectors.length)]]);
+      centroids.push([...vectors[Math.floor(rng() * vectors.length)]]);
     }
   }
 
@@ -412,7 +444,8 @@ function miniBatchKMeans(
   vectors: number[][],
   k: number,
   batchSize = 100,
-  maxIterations = 100
+  maxIterations = 100,
+  rng: () => number = Math.random
 ): { centroids: number[][]; assignments: number[] } {
   if (vectors.length === 0) {
     throw new Error("Cannot cluster empty vector array");
@@ -428,7 +461,7 @@ function miniBatchKMeans(
   const actualBatchSize = Math.min(batchSize, n);
 
   // Initialize centroids with k-means++
-  const centroids = kMeansPlusPlusInit(vectors, k);
+  const centroids = kMeansPlusPlusInit(vectors, k, rng);
 
   // Track per-centroid sample counts for weighted updates
   const centroidCounts = new Array(k).fill(0);
@@ -443,7 +476,7 @@ function miniBatchKMeans(
     const batchSet = new Set<number>();
 
     while (batchIndices.length < actualBatchSize) {
-      const idx = Math.floor(Math.random() * n);
+      const idx = Math.floor(rng() * n);
       if (!batchSet.has(idx)) {
         batchSet.add(idx);
         batchIndices.push(idx);
@@ -572,10 +605,12 @@ export const ClusteringServiceImpl = {
         Effect.try({
           try: () => {
             const vectors = embeddings.map((e) => e.vector);
+            const rng = getRng(options.seed);
             const { centroids, assignments } = kMeans(
               vectors,
               options.k,
-              options.maxIterations
+              options.maxIterations,
+              rng
             );
 
             // Build cluster metadata
@@ -718,12 +753,14 @@ export const ClusteringServiceImpl = {
           try: () => {
             const vectors = embeddings.map((e) => e.vector);
             const { batchSize = 100, maxIterations = 100 } = options;
+            const rng = getRng(options.seed);
 
             const { centroids, assignments } = miniBatchKMeans(
               vectors,
               options.k,
               batchSize,
-              maxIterations
+              maxIterations,
+              rng
             );
 
             // Build cluster metadata

@@ -1,6 +1,7 @@
 import { Context, Effect, Layer } from "effect";
 import { generateObject } from "ai";
 import { z } from "zod";
+import { logInfo } from "../logger.js";
 
 /**
  * Summary metadata for a document cluster
@@ -170,9 +171,8 @@ Focus on synthesizing ideas across chunks, not just listing them.`,
     };
   } catch (error) {
     // Fallback to extractive summarization if LLM fails
-    console.warn(
-      "LLM summarization failed, falling back to extractive:",
-      error
+    logInfo(
+      `ClusterSummarizer: LLM summarization failed, falling back to extractive: ${String(error)}`
     );
     return generateExtractiveSummary(chunks, options);
   }

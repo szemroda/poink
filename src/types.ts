@@ -52,12 +52,22 @@ export type EntityType = "document" | "concept";
  * @deprecated Use DocumentSearchResult for unified search. Kept for backwards compatibility.
  */
 export class SearchResult extends Schema.Class<SearchResult>("SearchResult")({
+  chunkId: Schema.String,
   docId: Schema.String,
   title: Schema.String,
   page: Schema.Number,
   chunkIndex: Schema.Number,
   content: Schema.String,
+  /** Normalized score in 0..1 for ranking across match types */
   score: Schema.Number,
+  /** Raw score from the underlying engine (e.g. cosine similarity, FTS rank) */
+  rawScore: Schema.Number,
+  /** What rawScore represents (do not assume one score meaning across engines) */
+  scoreType: Schema.Literal("cosine_similarity", "fts_rank", "hybrid"),
+  /** Optional component score for vector results */
+  vectorScore: Schema.optional(Schema.Number),
+  /** Optional component score for FTS results (raw FTS rank; often negative, more negative = better) */
+  ftsRank: Schema.optional(Schema.Number),
   matchType: Schema.Literal("vector", "fts", "hybrid"),
   /** Expanded context around the match (only populated when expandChars > 0) */
   expandedContent: Schema.optional(Schema.String),
@@ -65,7 +75,47 @@ export class SearchResult extends Schema.Class<SearchResult>("SearchResult")({
   expandedRange: Schema.optional(
     Schema.Struct({ start: Schema.Number, end: Schema.Number })
   ),
-}) {}
+}) {
+  /**
+   * Backwards-compatible constructor:
+   * Older callers used `SearchResult` without chunkId/rawScore/scoreType.
+   *
+   * This type is deprecated in favor of `DocumentSearchResult`, but we keep
+   * legacy input working so downstream code doesn't explode.
+   */
+  constructor(props: any) {
+    const docId = props?.docId;
+    const page = props?.page;
+    const chunkIndex = props?.chunkIndex;
+
+    const matchType: "vector" | "fts" | "hybrid" = props?.matchType;
+    const score: number = props?.score;
+
+    const chunkId =
+      props?.chunkId ?? `legacy:${String(docId)}:${String(page)}:${String(chunkIndex)}`;
+
+    const rawScore = props?.rawScore ?? score;
+
+    const scoreType =
+      props?.scoreType ??
+      (matchType === "fts"
+        ? "fts_rank"
+        : matchType === "hybrid"
+          ? "hybrid"
+          : "cosine_similarity");
+
+    const vectorScore =
+      props?.vectorScore ?? (matchType === "vector" ? score : undefined);
+
+    super({
+      ...props,
+      chunkId,
+      rawScore,
+      scoreType,
+      vectorScore,
+    });
+  }
+}
 
 /**
  * Document search result with entity type discriminator
@@ -73,12 +123,22 @@ export class SearchResult extends Schema.Class<SearchResult>("SearchResult")({
 export class DocumentSearchResult extends Schema.Class<DocumentSearchResult>(
   "DocumentSearchResult"
 )({
+  chunkId: Schema.String,
   docId: Schema.String,
   title: Schema.String,
   page: Schema.Number,
   chunkIndex: Schema.Number,
   content: Schema.String,
+  /** Normalized score in 0..1 for ranking across match types */
   score: Schema.Number,
+  /** Raw score from the underlying engine (e.g. cosine similarity, FTS rank) */
+  rawScore: Schema.Number,
+  /** What rawScore represents (do not assume one score meaning across engines) */
+  scoreType: Schema.Literal("cosine_similarity", "fts_rank", "hybrid"),
+  /** Optional component score for vector results */
+  vectorScore: Schema.optional(Schema.Number),
+  /** Optional component score for FTS results (raw FTS rank; often negative, more negative = better) */
+  ftsRank: Schema.optional(Schema.Number),
   matchType: Schema.Literal("vector", "fts", "hybrid"),
   entityType: Schema.Literal("document"),
   /** Expanded context around the match (only populated when expandChars > 0) */
@@ -98,7 +158,11 @@ export class ConceptSearchResult extends Schema.Class<ConceptSearchResult>(
   conceptId: Schema.String,
   prefLabel: Schema.String,
   definition: Schema.String,
+  /** Normalized score in 0..1 */
   score: Schema.Number,
+  /** Raw score from the underlying engine (cosine similarity) */
+  rawScore: Schema.Number,
+  scoreType: Schema.Literal("cosine_similarity"),
   entityType: Schema.Literal("concept"),
 }) {}
 
@@ -166,6 +230,9 @@ export class Config extends Schema.Class<Config>("Config")({
     host: Schema.String,
     autoInstall: Schema.Boolean,
   }),
+  gateway: Schema.optionalWith(Schema.Struct({
+    apiKey: Schema.optional(Schema.String),
+  }), { default: () => ({}) }),
 }) {
   /**
    * Default configuration: Ollama for all providers
@@ -187,7 +254,15 @@ export class Config extends Schema.Class<Config>("Config")({
       host: "http://localhost:11434",
       autoInstall: true,
     },
+    gateway: {},
   });
+
+  /**
+   * Resolve the gateway API key: config takes precedence over env var.
+   */
+  get gatewayApiKey(): string | undefined {
+    return this.gateway.apiKey ?? process.env.AI_GATEWAY_API_KEY;
+  }
 }
 
 // ============================================================================
@@ -224,7 +299,7 @@ export function loadConfig(): Config {
 
 /**
  * Save config to $PDF_LIBRARY_PATH/config.json.
- * API keys are never stored - they come from env vars (AI_GATEWAY_API_KEY).
+ * API keys can be stored in config or read from env var AI_GATEWAY_API_KEY.
  */
 export function saveConfig(config: Config): void {
   const libraryPath =
@@ -268,6 +343,11 @@ export class AddOptions extends Schema.Class<AddOptions>("AddOptions")({
   metadata: Schema.optional(
     Schema.Record({ key: Schema.String, value: Schema.Unknown })
   ),
+  /**
+   * Internal/advanced: preserve original `addedAt` on re-add/rechunk workflows.
+   * CLI does not expose this directly.
+   */
+  addedAt: Schema.optional(Schema.Date),
 }) {}
 
 // ============================================================================

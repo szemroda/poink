@@ -8,7 +8,7 @@
 import { Effect, Layer } from "effect";
 import { createClient, type Client } from "@libsql/client";
 import { Database } from "./Database.js";
-import { DatabaseError, Document } from "../types.js";
+import { DatabaseError, Document, PDFChunk } from "../types.js";
 
 // Default embedding dimension (mxbai-embed-large)
 // Can be overridden via config for other models:
@@ -63,6 +63,12 @@ export class LibSQLDatabase {
         );
 
         // Helper to parse document row
+        const inferFileType = (path: string): "pdf" | "markdown" => {
+          const lower = path.toLowerCase();
+          if (lower.endsWith(".md") || lower.endsWith(".markdown")) return "markdown";
+          return "pdf";
+        };
+
         const parseDocRow = (row: any): Document =>
           new Document({
             id: row.id as string,
@@ -72,10 +78,23 @@ export class LibSQLDatabase {
             pageCount: row.page_count as number,
             sizeBytes: row.size_bytes as number,
             tags: JSON.parse(row.tags as string) as string[],
+            fileType:
+              row.file_type === "markdown" || row.file_type === "pdf"
+                ? (row.file_type as "pdf" | "markdown")
+                : inferFileType(row.path as string),
             metadata: JSON.parse(row.metadata as string) as Record<
               string,
               unknown
             >,
+          });
+
+        const parseChunkRow = (row: any): PDFChunk =>
+          new PDFChunk({
+            id: row.id as string,
+            docId: row.doc_id as string,
+            page: Number(row.page),
+            chunkIndex: Number(row.chunk_index),
+            content: row.content as string,
           });
 
         // Return Database implementation
@@ -84,8 +103,8 @@ export class LibSQLDatabase {
             Effect.tryPromise({
               try: async () => {
                 await client.execute({
-                  sql: `INSERT INTO documents (id, title, path, added_at, page_count, size_bytes, tags, metadata)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                  sql: `INSERT INTO documents (id, title, path, added_at, page_count, size_bytes, tags, metadata, file_type)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                         ON CONFLICT (id) DO UPDATE SET
                           title = excluded.title,
                           path = excluded.path,
@@ -93,7 +112,8 @@ export class LibSQLDatabase {
                           page_count = excluded.page_count,
                           size_bytes = excluded.size_bytes,
                           tags = excluded.tags,
-                          metadata = excluded.metadata`,
+                          metadata = excluded.metadata,
+                          file_type = excluded.file_type`,
                   args: [
                     doc.id,
                     doc.title,
@@ -103,6 +123,10 @@ export class LibSQLDatabase {
                     doc.sizeBytes,
                     JSON.stringify(doc.tags),
                     JSON.stringify(doc.metadata || {}),
+                    // Prefer explicit doc.fileType, but trust the path extension if they diverge.
+                    doc.fileType === inferFileType(doc.path)
+                      ? doc.fileType
+                      : inferFileType(doc.path),
                   ],
                 });
               },
@@ -197,14 +221,119 @@ export class LibSQLDatabase {
               catch: (e) => new DatabaseError({ reason: String(e) }),
             }),
 
+          getChunk: (chunkId) =>
+            Effect.tryPromise({
+              try: async () => {
+                const result = await client.execute({
+                  sql: "SELECT id, doc_id, page, chunk_index, content FROM chunks WHERE id = ?",
+                  args: [chunkId],
+                });
+                const row = result.rows[0];
+                return row ? parseChunkRow(row) : null;
+              },
+              catch: (e) => new DatabaseError({ reason: String(e) }),
+            }),
+
+          listChunksByDocument: (docId, opts) =>
+            Effect.tryPromise({
+              try: async () => {
+                const page = opts?.page;
+                const args: any[] = [docId];
+                let sql =
+                  "SELECT id, doc_id, page, chunk_index, content FROM chunks WHERE doc_id = ?";
+                if (typeof page === "number") {
+                  sql += " AND page = ?";
+                  args.push(page);
+                }
+                sql += " ORDER BY page ASC, chunk_index ASC";
+
+                const result = await client.execute({ sql, args });
+                return result.rows.map(parseChunkRow);
+              },
+              catch: (e) => new DatabaseError({ reason: String(e) }),
+            }),
+
           addEmbeddings: (embeddings) =>
             Effect.tryPromise({
               try: async () => {
                 // LibSQL stores vectors as F32_BLOB using vector32() function
                 const statements = embeddings.map((item) => ({
-                  sql: "INSERT INTO embeddings (chunk_id, embedding) VALUES (?, vector32(?))",
+                  sql: `INSERT INTO embeddings (chunk_id, embedding)
+                        VALUES (?, vector32(?))
+                        ON CONFLICT (chunk_id) DO UPDATE SET
+                          embedding = excluded.embedding`,
                   args: [item.chunkId, JSON.stringify(item.embedding)],
                 }));
+                await client.batch(statements, "write");
+              },
+              catch: (e) => new DatabaseError({ reason: String(e) }),
+            }),
+
+          replaceDocument: (doc, chunks, embeddings) =>
+            Effect.tryPromise({
+              try: async () => {
+                const statements: Array<{ sql: string; args: any[] }> = [];
+
+                // 1. Upsert document row
+                statements.push({
+                  sql: `INSERT INTO documents (id, title, path, added_at, page_count, size_bytes, tags, metadata, file_type)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT (id) DO UPDATE SET
+                          title = excluded.title,
+                          path = excluded.path,
+                          added_at = excluded.added_at,
+                          page_count = excluded.page_count,
+                          size_bytes = excluded.size_bytes,
+                          tags = excluded.tags,
+                          metadata = excluded.metadata,
+                          file_type = excluded.file_type`,
+                  args: [
+                    doc.id,
+                    doc.title,
+                    doc.path,
+                    doc.addedAt.toISOString(),
+                    doc.pageCount,
+                    doc.sizeBytes,
+                    JSON.stringify(doc.tags),
+                    JSON.stringify(doc.metadata || {}),
+                    doc.fileType === inferFileType(doc.path)
+                      ? doc.fileType
+                      : inferFileType(doc.path),
+                  ],
+                });
+
+                // 2. Delete old chunks (cascades to embeddings + chunk_clusters)
+                statements.push({
+                  sql: "DELETE FROM chunks WHERE doc_id = ?",
+                  args: [doc.id],
+                });
+
+                // 3. Insert new chunks
+                for (const chunk of chunks) {
+                  statements.push({
+                    sql: "INSERT INTO chunks (id, doc_id, page, chunk_index, content) VALUES (?, ?, ?, ?, ?)",
+                    args: [
+                      chunk.id,
+                      chunk.docId,
+                      chunk.page,
+                      chunk.chunkIndex,
+                      chunk.content,
+                    ],
+                  });
+                }
+
+                // 4. Insert new embeddings
+                for (const item of embeddings) {
+                  statements.push({
+                    sql: `INSERT INTO embeddings (chunk_id, embedding)
+                          VALUES (?, vector32(?))
+                          ON CONFLICT (chunk_id) DO UPDATE SET
+                            embedding = excluded.embedding`,
+                    args: [item.chunkId, JSON.stringify(item.embedding)],
+                  });
+                }
+
+                // Single transaction: either the whole rebuild lands or nothing changes.
                 await client.batch(statements, "write");
               },
               catch: (e) => new DatabaseError({ reason: String(e) }),
@@ -256,6 +385,7 @@ export class LibSQLDatabase {
                   const chunkResults = await client.execute({
                     sql: `
                       SELECT 
+                        c.id as chunk_id,
                         c.doc_id,
                         d.title,
                         c.page,
@@ -289,6 +419,7 @@ export class LibSQLDatabase {
                   const clusterResults = await client.execute({
                     sql: `
                       SELECT 
+                        ('cluster-summary-' || cs.id) as chunk_id,
                         '' as doc_id,
                         'Cluster Summary' as title,
                         0 as page,
@@ -309,12 +440,17 @@ export class LibSQLDatabase {
                   // Merge and sort by score
                   return [...chunkResults.rows, ...clusterResults.rows]
                     .map((row: any) => ({
+                      chunkId: row.chunk_id,
                       docId: row.doc_id,
                       title: row.title,
                       page: Number(row.page),
                       chunkIndex: Number(row.chunk_index),
                       content: row.content,
+                      // Convert distance to similarity score: score = 1 - distance/2
                       score: 1 - Number(row.distance) / 2,
+                      rawScore: 1 - Number(row.distance) / 2,
+                      scoreType: "cosine_similarity" as const,
+                      vectorScore: 1 - Number(row.distance) / 2,
                       matchType: "vector" as const,
                     }))
                     .sort((a, b) => b.score - a.score)
@@ -324,6 +460,7 @@ export class LibSQLDatabase {
                 // Standard chunk-only search
                 let sql = `
                   SELECT 
+                    c.id as chunk_id,
                     c.doc_id,
                     d.title,
                     c.page,
@@ -378,6 +515,7 @@ export class LibSQLDatabase {
                 return result.rows.map(
                   (row: any) =>
                     ({
+                      chunkId: row.chunk_id,
                       docId: row.doc_id,
                       title: row.title,
                       page: Number(row.page),
@@ -385,6 +523,9 @@ export class LibSQLDatabase {
                       content: row.content,
                       // Convert distance to similarity score: score = 1 - distance/2
                       score: 1 - Number(row.distance) / 2,
+                      rawScore: 1 - Number(row.distance) / 2,
+                      scoreType: "cosine_similarity",
+                      vectorScore: 1 - Number(row.distance) / 2,
                       matchType: "vector",
                     }) as any,
                 );
@@ -409,12 +550,13 @@ export class LibSQLDatabase {
 
                 let sql = `
                   SELECT 
+                    c.id as chunk_id,
                     c.doc_id,
                     d.title,
                     c.page,
                     c.chunk_index,
                     c.content,
-                    fts.rank as score
+                    fts.rank as rank
                   FROM chunks_fts fts
                   JOIN chunks c ON c.rowid = fts.rowid
                   JOIN documents d ON d.id = c.doc_id
@@ -432,23 +574,32 @@ export class LibSQLDatabase {
                   args.push(...tags);
                 }
 
-                // Order by rank DESC (most negative = best match)
-                // Note: FTS5 rank is negative, so we use DESC to get best matches first
-                sql += ` ORDER BY fts.rank DESC LIMIT ?`;
+                // Order by rank ASC (more negative = better match)
+                sql += ` ORDER BY fts.rank ASC LIMIT ?`;
                 args.push(limit);
 
                 const result = await client.execute({ sql, args });
 
+                const normalizeRank = (rank: number): number => {
+                  const abs = Math.abs(rank);
+                  // Map 0..inf to 0..1 (higher = better).
+                  return abs / (1 + abs);
+                };
+
                 return result.rows.map(
                   (row: any) =>
                     ({
+                      chunkId: row.chunk_id,
                       docId: row.doc_id,
                       title: row.title,
                       page: Number(row.page),
                       chunkIndex: Number(row.chunk_index),
                       content: row.content,
-                      // Negate score to make it positive for consistency
-                      score: Math.abs(Number(row.score)),
+                      // Keep raw rank for debugging; normalize for cross-engine ranking.
+                      score: normalizeRank(Number(row.rank)),
+                      rawScore: Number(row.rank),
+                      scoreType: "fts_rank",
+                      ftsRank: Number(row.rank),
                       matchType: "fts",
                     }) as any,
                 );
@@ -530,14 +681,17 @@ export class LibSQLDatabase {
           getStats: () =>
             Effect.tryPromise({
               try: async () => {
+                // Prefer counting a stable column rather than COUNT(*) because
+                // libSQL's vector extension can report COUNT(*) incorrectly on
+                // some vector-backed tables.
                 const docs = await client.execute(
-                  "SELECT COUNT(*) as count FROM documents",
+                  "SELECT COUNT(id) as count FROM documents",
                 );
                 const chunks = await client.execute(
-                  "SELECT COUNT(*) as count FROM chunks",
+                  "SELECT COUNT(id) as count FROM chunks",
                 );
                 const embeddings = await client.execute(
-                  "SELECT COUNT(*) as count FROM embeddings",
+                  "SELECT COUNT(chunk_id) as count FROM embeddings",
                 );
 
                 return {
@@ -545,6 +699,40 @@ export class LibSQLDatabase {
                   chunks: Number((chunks.rows[0] as any).count),
                   embeddings: Number((embeddings.rows[0] as any).count),
                 };
+              },
+              catch: (e) => new DatabaseError({ reason: String(e) }),
+            }),
+
+          countChunksByDocumentIds: (docIds) =>
+            Effect.tryPromise({
+              try: async () => {
+                const counts: Record<string, number> = {};
+                if (!docIds || docIds.length === 0) return counts;
+
+                // SQLite has a relatively low max variable limit; chunk requests defensively.
+                const chunkSize = 500;
+                for (let i = 0; i < docIds.length; i += chunkSize) {
+                  const slice = docIds.slice(i, i + chunkSize);
+                  const placeholders = slice.map(() => "?").join(", ");
+                  const sql = `
+                    SELECT doc_id as doc_id, COUNT(id) as count
+                    FROM chunks
+                    WHERE doc_id IN (${placeholders})
+                    GROUP BY doc_id
+                  `;
+                  const result = await client.execute({ sql, args: slice });
+                  for (const row of result.rows as any[]) {
+                    const docId = String(row.doc_id);
+                    counts[docId] = Number(row.count);
+                  }
+                }
+
+                // Ensure requested IDs exist in the result, even when count = 0.
+                for (const id of docIds) {
+                  if (!(id in counts)) counts[id] = 0;
+                }
+
+                return counts;
               },
               catch: (e) => new DatabaseError({ reason: String(e) }),
             }),
@@ -563,7 +751,7 @@ export class LibSQLDatabase {
 
                 // Count orphaned embeddings
                 const orphanedEmbeddingsResult = await client.execute(`
-                  SELECT COUNT(*) as count FROM embeddings e
+                  SELECT COUNT(chunk_id) as count FROM embeddings e
                   WHERE NOT EXISTS (SELECT 1 FROM chunks c WHERE c.id = e.chunk_id)
                 `);
                 const orphanedEmbeddings = Number(
@@ -682,9 +870,34 @@ async function initSchema(client: Client, embeddingDim: number): Promise<void> {
       page_count INTEGER NOT NULL,
       size_bytes INTEGER NOT NULL,
       tags TEXT DEFAULT '[]',
+      file_type TEXT NOT NULL DEFAULT 'pdf',
       metadata TEXT DEFAULT '{}'
     )
   `);
+
+  // Migration: older DBs didn't store file type (markdown vs pdf).
+  // Add `file_type` column and backfill from the document path extension.
+  try {
+    const info = await client.execute("PRAGMA table_info(documents)");
+    const hasFileType = info.rows.some(
+      (r: any) => (r as any).name === "file_type",
+    );
+    if (!hasFileType) {
+      await client.execute(
+        "ALTER TABLE documents ADD COLUMN file_type TEXT NOT NULL DEFAULT 'pdf'",
+      );
+      await client.execute(`
+        UPDATE documents
+        SET file_type = CASE
+          WHEN lower(path) LIKE '%.md' OR lower(path) LIKE '%.markdown' THEN 'markdown'
+          ELSE 'pdf'
+        END
+      `);
+    }
+  } catch {
+    // Best-effort migration; schema will still work without file_type but some
+    // document metadata (markdown vs pdf) may be inaccurate.
+  }
 
   // Chunks table
   await client.execute(`

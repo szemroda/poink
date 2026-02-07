@@ -13,6 +13,7 @@ import {
 } from "effect";
 import { embed, embedMany } from "ai";
 import { GatewayError, loadConfig } from "../types.js";
+import { logDebug } from "../logger.js";
 
 // ============================================================================
 // Service Definition
@@ -73,8 +74,8 @@ function validateEmbedding(
   // First embedding sets the expected dimension
   if (detectedEmbeddingDimension === null) {
     detectedEmbeddingDimension = embedding.length;
-    console.log(
-      `[Gateway] Detected embedding dimension: ${detectedEmbeddingDimension}`,
+    logDebug(
+      `Gateway embedding dimension detected: ${detectedEmbeddingDimension}`,
     );
   } else if (embedding.length !== detectedEmbeddingDimension) {
     // Subsequent embeddings must match
@@ -103,11 +104,11 @@ export const GatewayLive = Layer.effect(
     const config = loadConfig();
     const model = config.embedding.model; // e.g., "openai/text-embedding-3-small"
 
-    // Check API key at initialization time
-    const apiKey = process.env.AI_GATEWAY_API_KEY;
+    // Check API key at initialization time (config > env var)
+    const apiKey = config.gatewayApiKey;
     if (!apiKey) {
       return yield* Effect.fail(
-        new GatewayError({ reason: "AI_GATEWAY_API_KEY not set" }),
+        new GatewayError({ reason: "Gateway API key not set. Use: pdf-brain config set gateway.apiKey <key>" }),
       );
     }
 
@@ -149,9 +150,9 @@ export const GatewayLive = Layer.effect(
 
       checkHealth: () =>
         Effect.gen(function* () {
-          if (!process.env.AI_GATEWAY_API_KEY) {
+          if (!config.gatewayApiKey) {
             return yield* Effect.fail(
-              new GatewayError({ reason: "AI_GATEWAY_API_KEY not set" }),
+              new GatewayError({ reason: "Gateway API key not set. Use: pdf-brain config set gateway.apiKey <key>" }),
             );
           }
           // Do a test embedding to verify connectivity and model access

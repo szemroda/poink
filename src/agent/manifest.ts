@@ -33,10 +33,22 @@ ${docCount} documents indexed. Every command returns contextual next-action hint
     --docs-only          Search documents only
     --include-clusters   Include multi-scale cluster summaries
 
+  pdf-brain search-pack "<q1>" "<q2>" ... [options]
+    --limit <n>          Max results per query (default 10)
+    --global-limit <n>   Max deduped results across all queries (optional)
+    --fts                Full-text search only (keyword matching)
+    --expand <chars>     Surrounding context (up to 4000 chars)
+    --with-content       Include chunk text in pack output (default: handles only)
+
 ### Read & Browse
   pdf-brain read "<id|title>"       Document metadata (title, pages, tags, path)
   pdf-brain list [--tag <tag>]      All documents, optionally filtered by tag
   pdf-brain stats                   Library statistics (doc/chunk/embedding counts)
+
+### Progressive Disclosure (agent primitives)
+  pdf-brain chunk get <chunkId>           Fetch a single chunk's full text
+  pdf-brain doc chunks <docId> [--page N] List chunk IDs for a document (optionally by page)
+  pdf-brain page get <docId> <page>       Reconstruct full page text by concatenating chunks
 
 ### Taxonomy (concept navigation)
   pdf-brain taxonomy search "<q>"   Find concepts by keyword or semantic similarity
@@ -51,18 +63,23 @@ ${docCount} documents indexed. Every command returns contextual next-action hint
   pdf-brain ingest <dir> [--enrich] [--auto-tag] [--recursive]
 
 ### Maintenance
+  pdf-brain capabilities            Self-describing command list + JSON Schemas
+  pdf-brain mcp                     Start MCP server (stdio) for tool-based agent access
   pdf-brain update                  Self-update to latest release
   pdf-brain doctor [--fix]          Health check (WAL, orphans, connectivity)
   pdf-brain config show|get|set     View/modify configuration
   pdf-brain reindex [--clean]       Re-embed all documents
+  pdf-brain rechunk [--dry-run] [--include-missing] [--max-docs N] [--max-chunks N]  Rebuild chunks + embeddings when the chunker changes
   pdf-brain export / import         Backup and restore
 
 ## Agent Workflow
 1. \`search\` -> find relevant chunks with similarity scores
-2. \`search --expand 2000\` -> get full surrounding context for deeper reading
-3. \`read\` -> get document metadata (title, tags, page count)
-4. \`taxonomy search\` -> find concept categories, then \`taxonomy tree\` to navigate
-5. \`list --tag\` -> discover documents by topic area
+2. Copy chunk IDs from \`search\` output -> \`chunk get\` to pull full text precisely
+3. Use \`doc chunks\` / \`page get\` to expand context only when needed
+4. \`search --expand 2000\` -> get full surrounding context for deeper reading
+5. \`read\` -> get document metadata (title, tags, page count)
+6. \`taxonomy search\` -> find concept categories, then \`taxonomy tree\` to navigate
+7. \`list --tag\` -> discover documents by topic area
 
 ## Tips
 - Scores closer to 1.0 = stronger semantic match
@@ -75,5 +92,8 @@ ${docCount} documents indexed. Every command returns contextual next-action hint
 ## Options
   --help, -h            Show this help
   --version, -v         Show version
+  --format <mode>       Output mode: json (default), ndjson, text
+  --pretty              Pretty-print JSON
+  --log-level <level>   stderr logs: silent (default), error, info, debug
   --quiet, --no-hints   Suppress next-action hints`;
 }

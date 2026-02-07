@@ -16,6 +16,7 @@ import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { generateObject, generateText } from "ai";
 import { Context, Effect, Layer } from "effect";
 import { z } from "zod";
+import { logDebug, logInfo } from "../logger.js";
 import {
   TaxonomyService,
   generateConceptEmbedding,
@@ -619,11 +620,9 @@ Reply with ONLY one word: DUPLICATE or DISTINCT`;
 
   if (config.judge.provider === "gateway") {
     // Try AI Gateway
-    const gatewayKey = process.env.AI_GATEWAY_API_KEY;
+    const gatewayKey = config.gatewayApiKey;
     if (!gatewayKey) {
-      console.log(
-        "  [AutoTagger] AI_GATEWAY_API_KEY not set, LLM judge unavailable"
-      );
+      logInfo("AutoTagger: gateway API key not set; LLM judge unavailable");
       return { isDuplicate: false, available: false };
     }
 
@@ -635,7 +634,7 @@ Reply with ONLY one word: DUPLICATE or DISTINCT`;
       const answer = result.text.trim().toUpperCase();
       return { isDuplicate: answer.includes("DUPLICATE"), available: true };
     } catch (e) {
-      console.log(`  [AutoTagger] Gateway LLM judge failed: ${e}`);
+      logInfo(`AutoTagger: gateway LLM judge failed: ${String(e)}`);
       return { isDuplicate: false, available: false };
     }
   } else {
@@ -711,8 +710,8 @@ function autoAcceptProposals(
         });
 
         if (judgeResult.isDuplicate) {
-          console.log(
-            `  [AutoTagger] Rejected duplicate: "${proposal.prefLabel}" ≈ "${similar[0].prefLabel}"`
+          logDebug(
+            `AutoTagger: rejected duplicate "${proposal.prefLabel}" ~= "${similar[0].prefLabel}"`
           );
           rejected++;
           continue;
@@ -728,8 +727,8 @@ function autoAcceptProposals(
       });
       yield* taxonomy.storeConceptEmbedding(proposal.id, embedding);
 
-      console.log(
-        `  [AutoTagger] Accepted novel concept: ${proposal.id} - "${proposal.prefLabel}"`
+      logInfo(
+        `AutoTagger: accepted novel concept ${proposal.id} ("${proposal.prefLabel}")`
       );
       accepted++;
     }
@@ -948,10 +947,8 @@ Return ONLY the JSON object:`,
 
   // Debug: log raw proposed concepts before validation
   if (parsed.proposedConcepts && parsed.proposedConcepts.length > 0) {
-    console.log(
-      `  [AutoTagger] Raw proposedConcepts: ${JSON.stringify(
-        parsed.proposedConcepts
-      )}`
+    logDebug(
+      `AutoTagger: raw proposedConcepts: ${JSON.stringify(parsed.proposedConcepts)}`
     );
   }
 
@@ -1020,15 +1017,13 @@ export function validateProposedConcepts(
   return concepts.filter((c) => {
     if (!c.id || !c.prefLabel) return false;
     if (!isValidConceptId(c.id)) {
-      console.log(`  [AutoTagger] Rejected invalid concept ID: "${c.id}"`);
+      logDebug(`AutoTagger: rejected invalid concept ID: "${c.id}"`);
       return false;
     }
     // prefLabel should be short (1-4 words)
     const labelWords = c.prefLabel.trim().split(/\s+/).length;
     if (labelWords > 5) {
-      console.log(
-        `  [AutoTagger] Rejected verbose prefLabel: "${c.prefLabel}"`
-      );
+      logDebug(`AutoTagger: rejected verbose prefLabel: "${c.prefLabel}"`);
       return false;
     }
     return true;
@@ -1204,8 +1199,8 @@ export const AutoTaggerLive = Layer.effect(
             ),
           ];
 
-          console.log(
-            `  [AutoTagger] RAG context: ${ragConcepts.length} relevant concepts found`
+          logDebug(
+            `AutoTagger: RAG context found ${ragConcepts.length} relevant concept(s)`
           );
 
           // Load config for provider/model defaults
@@ -1220,9 +1215,7 @@ export const AutoTaggerLive = Layer.effect(
           if (provider === "ollama") {
             const available = yield* Effect.promise(() => isOllamaAvailable());
             if (!available) {
-              console.warn(
-                "Ollama not available, falling back to Anthropic/Gateway"
-              );
+              logInfo("AutoTagger: Ollama not available; falling back to gateway");
               provider = "anthropic";
               model =
                 config.enrichment.provider === "gateway"
@@ -1234,8 +1227,8 @@ export const AutoTaggerLive = Layer.effect(
                 isModelAvailable(DEFAULT_MODELS.ollama)
               );
               if (!modelAvailable) {
-                console.warn(
-                  `Model ${DEFAULT_MODELS.ollama} not available, falling back to Anthropic/Gateway`
+                logInfo(
+                  `AutoTagger: model ${DEFAULT_MODELS.ollama} not available; falling back to gateway`
                 );
                 provider = "anthropic";
                 model =
@@ -1267,10 +1260,8 @@ export const AutoTaggerLive = Layer.effect(
           }).pipe(
             Effect.catchAll((error) => {
               // Log the actual error for debugging
-              console.warn(
-                `  [AutoTagger] LLM enrichment failed: ${error.message}`
-              );
-              console.warn(`  [AutoTagger] Falling back to heuristics`);
+              logInfo(`AutoTagger: LLM enrichment failed: ${error.message}`);
+              logInfo(`AutoTagger: falling back to heuristics`);
 
               // Fall back to heuristics instead of failing
               const pathTags = extractPathTags(filePath, opts.basePath);
@@ -1296,8 +1287,8 @@ export const AutoTaggerLive = Layer.effect(
           // STEP 3: Auto-accept novel proposed concepts
           const validatedProposals = result.proposedConcepts || [];
           if (validatedProposals.length > 0) {
-            console.log(
-              `  [AutoTagger] Processing ${validatedProposals.length} proposed concepts...`
+            logDebug(
+              `AutoTagger: processing ${validatedProposals.length} proposed concept(s)...`
             );
 
             const { accepted, rejected } = yield* autoAcceptProposals(
@@ -1305,15 +1296,13 @@ export const AutoTaggerLive = Layer.effect(
             ).pipe(
               Effect.catchAll((error) => {
                 // If auto-accept fails, log and continue (don't fail enrichment)
-                console.warn(
-                  `  [AutoTagger] Auto-accept failed: ${error.message}`
-                );
+                logInfo(`AutoTagger: auto-accept failed: ${error.message}`);
                 return Effect.succeed({ accepted: 0, rejected: 0 });
               })
             );
 
-            console.log(
-              `  [AutoTagger] Auto-accept results: ${accepted} accepted, ${rejected} rejected`
+            logDebug(
+              `AutoTagger: auto-accept results: ${accepted} accepted, ${rejected} rejected`
             );
           }
 
@@ -1380,9 +1369,8 @@ export const AutoTaggerLive = Layer.effect(
                 ),
             }).pipe(
               Effect.catchAll((error) => {
-                console.warn(
-                  "LLM tagging failed, using heuristics only:",
-                  error.message
+                logInfo(
+                  `AutoTagger: LLM tagging failed; using heuristics only: ${error.message}`
                 );
                 return Effect.succeed({
                   tags: [],

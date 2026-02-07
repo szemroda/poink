@@ -13,6 +13,7 @@ import {
 } from "effect";
 import { OllamaError, loadConfig } from "../types.js";
 import { spawn } from "child_process";
+import { getLogLevel, logDebug, logInfo } from "../logger.js";
 
 // ============================================================================
 // Service Definition
@@ -81,9 +82,7 @@ function validateEmbedding(
   // First embedding sets the expected dimension
   if (detectedEmbeddingDimension === null) {
     detectedEmbeddingDimension = embedding.length;
-    console.log(
-      `[Ollama] Detected embedding dimension: ${detectedEmbeddingDimension}`,
-    );
+    logDebug(`Ollama embedding dimension detected: ${detectedEmbeddingDimension}`);
   } else if (embedding.length !== detectedEmbeddingDimension) {
     // Subsequent embeddings must match
     return Effect.fail(
@@ -114,18 +113,34 @@ function autoInstallModel(
   model: string,
   host: string,
 ): Effect.Effect<void, OllamaError> {
-  console.log(`[Ollama] Installing model ${model}...`);
+  logInfo(`Ollama: installing model ${model}...`);
 
   return Effect.tryPromise({
     try: () =>
       new Promise<void>((resolve, reject) => {
         const proc = spawn("ollama", ["pull", model], {
-          stdio: "inherit",
+          // Never pollute stdout (agent protocol). Forward to stderr if enabled.
+          stdio: ["ignore", "pipe", "pipe"],
         });
+
+        // Forward streaming output to stderr only when debugging.
+        const debug = getLogLevel() === "debug";
+        if (debug) {
+          proc.stdout?.on("data", (chunk) => {
+            try {
+              process.stderr.write(`[ollama:pull] ${chunk.toString()}`);
+            } catch {}
+          });
+          proc.stderr?.on("data", (chunk) => {
+            try {
+              process.stderr.write(`[ollama:pull] ${chunk.toString()}`);
+            } catch {}
+          });
+        }
 
         proc.on("close", (code) => {
           if (code === 0) {
-            console.log("[Ollama] Model installed successfully");
+            logInfo("Ollama: model installed successfully");
             resolve();
           } else {
             reject(
@@ -198,7 +213,7 @@ export function probeEmbeddingDimension(
 
     // Cache the detected dimension
     detectedEmbeddingDimension = dimension;
-    console.log(`[Ollama] Probed embedding dimension: ${dimension}`);
+    logDebug(`Ollama embedding dimension probed: ${dimension}`);
     return dimension;
   });
 }
