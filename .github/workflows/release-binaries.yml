@@ -1,0 +1,49 @@
+name: Release Binaries
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install
+        run: bun install --frozen-lockfile
+
+      - name: Test
+        run: bun test
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Verify Version Matches Tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="$(node -p "require('./package.json').version")"
+          TAG="${GITHUB_REF_NAME#v}"
+          if [ "${VERSION}" != "${TAG}" ]; then
+            echo "package.json version (${VERSION}) does not match tag (${TAG})" >&2
+            exit 1
+          fi
+
+      - name: Build And Upload Release Assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bun run release:binaries
+
