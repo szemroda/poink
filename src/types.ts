@@ -211,12 +211,20 @@ export class LibraryConfig extends Schema.Class<LibraryConfig>("LibraryConfig")(
 
 /**
  * Multi-provider configuration for embedding, enrichment, and judge models.
- * Supports both Ollama (local) and AI Gateway (remote) providers.
+ * Supports Ollama (local), AI Gateway, and OpenAI-compatible embeddings.
  */
 export class Config extends Schema.Class<Config>("Config")({
   embedding: Schema.Struct({
-    provider: Schema.Literal("ollama", "gateway"),
+    provider: Schema.Literal("ollama", "gateway", "openai"),
     model: Schema.String,
+    openai: Schema.optionalWith(
+      Schema.Struct({
+        apiKey: Schema.optional(Schema.String),
+        model: Schema.optional(Schema.String),
+        baseUrl: Schema.optional(Schema.String),
+      }),
+      { default: () => ({ model: "text-embedding-3-small" }) },
+    ),
   }),
   enrichment: Schema.Struct({
     provider: Schema.Literal("ollama", "gateway"),
@@ -270,6 +278,9 @@ export class Config extends Schema.Class<Config>("Config")({
     embedding: {
       provider: "ollama" as const,
       model: "mxbai-embed-large",
+      openai: {
+        model: "text-embedding-3-small",
+      },
     },
     enrichment: {
       provider: "ollama" as const,
@@ -298,6 +309,13 @@ export class Config extends Schema.Class<Config>("Config")({
    */
   get gatewayApiKey(): string | undefined {
     return this.gateway.apiKey ?? process.env.AI_GATEWAY_API_KEY;
+  }
+
+  /**
+   * Resolve the OpenAI API key: config takes precedence over env var.
+   */
+  get openaiApiKey(): string | undefined {
+    return this.embedding.openai.apiKey ?? process.env.OPENAI_API_KEY;
   }
 }
 
@@ -451,6 +469,11 @@ export class OllamaError extends Schema.TaggedError<OllamaError>()(
 
 export class GatewayError extends Schema.TaggedError<GatewayError>()(
   "GatewayError",
+  { reason: Schema.String }
+) {}
+
+export class OpenAIError extends Schema.TaggedError<OpenAIError>()(
+  "OpenAIError",
   { reason: Schema.String }
 ) {}
 

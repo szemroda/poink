@@ -31,12 +31,11 @@
     {
       "id": "story-mlioqsz6",
       "title": "OpenAI embedding adapter for EmbeddingProvider",
-      "description": "Add OpenAI as a third embedding provider option alongside Ollama and Gateway.\n\n1. Create `src/services/OpenAIEmbedding.ts`:\n   - Implement the same interface shape as Ollama/Gateway (embed, embedBatch, checkHealth)\n   - Use the existing `@ai-sdk/openai-compatible` or plain fetch against OpenAI API\n   - Support models: text-embedding-3-small (1536D), text-embedding-3-large (3072D), text-embedding-ada-002 (1536D)\n   - Config: `embedding.openai.apiKey` (or OPENAI_API_KEY env), `embedding.openai.model`\n   - Batch: OpenAI supports up to 2048 inputs per request, use that for embedBatch\n   - Rate limiting: respect 429s with exponential backoff\n\n2. Update `src/services/EmbeddingProvider.ts`:\n   - Add \"openai\" as a provider option\n   - Route to OpenAIEmbedding when configured\n   - Update EmbeddingProviderFullLive to construct OpenAI layer\n\n3. Update config schema in types.ts:\n   - Add `embedding.provider: \"ollama\" | \"gateway\" | \"openai\"`\n   - Add `embedding.openai: { apiKey?: string, model?: string, baseUrl?: string }`\n   - baseUrl allows pointing at any OpenAI-compatible API (Azure, local, etc.)\n\n4. Write tests in OpenAIEmbedding.test.ts",
+      "description": "Add OpenAI as a third embedding provider option. Minimal changes to two existing files.\n\nIn src/types.ts:\n- Add \"openai\" to embedding.provider union: \"ollama\" | \"gateway\" | \"openai\"\n- Add embedding.openai config: { apiKey?: string, model?: string, baseUrl?: string }\n- Default model: \"text-embedding-3-small\"\n\nIn src/services/EmbeddingProvider.ts:\n- Add an inline OpenAI embed implementation (no separate file needed):\n  - Use fetch() to POST to https://api.openai.com/v1/embeddings (or baseUrl)\n  - Headers: Authorization Bearer from config or OPENAI_API_KEY env\n  - embed(): single text, return embedding array\n  - embedBatch(): send array of texts in one request (OpenAI supports batch)\n  - checkHealth(): test embed with \"test\"\n- Route to it when provider === \"openai\" in EmbeddingProviderLive\n- Update EmbeddingProviderFullLive for the openai case",
       "priority": 3,
-      "passes": false,
+      "passes": true,
       "validationCommand": "cd /home/joel/Code/joelhooks/pdf-library && bun test 2>&1 | grep -E '(pass|fail)' | tail -5",
       "targetFiles": [
-        "OpenAIEmbedding.ts",
         "EmbeddingProvider.ts",
         "types.ts"
       ]
@@ -57,7 +56,7 @@
   ],
   "metadata": {
     "createdAt": "2026-02-11T23:52:26.179Z",
-    "totalIterations": 2,
-    "lastIteration": "2026-02-12T00:18:55.656Z"
+    "totalIterations": 3,
+    "lastIteration": "2026-02-12T00:27:37.853Z"
   }
 }

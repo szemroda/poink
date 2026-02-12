@@ -1,17 +1,18 @@
 /**
- * Unified Embedding Provider - Routes to Ollama or Gateway based on config
+ * Unified Embedding Provider - Routes to Ollama, Gateway, or OpenAI based on config
  */
 import { Effect, Context, Layer } from "effect";
-import { loadConfig, OllamaError, GatewayError } from "../types.js";
+import { loadConfig, OllamaError, GatewayError, OpenAIError } from "../types.js";
 import { Ollama, OllamaLive } from "./Ollama.js";
 import { Gateway, GatewayLive } from "./Gateway.js";
+import { OpenAIEmbedding, OpenAIEmbeddingLive } from "./OpenAIEmbedding.js";
 
 // ============================================================================
 // Service Definition
 // ============================================================================
 
 // Union error type
-export type EmbeddingError = OllamaError | GatewayError;
+export type EmbeddingError = OllamaError | GatewayError | OpenAIError;
 
 export class EmbeddingProvider extends Context.Tag("EmbeddingProvider")<
   EmbeddingProvider,
@@ -22,7 +23,7 @@ export class EmbeddingProvider extends Context.Tag("EmbeddingProvider")<
       concurrency?: number,
     ) => Effect.Effect<number[][], EmbeddingError>;
     readonly checkHealth: () => Effect.Effect<void, EmbeddingError>;
-    readonly provider: "ollama" | "gateway";
+    readonly provider: "ollama" | "gateway" | "openai";
   }
 >() {}
 
@@ -109,6 +110,15 @@ export const EmbeddingProviderLive = Layer.effect(
         checkHealth: gateway.checkHealth,
         provider: "gateway" as const,
       };
+    } else if (provider === "openai") {
+      // Use OpenAI
+      const openai = yield* OpenAIEmbedding;
+      return {
+        embed: wrapQueryCache(openai.embed, "openai"),
+        embedBatch: openai.embedBatch,
+        checkHealth: openai.checkHealth,
+        provider: "openai" as const,
+      };
     } else {
       // Default to Ollama
       const ollama = yield* Ollama;
@@ -128,13 +138,29 @@ export const EmbeddingProviderLive = Layer.effect(
  */
 export const EmbeddingProviderFullLive = (() => {
   const config = loadConfig();
+  const gatewayStub = Layer.succeed(Gateway, {
+    embed: () =>
+      Effect.fail(new GatewayError({ reason: "Gateway not configured" })),
+    embedBatch: () =>
+      Effect.fail(new GatewayError({ reason: "Gateway not configured" })),
+    checkHealth: () =>
+      Effect.fail(new GatewayError({ reason: "Gateway not configured" })),
+  });
+
+  const openAIStub = Layer.succeed(OpenAIEmbedding, {
+    embed: () =>
+      Effect.fail(new OpenAIError({ reason: "OpenAI not configured" })),
+    embedBatch: () =>
+      Effect.fail(new OpenAIError({ reason: "OpenAI not configured" })),
+    checkHealth: () =>
+      Effect.fail(new OpenAIError({ reason: "OpenAI not configured" })),
+  });
+
   const deps =
     config.embedding.provider === "gateway"
-      ? Layer.merge(OllamaLive, GatewayLive)
-      : Layer.merge(OllamaLive, Layer.succeed(Gateway, {
-          embed: () => Effect.fail(new GatewayError({ reason: "Gateway not configured" })),
-          embedBatch: () => Effect.fail(new GatewayError({ reason: "Gateway not configured" })),
-          checkHealth: () => Effect.fail(new GatewayError({ reason: "Gateway not configured" })),
-        }));
+      ? Layer.merge(Layer.merge(OllamaLive, GatewayLive), openAIStub)
+      : config.embedding.provider === "openai"
+        ? Layer.merge(Layer.merge(OllamaLive, gatewayStub), OpenAIEmbeddingLive)
+        : Layer.merge(Layer.merge(OllamaLive, gatewayStub), openAIStub);
   return Layer.provide(EmbeddingProviderLive, deps);
 })();
