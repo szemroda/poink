@@ -40,6 +40,7 @@ import {
 } from "./services/MarkdownExtractor.js";
 import { Database } from "./services/Database.js";
 import { LibSQLDatabase } from "./services/LibSQLDatabase.js";
+import { DatabaseRegistry } from "./services/DatabaseRegistry.js";
 import { logDebug } from "./logger.js";
 import { buildChunkerMetadata } from "./chunking.js";
 
@@ -64,6 +65,7 @@ export {
 } from "./services/MarkdownExtractor.js";
 export { Database } from "./services/Database.js";
 export { LibSQLDatabase } from "./services/LibSQLDatabase.js";
+export { DatabaseRegistry } from "./services/DatabaseRegistry.js";
 
 // ============================================================================
 // Helper Functions
@@ -790,63 +792,18 @@ export class PDFLibrary extends Effect.Service<PDFLibrary>()("PDFLibrary", {
 // ============================================================================
 
 /**
- * Known embedding dimensions for common models
- */
-const MODEL_DIMENSIONS: Record<string, number> = {
-  "mxbai-embed-large": 1024,
-  "nomic-embed-text": 768,
-  "all-minilm": 384,
-  "bge-small-en": 384,
-  "bge-base-en": 768,
-  "bge-large-en": 1024,
-};
-
-/**
- * Get embedding dimension for a model (from known list or default)
- */
-function getModelDimension(model: string): number {
-  // Check exact match first
-  if (MODEL_DIMENSIONS[model]) {
-    return MODEL_DIMENSIONS[model];
-  }
-  // Check prefix match (e.g., "nomic-embed-text:latest")
-  for (const [key, dim] of Object.entries(MODEL_DIMENSIONS)) {
-    if (model.startsWith(key)) {
-      return dim;
-    }
-  }
-  // Default to mxbai-embed-large dimension
-  return 1024;
-}
-
-/**
  * Full application layer with all services using LibSQL database
- * Automatically detects embedding dimension from configured model
+ * using the configured database backend via DatabaseRegistry.
  */
-export const PDFLibraryLive = (() => {
-  const libraryConfig = LibraryConfig.fromEnv();
-
-  // Load config to get the embedding model
-  let embeddingDim = 1024; // default
-  try {
-    const { loadConfig } = require("./types.js");
-    const config = loadConfig();
-    embeddingDim = getModelDimension(config.embedding.model);
-    logDebug(
-      `Using embedding dimension ${embeddingDim} for model ${config.embedding.model}`,
-    );
-  } catch {
-    // Config not available yet, use default
-  }
-
-  const dbLayer = LibSQLDatabase.make({
-    url: `file:${libraryConfig.dbPath}`,
-    embeddingDimension: embeddingDim,
-  });
+export const makePDFLibraryLive = () => {
+  const dbLayer = DatabaseRegistry.make();
+  logDebug("Using database layer from DatabaseRegistry");
 
   // Provide all dependencies internally: EmbeddingProvider (with Ollama + Gateway) and database
   // This makes PDFLibraryLive a complete, self-contained layer
   const fullDeps = Layer.merge(EmbeddingProviderFullLive, dbLayer);
 
   return PDFLibrary.Default.pipe(Layer.provide(fullDeps));
-})();
+};
+
+export const PDFLibraryLive = makePDFLibraryLive();

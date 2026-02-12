@@ -175,6 +175,23 @@ describe("CLI JSON Envelope Contract", () => {
       expect(docSchema.required).toContain("path");
       expect(docSchema.required).toContain("tags");
     }));
+
+  test("config show text output includes database backend details", () =>
+    withTempLibraryPath((libraryPath) => {
+      const configPath = join(libraryPath, "config.json");
+      const res = runCli(["config", "show", "--format", "text"], {
+        env: {
+          PDF_LIBRARY_PATH: libraryPath,
+          PDF_BRAIN_CONFIG: configPath,
+          OLLAMA_HOST: "http://127.0.0.1:1",
+        },
+      });
+
+      expect(res.exitCode).toBe(0);
+      expect(res.stdout).toContain("Database:");
+      expect(res.stdout).toContain("libsql");
+      expect(res.stdout).toContain("Qdrant:");
+    }));
 });
 
 describe("MCP Tool Output Contract", () => {

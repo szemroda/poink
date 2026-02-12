@@ -233,6 +233,35 @@ export class Config extends Schema.Class<Config>("Config")({
   gateway: Schema.optionalWith(Schema.Struct({
     apiKey: Schema.optional(Schema.String),
   }), { default: () => ({}) }),
+  database: Schema.optionalWith(
+    Schema.Struct({
+      backend: Schema.optionalWith(Schema.Literal("libsql", "qdrant"), {
+        default: () => "libsql" as const,
+      }),
+      qdrant: Schema.optionalWith(
+        Schema.Struct({
+          url: Schema.String,
+          collection: Schema.String,
+          apiKey: Schema.optional(Schema.String),
+        }),
+        {
+          default: () => ({
+            url: "http://localhost:6333",
+            collection: "pdf-brain",
+          }),
+        }
+      ),
+    }),
+    {
+      default: () => ({
+        backend: "libsql" as const,
+        qdrant: {
+          url: "http://localhost:6333",
+          collection: "pdf-brain",
+        },
+      }),
+    }
+  ),
 }) {
   /**
    * Default configuration: Ollama for all providers
@@ -255,6 +284,13 @@ export class Config extends Schema.Class<Config>("Config")({
       autoInstall: true,
     },
     gateway: {},
+    database: {
+      backend: "libsql",
+      qdrant: {
+        url: "http://localhost:6333",
+        collection: "pdf-brain",
+      },
+    },
   });
 
   /**
@@ -270,23 +306,60 @@ export class Config extends Schema.Class<Config>("Config")({
 // ============================================================================
 
 /**
- * Load config from $PDF_LIBRARY_PATH/config.json.
- * Creates config.json with defaults if it doesn't exist.
+ * Preferred config path (~/.config/pdf-brain/config.json unless overridden).
  */
-export function loadConfig(): Config {
+export function getDefaultConfigPath(): string {
+  const home = process.env.HOME || ".";
+  return `${home}/.config/pdf-brain/config.json`;
+}
+
+/**
+ * Legacy config path ($PDF_LIBRARY_PATH/config.json).
+ */
+export function getLegacyConfigPath(): string {
   const libraryPath =
     process.env.PDF_LIBRARY_PATH ||
     `${process.env.HOME}/Documents/.pdf-library`;
-  const configPath = `${libraryPath}/config.json`;
+  return `${libraryPath}/config.json`;
+}
 
-  // Create config file with defaults if missing
+/**
+ * Resolve the active config path.
+ * Priority:
+ * 1) $PDF_BRAIN_CONFIG
+ * 2) ~/.config/pdf-brain/config.json
+ */
+export function resolveConfigPath(): string {
+  return process.env.PDF_BRAIN_CONFIG || getDefaultConfigPath();
+}
+
+/**
+ * Decode config data and apply schema defaults for missing fields.
+ */
+export function normalizeConfig(configData: unknown): Config {
+  return Schema.decodeSync(Config)(configData);
+}
+
+/**
+ * Load config from resolved path.
+ * Creates config.json with defaults if it doesn't exist.
+ */
+export function loadConfig(): Config {
+  const configPath = resolveConfigPath();
+  const legacyConfigPath = getLegacyConfigPath();
+  const explicitPath = Boolean(process.env.PDF_BRAIN_CONFIG);
+
+  // Create config file with defaults if missing (or read legacy config for compatibility)
   if (!existsSync(configPath)) {
-    // Ensure directory exists
-    mkdirSync(dirname(configPath), { recursive: true });
+    if (!explicitPath && existsSync(legacyConfigPath)) {
+      const configJson = readFileSync(legacyConfigPath, "utf-8");
+      const configData = JSON.parse(configJson);
+      return normalizeConfig(configData);
+    }
 
-    const defaultConfig = Config.Default;
-    writeFileSync(configPath, JSON.stringify(defaultConfig, null, 2), "utf-8");
-    return defaultConfig;
+    mkdirSync(dirname(configPath), { recursive: true });
+    writeFileSync(configPath, JSON.stringify(Config.Default, null, 2), "utf-8");
+    return Config.Default;
   }
 
   // Read and parse existing config
@@ -294,18 +367,15 @@ export function loadConfig(): Config {
   const configData = JSON.parse(configJson);
 
   // Validate and return via Schema
-  return Schema.decodeSync(Config)(configData);
+  return normalizeConfig(configData);
 }
 
 /**
- * Save config to $PDF_LIBRARY_PATH/config.json.
+ * Save config to resolved path.
  * API keys can be stored in config or read from env var AI_GATEWAY_API_KEY.
  */
 export function saveConfig(config: Config): void {
-  const libraryPath =
-    process.env.PDF_LIBRARY_PATH ||
-    `${process.env.HOME}/Documents/.pdf-library`;
-  const configPath = `${libraryPath}/config.json`;
+  const configPath = resolveConfigPath();
 
   // Ensure directory exists
   mkdirSync(dirname(configPath), { recursive: true });

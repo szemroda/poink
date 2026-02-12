@@ -46,13 +46,21 @@ try {
 declare const __PDF_BRAIN_VERSION__: string;
 import {
   PDFLibrary,
-  PDFLibraryLive,
+  makePDFLibraryLive,
   SearchOptions,
   AddOptions,
   LibraryConfig,
   URLFetchError,
 } from "./index.js";
-import { Config, Document, PDFChunk, SearchResult, loadConfig, saveConfig } from "./types.js";
+import {
+  Config,
+  Document,
+  PDFChunk,
+  SearchResult,
+  loadConfig,
+  resolveConfigPath,
+  saveConfig,
+} from "./types.js";
 import { Migration, MigrationLive } from "./services/Migration.js";
 import { assessDocChunker } from "./chunking.js";
 import {
@@ -1766,10 +1774,7 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
 	    case "config": {
 	      const subcommand = args[1];
 	      const config = loadConfig();
-      const libraryPath =
-        process.env.PDF_LIBRARY_PATH ||
-        `${process.env.HOME}/Documents/.pdf-library`;
-      const configPath = `${libraryPath}/config.json`;
+      const configPath = resolveConfigPath();
 
 	      if (!subcommand || subcommand === "show") {
 	        // Show all config
@@ -1791,6 +1796,11 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
           `Ollama:      ${config.ollama.host} (auto-install: ${
             config.ollama.autoInstall ? "on" : "off"
           })`
+        );
+        yield* Console.log("");
+        yield* Console.log(`Database:    ${config.database.backend}`);
+        yield* Console.log(
+          `Qdrant:      ${config.database.qdrant.url} / ${config.database.qdrant.collection}`
         );
         yield* Console.log("");
 	        const hasKey = config.gatewayApiKey;
@@ -3879,8 +3889,9 @@ if (import.meta.main) {
 	        url: `file:${config.dbPath}`,
 	      });
 	
+        const pdfLibraryLive = makePDFLibraryLive();
 	      const AppLayer = Layer.merge(
-	        Layer.merge(Layer.merge(PDFLibraryLive, AutoTaggerLive), PDFExtractorLive),
+	        Layer.merge(Layer.merge(pdfLibraryLive, AutoTaggerLive), PDFExtractorLive),
 	        Layer.merge(
 	          Layer.merge(TaxonomyServiceLive, EmbeddingProviderFullLive),
 	          MigrationLive
@@ -3902,8 +3913,9 @@ if (import.meta.main) {
 	      url: `file:${config.dbPath}`,
 	    });
 
+    const pdfLibraryLive = makePDFLibraryLive();
     const AppLayer = Layer.merge(
-      Layer.merge(Layer.merge(PDFLibraryLive, AutoTaggerLive), PDFExtractorLive),
+      Layer.merge(Layer.merge(pdfLibraryLive, AutoTaggerLive), PDFExtractorLive),
       Layer.merge(
         Layer.merge(TaxonomyServiceLive, EmbeddingProviderFullLive),
         MigrationLive

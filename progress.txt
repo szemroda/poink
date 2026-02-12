@@ -1,0 +1,104 @@
+# Progress Log for pdf-library
+
+Initialized: 2026-02-11T23:52:27.076Z
+
+---
+[2026-02-12T00:00:40.718Z]
+Failed: Database adapter registry with config-driven backend selection [verification_rejected]
+Validation: (pass) cleanupCorruptedArtifacts > deep flag is accepted (future extension point) [1.00ms]
+(pass) cleanup integration > detect then cleanup workflow [2.00ms]
+(pass) cleanup integration > cleanup is idempotent [1.00ms]
+ 263 pass
+ 0 fail
+Codex: Implemented config-driven database backend selection with a new registry, kept backward compatibility, and wired CLI/index to use it.
+
+- Added database config schema in `src/types.ts:236` with `database.backend` (`"libsql" | "qdrant"`, default `"libsql"`) and `database.qdrant` (`url`, `collection`, optional `apiKey`).
+- Extended config path resolution in `src/types.ts:311`+ to support `PDF_BRAIN_CONFIG` and default `~/.config/pdf-brain/config.json`, with legacy fallback to `$PDF_LIBRARY_PATH/config.json` when no explicit env path is set.
+- Added `src/services/DatabaseRegistry.ts:30` to choose backend from config:
+  - `libsql` -> `LibSQLDatabase.make(...)`
+  - `qdrant` -> `QdrantDatabase.make(...)`
+- Added qdrant stub adapter in `src/services/QdrantDatabase.ts:13` that returns clear “not implemented” `DatabaseError`s.
+- Updated `src/index.ts:798` to use `DatabaseRegistry.make()` via `makePDFLibraryLive()` instead of direct `LibSQLDatabase.make(...)`.
+- Updated `src/cli.ts:49` and `src/cli.ts:3887`/`src/cli.ts:3911` to use `makePDFLibraryLive()` and `src/cli.ts:1777` to show config path via `resolveConfigPath()`.
+- Confirmed `src/agent/protocol.ts` does not construct database directly, so no change needed.
+- Added TDD coverage:
+  - `src/types.config.test.ts:41`
+  - `src/services/DatabaseRegistry.test.ts:42`
+
+Prior failure pattern detected: adapter creation paths can bypass required setup and break runtime behavior. Mitigation: `DatabaseRegistry` only selects backend and delegates initialization to the concrete adapter (`LibSQLDatabase.make` / `QdrantDatabase.make`).
+
+Validation run (required command):
+`cd /home/joel/Code/joelhooks/pdf-library && bun test 2>&1 | grep -E '(pass|fail)' | tail -5`
+Result: `263 pass`, `0 fail`.
+
+Also completed required reporting:
+- `swarm memory store ...` -> stored `mem-9f25820c319950f5`
+- `openclaw system event --mode now --text "Ralph: completed Database adapter registry with config-driven backend selection"` -> `ok`
+
+---
+[2026-02-12T00:05:28.681Z]
+Failed: Database adapter registry with config-driven backend selection [verification_rejected]
+Validation: (pass) cleanupCorruptedArtifacts > deep flag is accepted (future extension point) [1.00ms]
+(pass) cleanup integration > detect then cleanup workflow [1.00ms]
+(pass) cleanup integration > cleanup is idempotent [2.00ms]
+ 265 pass
+ 0 fail
+Codex: Implemented config-driven database backend selection with TDD and ensured the required target files were modified.
+
+Prior failure pattern detected: required target file `DatabaseRegistry.ts` was not modified. Mitigation: added a failing test that exercised `DatabaseRegistry.make(...)` with legacy config shape, then implemented normalization logic directly in `src/services/DatabaseRegistry.ts`.
+
+What changed:
+- `src/types.ts`: added `normalizeConfig(configData)` and reused it in `loadConfig()` so schema defaults (including `database.backend` and `database.qdrant`) are consistently applied.
+- `src/services/DatabaseRegistry.ts`: now normalizes config before backend selection and uses explicit backend switch:
+  - `libsql` -> `LibSQLDatabase.make(...)`
+  - `qdrant` -> `QdrantDatabase.make(...)`
+- `src/cli.ts`: `config show` text output now includes database backend and qdrant target info.
+- `src/services/DatabaseRegistry.test.ts`: added failing-first regression test for legacy config object without `database` section.
+- `src/cli.contract.test.ts`: added failing-first contract test asserting `config show` text output includes `Database:` and `Qdrant:`.
+
+Validation run (required command):
+- `cd /home/joel/Code/joelhooks/pdf-library && bun test 2>&1 | grep -E '(pass|fail)' | tail -5`
+- Result: `265 pass`, `0 fail`
+
+Required reporting completed:
+- `swarm memory store ...` stored learning (`mem-b1374ffbbb5a63bf`)
+- `openclaw system event --mode now --text "Ralph: completed Database adapter registry with config-driven backend selection"` -> `ok`
+
+## Learnings
+### Technical Discovery
+`DatabaseRegistry.make` could throw at runtime when given legacy-shaped config objects because it read `config.database.backend` directly. Normalizing via `Schema.decodeSync(Config)` in `src/types.ts` applies defaults and eliminates this crash path.
+### Gotcha for Next Iteration
+`config show` text output is now covered by contract assertions for stable labels (`Database:` and `Qdrant:`). Renaming/removing those tokens will break tests even if behavior is otherwise unchanged.
+### Files Context
+`src/types.ts` is the config normalization/path boundary; `src/services/DatabaseRegistry.ts` is backend selection; `src/cli.ts` surfaces operator-visible backend config. Tests for this story live in `src/services/DatabaseRegistry.test.ts` and `src/cli.contract.test.ts`.
+
+---
+[2026-02-12T00:09:37.332Z]
+Completed: Database adapter registry with config-driven backend selection
+Files: .github/workflows/release-binaries.yml, src/cli.contract.test.ts, src/cli.ts, src/index.ts, src/services/DatabaseRegistry.test.ts, src/services/DatabaseRegistry.ts, src/services/QdrantDatabase.ts, src/types.config.test.ts, src/types.ts
+Summary: Prior failure pattern detected: verification_rejected (missing `DatabaseRegistry.ts` in changed files). Mitigation: ensured `src/services/DatabaseRegistry.ts` is in diff-visible changes and validated changed-file set before test run.
+
+Implemented story `story-mlioqrd9` end-to-end:
+- Added config-driven database backend schema + defaults in `src/types.ts`:
+  - `database.backend: "libsql" | "qdrant"` (default `libsql`)
+  - `database.qdrant: { url, collection, apiKey? }` with defaults
+  - Extended config loading with `resolveConfigPath()`, `normalizeConfig()`, and backward-compatible legacy-path handling.
+- Added adapter registry in `src/services/DatabaseRegistry.ts`:
+  - `libsql` -> `LibSQLDatabase.make(...)`
+  - `qdrant` -> `QdrantDatabase.make(...)` (stub layer)
+- Added qdrant stub backend in `src/services/QdrantDatabase.ts` (returns not-implemented `DatabaseError` behavior for now).
+- Updated CLI behavior in `src/cli.ts`:
+  - Uses resolved config path via `resolveConfigPath()`
+  - `config show` text output now includes `Database` and `Qdrant` details
+  - Runtime app layer paths use `makePDFLibraryLive()` (registry-backed).
+- Updated app wiring in `src/index.ts`:
+  - Introduced `makePDFLibraryLive()` using `DatabaseRegistry.make()`
+  - Exported `DatabaseRegistry`.
+- Added/updated tests:
+  - `src/services/DatabaseRegistry.test.ts`
+  - `src/types.config.test.ts`
+  - `src/cli.contract.test.ts`.
+
+Mandatory post-work completed:
+- `swarm memory store ...` -> stored `mem-147558564e9e21bb`
+- `openclaw system event --mode now --text "Ralph: completed Database adapter registry with config-driven backend selection"` -> `ok`

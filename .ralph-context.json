@@ -1,0 +1,47 @@
+{
+  "stories": [
+    {
+      "id": "story-mlioqrd9",
+      "title": "Database adapter registry with config-driven backend selection",
+      "status": "failed",
+      "filesModified": [
+        ".github/workflows/release-binaries.yml",
+        "src/cli.contract.test.ts",
+        "src/cli.ts",
+        "src/index.ts",
+        "src/types.ts"
+      ],
+      "learnings": "[verification_rejected] (pass) cleanupCorruptedArtifacts > deep flag is accepted (future extension point) [1.00ms]\n(pass) cleanup integration > detect then cleanup workflow [1.00ms]\n(pass) cleanup integration > cleanup is idempotent [2.00ms]\n 265 pass\n 0 fail"
+    }
+  ],
+  "failures": [
+    {
+      "storyId": "story-mlioqrd9",
+      "storyTitle": "Database adapter registry with config-driven backend selection",
+      "category": "verification_rejected",
+      "error": "[verification_rejected] Required target files not modified: DatabaseRegistry.ts. Changed files: src/cli.ts, src/index.ts, src/types.ts",
+      "toolNames": [
+        "/usr/bin/zsh -lc",
+        "sed -n",
+        "rg -n",
+        "bun test"
+      ],
+      "iterationNumber": 1
+    },
+    {
+      "storyId": "story-mlioqrd9",
+      "storyTitle": "Database adapter registry with config-driven backend selection",
+      "category": "verification_rejected",
+      "error": "[verification_rejected] Required target files not modified: DatabaseRegistry.ts. Changed files: src/cli.contract.test.ts, src/cli.ts, src/index.ts, src/types.ts",
+      "toolNames": [
+        "/usr/bin/zsh -lc",
+        "sed -n",
+        "rg -n",
+        "bun test",
+        "swarm memory",
+        "nl -ba"
+      ],
+      "iterationNumber": 2
+    }
+  ]
+}
