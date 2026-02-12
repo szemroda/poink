@@ -3204,7 +3204,7 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
           break;
         }
 
-        const planned: Array<{
+        let planned: Array<{
           id: string;
           title: string;
           path: string;
@@ -3300,21 +3300,31 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
         const effectiveMaxDocs =
           parsedMaxDocs ?? (!dryRun && includeMissing ? 25 : undefined);
 
+        // When --max-docs is explicitly provided, truncate the planned list instead of refusing.
+        // The safety guard only triggers for the implicit default (25) when --include-missing is used
+        // without an explicit --max-docs flag.
         if (!dryRun && effectiveMaxDocs !== undefined && planned.length > effectiveMaxDocs) {
-          return yield* Effect.fail(
-            new CLIError(
-              "TOO_MANY_DOCS",
-              `Refusing to rechunk ${planned.length} documents (limit: ${effectiveMaxDocs}).`,
-              {
-                planned: planned.length,
-                maxDocs: effectiveMaxDocs,
-                hint:
-                  includeMissing
-                    ? `Re-run with --max-docs ${planned.length} if you really want the full upgrade, or start with: pdf-brain rechunk --include-missing --max-docs 25`
-                    : `Re-run with --max-docs ${planned.length} if you really want to process all planned docs.`,
-              },
-            ),
-          );
+          if (parsedMaxDocs !== undefined) {
+            // Explicit --max-docs: truncate and proceed
+            logInfo(`Truncating ${planned.length} candidates to --max-docs ${effectiveMaxDocs}`);
+            planned = planned.slice(0, effectiveMaxDocs);
+          } else {
+            // Implicit default: refuse (safety guard)
+            return yield* Effect.fail(
+              new CLIError(
+                "TOO_MANY_DOCS",
+                `Refusing to rechunk ${planned.length} documents (limit: ${effectiveMaxDocs}).`,
+                {
+                  planned: planned.length,
+                  maxDocs: effectiveMaxDocs,
+                  hint:
+                    includeMissing
+                      ? `Re-run with --max-docs ${planned.length} if you really want the full upgrade, or start with: pdf-brain rechunk --include-missing --max-docs 25`
+                      : `Re-run with --max-docs ${planned.length} if you really want to process all planned docs.`,
+                },
+              ),
+            );
+          }
         }
 
         if (
