@@ -21,7 +21,7 @@
       "title": "Qdrant Database adapter implementing Database interface",
       "description": "Implement `src/services/QdrantDatabase.ts` that implements the full Database interface using Qdrant as the vector store + metadata backend.\n\nArchitecture:\n- Use `@qdrant/js-client-rest` npm package for Qdrant HTTP API\n- Documents stored as points in a \"documents\" collection (metadata as payload, no vector)\n- Chunks stored as points in a \"chunks\" collection with embeddings as vectors\n- Document metadata (title, path, tags, pageCount, etc.) stored in Qdrant point payloads\n- Use Qdrant's filtering for document lookups, tag queries, etc.\n- vectorSearch maps directly to Qdrant's search endpoint\n- ftsSearch uses Qdrant's full-text index on chunk content field\n\nImplementation notes:\n- Collection auto-creation on first use (with configurable vector dimension from embedding config)\n- Batch operations for addChunks/addEmbeddings (Qdrant supports upsert batches)\n- replaceDocument: delete existing points by docId filter, then insert new ones\n- streamEmbeddings: use Qdrant scroll API with pagination\n- getExpandedContext: filter chunks by docId + page, sort by chunkIndex, concatenate\n- repair: scan for orphaned chunks (docId not in documents collection)\n- checkpoint/dumpDataDir: no-op for Qdrant (it handles persistence internally)\n\nConfig from DatabaseRegistry:\n```\ndatabase: {\n  backend: \"qdrant\",\n  qdrant: {\n    url: \"http://localhost:6333\",\n    collection: \"pdf-brain\",  \n    apiKey: \"optional\"\n  }\n}\n```\n\nAdd `@qdrant/js-client-rest` to dependencies in package.json.\nWrite tests in QdrantDatabase.test.ts that mock the Qdrant client.",
       "priority": 2,
-      "passes": false,
+      "passes": true,
       "validationCommand": "cd /home/joel/Code/joelhooks/pdf-library && bun test 2>&1 | grep -E '(pass|fail)' | tail -5",
       "targetFiles": [
         "QdrantDatabase.ts",
@@ -57,7 +57,7 @@
   ],
   "metadata": {
     "createdAt": "2026-02-11T23:52:26.179Z",
-    "totalIterations": 1,
-    "lastIteration": "2026-02-12T00:09:37.331Z"
+    "totalIterations": 2,
+    "lastIteration": "2026-02-12T00:18:55.656Z"
   }
 }

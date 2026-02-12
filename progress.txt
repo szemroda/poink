@@ -102,3 +102,38 @@ Implemented story `story-mlioqrd9` end-to-end:
 Mandatory post-work completed:
 - `swarm memory store ...` -> stored `mem-147558564e9e21bb`
 - `openclaw system event --mode now --text "Ralph: completed Database adapter registry with config-driven backend selection"` -> `ok`
+
+---
+[2026-02-12T00:18:55.657Z]
+Completed: Qdrant Database adapter implementing Database interface
+Files: .ralph-context.json, .ralph-iterations.jsonl, prd.json, progress.txt, src/cli.contract.test.ts, src/cli.ts, src/index.ts, src/services/DatabaseRegistry.test.ts, src/services/DatabaseRegistry.ts, src/services/QdrantDatabase.ts, src/types.config.test.ts, src/types.ts, bun.lock, package.json
+Summary: Prior failure pattern detected: `verification_rejected`. Mitigation applied: I explicitly kept required targets modified (`package.json`, `src/services/QdrantDatabase.ts`) and verified changed-file coverage before final validation.
+
+Implemented story `story-mlioqs85` end-to-end:
+- Replaced stub with a full Qdrant-backed Database adapter in `src/services/QdrantDatabase.ts`.
+- Added Qdrant client dependency in `package.json` (and lock update in `bun.lock`).
+- Added TDD test suite with mocked Qdrant client in `src/services/QdrantDatabase.test.ts`.
+- Updated registry dimension plumbing (`src/services/DatabaseRegistry.ts`) so Qdrant collections use embedding-model-derived vector dimensions.
+- Updated outdated registry expectation test in `src/services/DatabaseRegistry.test.ts` (removed old “stub should fail” assumption).
+
+Implemented adapter capabilities:
+- Auto-creates `-documents` and `-chunks` collections on first use.
+- Stores documents/chunks as Qdrant points with payload metadata.
+- Supports all Database interface methods (document CRUD, chunks, embeddings, vectorSearch, ftsSearch, replaceDocument, streamEmbeddings, expanded context, stats, repair, bulk cluster assignments, checkpoint/dump no-op behavior).
+- Uses payload flags (`hasEmbedding`, `embeddingOnly`) to keep embedding counts and repair behavior consistent.
+
+Validation run:
+- `cd /home/joel/Code/joelhooks/pdf-library && bun test 2>&1 | grep -E '(pass|fail)' | tail -5`
+- Result: `272 pass`, `0 fail`
+
+Mandatory post-work commands executed:
+- `swarm memory store ... --tags "ralph,learning,pdf-library"` -> stored `mem-c3996dc3f63de43f`
+- `openclaw system event --mode now --text "Ralph: completed Qdrant Database adapter implementing Database interface"` -> `ok`
+
+## Learnings
+### Technical Discovery
+In `src/services/QdrantDatabase.ts`, storing chunks+embeddings in one collection with payload flags (`hasEmbedding`, `embeddingOnly`) is a practical way to implement `getStats().embeddings`, `streamEmbeddings()`, and `repair()` without a separate embeddings collection while still matching the Database interface.
+### Gotcha for Next Iteration
+`src/services/DatabaseRegistry.test.ts` previously asserted Qdrant was a stub failure path; once the adapter became real, that assertion became invalid. Any future backend transition should check for tests that codify temporary stub behavior.
+### Files Context
+`src/services/QdrantDatabase.ts` now contains the full adapter logic and collection/init/filter/search behavior. `src/services/QdrantDatabase.test.ts` is the mocked-client TDD coverage for adapter behavior. `src/services/DatabaseRegistry.ts` passes embedding dimension to Qdrant. `src/services/DatabaseRegistry.test.ts` now validates layer selection without assuming live Qdrant connectivity.

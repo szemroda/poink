@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { Effect, Exit } from "effect";
+import { Effect } from "effect";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -92,7 +92,7 @@ describe("DatabaseRegistry", () => {
     }
   });
 
-  test("returns qdrant stub layer that fails with not-implemented error", async () => {
+  test("returns a qdrant database layer when backend is qdrant", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "pdf-brain-db-registry-"));
     const configPath = join(tempDir, "config.json");
     const libraryPath = join(tempDir, "library");
@@ -126,19 +126,18 @@ describe("DatabaseRegistry", () => {
         async () => {
           const program = Effect.gen(function* () {
             const db = yield* Database;
-            return yield* db.getStats();
+            return {
+              hasAddDocument: typeof db.addDocument === "function",
+              hasVectorSearch: typeof db.vectorSearch === "function",
+            };
           });
 
-          const exit = await Effect.runPromiseExit(
+          const result = await Effect.runPromise(
             program.pipe(Effect.provide(DatabaseRegistry.make()))
           );
 
-          expect(Exit.isFailure(exit)).toBe(true);
-          if (Exit.isFailure(exit)) {
-            const message = String(exit.cause);
-            expect(message).toContain("Qdrant");
-            expect(message).toContain("not implemented");
-          }
+          expect(result.hasAddDocument).toBe(true);
+          expect(result.hasVectorSearch).toBe(true);
         }
       );
     } finally {

@@ -42,6 +42,7 @@ export class DatabaseRegistry {
           url: config.database.qdrant.url,
           collection: config.database.qdrant.collection,
           apiKey: config.database.qdrant.apiKey,
+          embeddingDimension: getModelDimension(config.embedding.model),
         });
       case "libsql":
       default:

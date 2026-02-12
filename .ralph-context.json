@@ -3,15 +3,19 @@
     {
       "id": "story-mlioqrd9",
       "title": "Database adapter registry with config-driven backend selection",
-      "status": "failed",
+      "status": "completed",
       "filesModified": [
         ".github/workflows/release-binaries.yml",
         "src/cli.contract.test.ts",
         "src/cli.ts",
         "src/index.ts",
+        "src/services/DatabaseRegistry.test.ts",
+        "src/services/DatabaseRegistry.ts",
+        "src/services/QdrantDatabase.ts",
+        "src/types.config.test.ts",
         "src/types.ts"
       ],
-      "learnings": "[verification_rejected] (pass) cleanupCorruptedArtifacts > deep flag is accepted (future extension point) [1.00ms]\n(pass) cleanup integration > detect then cleanup workflow [1.00ms]\n(pass) cleanup integration > cleanup is idempotent [2.00ms]\n 265 pass\n 0 fail"
+      "learnings": "Technical Discovery: In this repo’s workflow, newly created files can be omitted by some diff checks unless they are made diff-visible; ensuring `src/services/DatabaseRegistry.ts` appears in the change set prevents repeated verification rejection for required-target checks.\nGotcha: `config show` output now has contract assertions for stable labels (`Database:` and `Qdrant:`). Changing those labels in `src/cli.ts` will break `src/cli.contract.test.ts` even if behavior is still correct.\nFiles Context: `src/types.ts` owns config schema/defaulting/path resolution; `src/services/DatabaseRegistry.ts` owns backend selection; `src/services/QdrantDatabase.ts` is the current qdrant placeholder; `src/index.ts` wires app layer through registry; `src/cli.ts` exposes operator-facing config output and uses registry-backed app composition."
     }
   ],
   "failures": [
