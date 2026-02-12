@@ -158,6 +158,7 @@ describe("CLI JSON Envelope Contract", () => {
       expect(commandNames.has("rechunk")).toBe(true);
       expect(commandNames.has("reindex")).toBe(true);
       expect(commandNames.has("mcp")).toBe(true);
+      expect(commandNames.has("serve")).toBe(true);
 
       // Schema invariants (agents can validate/parses these)
       expect(result.schemas).toBeDefined();

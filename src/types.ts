@@ -213,6 +213,8 @@ export class LibraryConfig extends Schema.Class<LibraryConfig>("LibraryConfig")(
  * Multi-provider configuration for embedding, enrichment, and judge models.
  * Supports Ollama (local), AI Gateway, and OpenAI-compatible embeddings.
  */
+const DEFAULT_OPENAI_EMBEDDING_MODEL = "text-embedding-3-small";
+
 export class Config extends Schema.Class<Config>("Config")({
   embedding: Schema.Struct({
     provider: Schema.Literal("ollama", "gateway", "openai"),
@@ -223,7 +225,7 @@ export class Config extends Schema.Class<Config>("Config")({
         model: Schema.optional(Schema.String),
         baseUrl: Schema.optional(Schema.String),
       }),
-      { default: () => ({ model: "text-embedding-3-small" }) },
+      { default: () => ({ model: DEFAULT_OPENAI_EMBEDDING_MODEL }) },
     ),
   }),
   enrichment: Schema.Struct({
@@ -270,6 +272,38 @@ export class Config extends Schema.Class<Config>("Config")({
       }),
     }
   ),
+  server: Schema.optionalWith(
+    Schema.Struct({
+      host: Schema.optionalWith(Schema.String, {
+        default: () => "127.0.0.1",
+      }),
+      port: Schema.optionalWith(Schema.Number, {
+        default: () => 3838,
+      }),
+      auth: Schema.optionalWith(
+        Schema.Struct({
+          enabled: Schema.optionalWith(Schema.Boolean, {
+            default: () => false,
+          }),
+          token: Schema.optional(Schema.String),
+        }),
+        {
+          default: () => ({
+            enabled: false,
+          }),
+        }
+      ),
+    }),
+    {
+      default: () => ({
+        host: "127.0.0.1",
+        port: 3838,
+        auth: {
+          enabled: false,
+        },
+      }),
+    }
+  ),
 }) {
   /**
    * Default configuration: Ollama for all providers
@@ -279,7 +313,7 @@ export class Config extends Schema.Class<Config>("Config")({
       provider: "ollama" as const,
       model: "mxbai-embed-large",
       openai: {
-        model: "text-embedding-3-small",
+        model: DEFAULT_OPENAI_EMBEDDING_MODEL,
       },
     },
     enrichment: {
@@ -300,6 +334,13 @@ export class Config extends Schema.Class<Config>("Config")({
       qdrant: {
         url: "http://localhost:6333",
         collection: "pdf-brain",
+      },
+    },
+    server: {
+      host: "127.0.0.1",
+      port: 3838,
+      auth: {
+        enabled: false,
       },
     },
   });

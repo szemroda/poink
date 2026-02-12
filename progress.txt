@@ -168,3 +168,10 @@ Summary: Plan for implementation:
 3) Update `EmbeddingProviderLive` routing for `provider === "openai"` to use the inline implementation, then simplify `EmbeddingProviderFullLive` openai wiring (no OpenAI layer dependency).
 4) Run the required validation command exactly, then run mandatory `swarm memory store` and `openclaw system event` commands.
 ⚠️ LAZY LEARNINGS: Structured learnings too short (0 chars, minimum 50)
+
+---
+[2026-02-12T00:32:42.176Z]
+Completed: Network listener config for Tailscale/remote access
+Files: .ralph-context.json, .ralph-iterations.jsonl, prd.json, progress.txt, src/services/EmbeddingProvider.ts, src/services/OpenAIEmbedding.test.ts, src/services/OpenAIEmbedding.ts, src/types.ts, src/agent/protocol.ts, src/cli.contract.test.ts, src/cli.ts, src/types.config.test.ts
+Summary: I’ve implemented `Config.server` defaults in `src/types.ts`. Next I’m updating `src/agent/protocol.ts` with server config resolution and bearer auth helpers used by the new `serve` path.
+⚠️ LAZY LEARNINGS: Structured learnings too short (0 chars, minimum 50)

@@ -52,6 +52,10 @@ describe("loadConfig path and database defaults", () => {
       expect(config.database.backend).toBe("libsql");
       expect(config.database.qdrant.url).toBe("http://localhost:6333");
       expect(config.database.qdrant.collection).toBe("pdf-brain");
+      expect(config.server.host).toBe("127.0.0.1");
+      expect(config.server.port).toBe(3838);
+      expect(config.server.auth.enabled).toBe(false);
+      expect(config.server.auth.token).toBeUndefined();
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }
@@ -69,6 +73,10 @@ describe("loadConfig path and database defaults", () => {
       expect(config.database.backend).toBe("libsql");
       expect(config.database.qdrant.url).toBe("http://localhost:6333");
       expect(config.database.qdrant.collection).toBe("pdf-brain");
+      expect(config.server.host).toBe("127.0.0.1");
+      expect(config.server.port).toBe(3838);
+      expect(config.server.auth.enabled).toBe(false);
+      expect(config.server.auth.token).toBeUndefined();
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }

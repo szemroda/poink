@@ -7,6 +7,7 @@ import { Effect, Console as EffectConsole, Exit, Layer, Runtime, Scope } from "e
 import { JSONSchema } from "@effect/schema";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import * as z from "zod/v4";
 import {
   mkdirSync,
@@ -78,11 +79,14 @@ import { formatHintBlock } from "./agent/format.js";
 import { renderHelp } from "./agent/manifest.js";
 import { backgroundUpdateCheck, runUpdate } from "./updater.js";
 import {
+  DEFAULT_SERVER_CONFIG,
   PDF_BRAIN_PROTOCOL_VERSION,
   type AgentEnvelope,
   type LogLevel,
   type NextAction,
   type OutputFormat,
+  isBearerTokenAuthorized,
+  resolveServerConfig,
   toJsonLine,
 } from "./agent/protocol.js";
 import { getLogLevel, setLogLevel } from "./logger.js";
@@ -557,6 +561,12 @@ type GlobalCLIOptions = {
   quiet: boolean;
 };
 
+type ServeCommandOverrides = {
+  host?: string;
+  port?: number;
+  authToken?: string;
+};
+
 function parseGlobalCLIOptions(rawArgs: string[]): {
   options: GlobalCLIOptions;
   args: string[];
@@ -632,6 +642,54 @@ function parseGlobalCLIOptions(rawArgs: string[]): {
     },
     args,
   };
+}
+
+export function parseServeCommandOptions(args: string[]): ServeCommandOverrides {
+  const opts = parseArgs(args);
+  const overrides: ServeCommandOverrides = {};
+
+  if ("host" in opts) {
+    if (typeof opts.host !== "string" || opts.host.length === 0) {
+      throw new CLIError(
+        "INVALID_FLAG",
+        "Invalid --host value (expected non-empty string)",
+        { flag: "--host", value: opts.host }
+      );
+    }
+    overrides.host = opts.host;
+  }
+
+  if ("port" in opts) {
+    if (typeof opts.port !== "string") {
+      throw new CLIError(
+        "INVALID_FLAG",
+        "Invalid --port value (expected integer 1-65535)",
+        { flag: "--port", value: opts.port }
+      );
+    }
+    const parsedPort = Number.parseInt(opts.port, 10);
+    if (!Number.isInteger(parsedPort) || parsedPort < 1 || parsedPort > 65535) {
+      throw new CLIError(
+        "INVALID_FLAG",
+        "Invalid --port value (expected integer 1-65535)",
+        { flag: "--port", value: opts.port }
+      );
+    }
+    overrides.port = parsedPort;
+  }
+
+  if ("auth-token" in opts) {
+    if (typeof opts["auth-token"] !== "string" || opts["auth-token"].length === 0) {
+      throw new CLIError(
+        "INVALID_FLAG",
+        "Invalid --auth-token value (expected non-empty token)",
+        { flag: "--auth-token", value: opts["auth-token"] }
+      );
+    }
+    overrides.authToken = opts["auth-token"];
+  }
+
+  return overrides;
 }
 
 function writeEnvelope<T>(
@@ -774,6 +832,17 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
           { name: "config", argv: ["config", "<subcommand>"], description: "Config show/get/set" },
           { name: "update", argv: ["update"], description: "Self-update (text mode only)" },
           { name: "mcp", argv: ["mcp"], description: "Start MCP server (stdio)" },
+          {
+            name: "serve",
+            argv: [
+              "serve",
+              "[--host <host>]",
+              "[--port <port>]",
+              "[--auth-token <token>]",
+            ],
+            description:
+              `Start MCP server over HTTP for remote access (default ${DEFAULT_SERVER_CONFIG.host}:${DEFAULT_SERVER_CONFIG.port})`,
+          },
         ],
         schemas: {
           // Schema.Class returns a class value that is also a schema at runtime, but
@@ -1801,6 +1870,13 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
         yield* Console.log(`Database:    ${config.database.backend}`);
         yield* Console.log(
           `Qdrant:      ${config.database.qdrant.url} / ${config.database.qdrant.collection}`
+        );
+        yield* Console.log("");
+        yield* Console.log(`Server:      ${config.server.host}:${config.server.port}`);
+        yield* Console.log(
+          `Auth:        ${
+            config.server.auth.enabled ? "enabled" : "disabled"
+          }${config.server.auth.token ? " (token set)" : ""}`
         );
         yield* Console.log("");
 	        const hasKey = config.gatewayApiKey;
@@ -3420,10 +3496,15 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
 });
 }
 
-async function runMcpServer<ROut, E>(
+type MCPTransport =
+  | StdioServerTransport
+  | WebStandardStreamableHTTPServerTransport;
+
+async function connectMcpServer<ROut, E>(
   appLayer: Layer.Layer<ROut, E, never>,
   globals: GlobalCLIOptions,
-): Promise<void> {
+  transport: MCPTransport,
+): Promise<() => Promise<void>> {
   // MCP uses stdout for the JSON-RPC protocol. Do NOT print envelopes or other logs to stdout.
   // Any diagnostics must go to stderr only.
 
@@ -3771,12 +3852,9 @@ async function runMcpServer<ROut, E>(
     },
   );
 
-  const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error(`[pdf-brain:mcp] server running (stdio)`);
 
-  // Keep the scope open for the life of the server; close on SIGINT/SIGTERM.
-  const shutdown = async () => {
+  return async () => {
     try {
       await transport.close();
     } catch {
@@ -3787,11 +3865,97 @@ async function runMcpServer<ROut, E>(
     } catch {
       // ignore
     }
+  };
+}
+
+async function runServeCommand<ROut, E>(
+  appLayer: Layer.Layer<ROut, E, never>,
+  globals: GlobalCLIOptions,
+  serveArgs: string[],
+): Promise<void> {
+  const config = loadConfig();
+  const overrides = parseServeCommandOptions(serveArgs);
+  const serverConfig = resolveServerConfig(config.server, overrides);
+
+  if (serverConfig.auth.enabled && !serverConfig.auth.token) {
+    throw new CLIError(
+      "INVALID_CONFIG",
+      "Auth is enabled but no token is configured. Set config.server.auth.token or pass --auth-token.",
+      {
+        configPath: resolveConfigPath(),
+      },
+    );
+  }
+
+  const transport = new WebStandardStreamableHTTPServerTransport({
+    sessionIdGenerator: () => crypto.randomUUID(),
+  });
+  const closeMcp = await connectMcpServer(appLayer, globals, transport);
+
+  const listener = Bun.serve({
+    hostname: serverConfig.host,
+    port: serverConfig.port,
+    fetch: async (request: Request): Promise<Response> => {
+      const url = new URL(request.url);
+
+      if (url.pathname === "/health") {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            host: serverConfig.host,
+            port: serverConfig.port,
+            auth: { enabled: serverConfig.auth.enabled },
+          }),
+          {
+            status: 200,
+            headers: {
+              "content-type": "application/json",
+            },
+          },
+        );
+      }
+
+      if (url.pathname !== "/mcp") {
+        return new Response("Not Found", { status: 404 });
+      }
+
+      if (!isBearerTokenAuthorized(request.headers, serverConfig.auth)) {
+        return new Response("Unauthorized", {
+          status: 401,
+          headers: {
+            "WWW-Authenticate": "Bearer",
+          },
+        });
+      }
+
+      return transport.handleRequest(request);
+    },
+  });
+
+  console.error(
+    `[pdf-brain:serve] listening on http://${serverConfig.host}:${serverConfig.port}/mcp`,
+  );
+  console.error(
+    `[pdf-brain:serve] auth ${
+      serverConfig.auth.enabled ? "enabled (bearer token)" : "disabled"
+    }`,
+  );
+
+  const shutdown = async () => {
+    try {
+      listener.stop(true);
+    } catch {
+      // ignore
+    }
+    await closeMcp();
     process.exit(0);
   };
 
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
+
+  // Keep process alive until shutdown signal.
+  await new Promise(() => {});
 }
 
 // ============================================================================

@@ -24,6 +24,31 @@ export interface AgentErrorShape {
   details?: unknown;
 }
 
+export interface ServerAuthConfig {
+  enabled: boolean;
+  token?: string;
+}
+
+export interface ServerConfigShape {
+  host: string;
+  port: number;
+  auth: ServerAuthConfig;
+}
+
+export interface ServerConfigOverrides {
+  host?: string;
+  port?: number;
+  authToken?: string;
+}
+
+export const DEFAULT_SERVER_CONFIG: ServerConfigShape = {
+  host: "127.0.0.1",
+  port: 3838,
+  auth: {
+    enabled: false,
+  },
+};
+
 export type AgentEnvelope<T> =
   | {
       ok: true;
@@ -50,3 +75,36 @@ export function toJsonLine(
   return JSON.stringify(value, null, pretty ? 2 : 0) + "\n";
 }
 
+export function resolveServerConfig(
+  config: Partial<ServerConfigShape> | undefined,
+  overrides?: ServerConfigOverrides
+): ServerConfigShape {
+  const host = overrides?.host ?? config?.host ?? DEFAULT_SERVER_CONFIG.host;
+  const port = overrides?.port ?? config?.port ?? DEFAULT_SERVER_CONFIG.port;
+
+  const authEnabled =
+    typeof overrides?.authToken === "string"
+      ? true
+      : config?.auth?.enabled ?? DEFAULT_SERVER_CONFIG.auth.enabled;
+  const authToken = overrides?.authToken ?? config?.auth?.token;
+
+  return {
+    host,
+    port,
+    auth: {
+      enabled: authEnabled,
+      token: authToken,
+    },
+  };
+}
+
+export function isBearerTokenAuthorized(
+  headers: Headers,
+  auth: ServerAuthConfig
+): boolean {
+  if (!auth.enabled) return true;
+  if (!auth.token) return false;
+  const authorization = headers.get("authorization");
+  if (!authorization) return false;
+  return authorization === `Bearer ${auth.token}`;
+}

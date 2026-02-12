@@ -45,7 +45,7 @@
       "title": "Network listener config for Tailscale/remote access",
       "description": "Make the MCP server and any HTTP endpoints configurable for network access (not just localhost).\n\n1. Update config schema with `server` section:\n   ```\n   server: {\n     host: \"0.0.0.0\",  // default: \"127.0.0.1\" for local-only\n     port: 3838,        // default port\n     auth: {\n       enabled: false,\n       token?: string   // simple bearer token auth\n     }\n   }\n   ```\n\n2. Update `src/agent/protocol.ts` (MCP server) to respect host/port config\n3. Add simple bearer token middleware if auth.enabled\n4. Add `pdf-brain serve` CLI command that starts the MCP server with network config\n   - `--host` and `--port` CLI flags override config\n   - `--auth-token` flag for quick token setup\n5. Update README with Tailscale usage example:\n   ```\n   # On clanker-001 (Tailscale)\n   pdf-brain serve --host 0.0.0.0 --port 3838\n   \n   # From Mac\n   pdf-brain search \"query\" --remote http://clanker-001:3838\n   ```\n\nThis enables serving pdf-brain over Tailscale network so other machines can query it.",
       "priority": 4,
-      "passes": false,
+      "passes": true,
       "validationCommand": "cd /home/joel/Code/joelhooks/pdf-library && bun test 2>&1 | grep -E '(pass|fail)' | tail -5",
       "targetFiles": [
         "protocol.ts",
@@ -56,7 +56,7 @@
   ],
   "metadata": {
     "createdAt": "2026-02-11T23:52:26.179Z",
-    "totalIterations": 3,
-    "lastIteration": "2026-02-12T00:27:37.853Z"
+    "totalIterations": 4,
+    "lastIteration": "2026-02-12T00:32:42.172Z"
   }
 }
