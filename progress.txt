@@ -175,3 +175,13 @@ Completed: Network listener config for Tailscale/remote access
 Files: .ralph-context.json, .ralph-iterations.jsonl, prd.json, progress.txt, src/services/EmbeddingProvider.ts, src/services/OpenAIEmbedding.test.ts, src/services/OpenAIEmbedding.ts, src/types.ts, src/agent/protocol.ts, src/cli.contract.test.ts, src/cli.ts, src/types.config.test.ts
 Summary: I’ve implemented `Config.server` defaults in `src/types.ts`. Next I’m updating `src/agent/protocol.ts` with server config resolution and bearer auth helpers used by the new `serve` path.
 ⚠️ LAZY LEARNINGS: Structured learnings too short (0 chars, minimum 50)
+
+---
+[2026-02-12T00:33:09.873Z]
+Failed: OpenAI embedding adapter for EmbeddingProvider [verification_rejected]
+Validation: (pass) cleanup integration > cleanup is idempotent [1.00ms]
+1 tests failed:
+(fail) MCP Tool Output Contract > mcp tools return structuredContent matching the agent envelope schema [932.00ms]
+ 282 pass
+ 1 fail
+Codex: Both target files are now updated and the temporary TDD scaffolding is removed. I’m running the exact required validation command now.

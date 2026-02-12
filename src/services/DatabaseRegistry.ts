@@ -21,6 +21,12 @@ const MODEL_DIMENSIONS: Record<string, number> = {
   "snowflake-arctic-embed": 1024,
   "bge-base-en": 768,
   "bge-large-en": 1024,
+  "text-embedding-3-small": 1536,
+  "text-embedding-3-large": 3072,
+  "text-embedding-ada-002": 1536,
+  "openai/text-embedding-3-small": 1536,
+  "openai/text-embedding-3-large": 3072,
+  "openai/text-embedding-ada-002": 1536,
 };
 
 function getModelDimension(model: string): number {

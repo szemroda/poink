@@ -89,7 +89,7 @@ import {
   resolveServerConfig,
   toJsonLine,
 } from "./agent/protocol.js";
-import { getLogLevel, setLogLevel } from "./logger.js";
+import { getLogLevel, setLogLevel, logInfo } from "./logger.js";
 
 /**
  * Check if a string is a URL
@@ -3405,15 +3405,22 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
             }
 
             // Non-destructive: perform an atomic in-place rebuild (doc upsert + chunk/embedding replace).
-            yield* library.replace(
-              doc.path,
-              new AddOptions({
-                title: doc.title,
-                tags: doc.tags.length > 0 ? doc.tags : undefined,
-                metadata: doc.metadata,
-                addedAt: doc.addedAt,
-              }),
+            const replaceResult = yield* Effect.either(
+              library.replace(
+                doc.path,
+                new AddOptions({
+                  title: doc.title,
+                  tags: doc.tags.length > 0 ? doc.tags : undefined,
+                  metadata: doc.metadata,
+                  addedAt: doc.addedAt,
+                }),
+              ),
             );
+            if (replaceResult._tag === "Left") {
+              logInfo(`⚠ Rechunk failed for "${doc.title}": ${String(replaceResult.left)}`);
+              errors++;
+              continue;
+            }
           } catch {
             errors++;
           }

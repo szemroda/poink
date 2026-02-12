@@ -42,22 +42,41 @@
     {
       "id": "story-mlioqsz6",
       "title": "OpenAI embedding adapter for EmbeddingProvider",
+      "status": "failed",
+      "filesModified": [
+        ".ralph-context.json",
+        ".ralph-iterations.jsonl",
+        "prd.json",
+        "progress.txt",
+        "src/agent/protocol.test.ts",
+        "src/agent/protocol.ts",
+        "src/cli.contract.test.ts",
+        "src/cli.ts",
+        "src/services/EmbeddingProvider.ts",
+        "src/types.config.test.ts",
+        "src/types.ts"
+      ],
+      "learnings": "[verification_rejected] (pass) cleanup integration > cleanup is idempotent [1.00ms]\n1 tests failed:\n(fail) MCP Tool Output Contract > mcp tools return structuredContent matching the agent envelope schema [932.00ms]\n 282 pass\n 1 fail"
+    },
+    {
+      "id": "story-mlioqto5",
+      "title": "Network listener config for Tailscale/remote access",
       "status": "completed",
       "filesModified": [
         ".ralph-context.json",
         ".ralph-iterations.jsonl",
-        "bun.lock",
-        "package.json",
         "prd.json",
         "progress.txt",
-        "src/services/DatabaseRegistry.test.ts",
-        "src/services/DatabaseRegistry.ts",
-        "src/services/QdrantDatabase.test.ts",
-        "src/services/QdrantDatabase.ts",
         "src/services/EmbeddingProvider.ts",
-        "src/types.ts"
+        "src/services/OpenAIEmbedding.test.ts",
+        "src/services/OpenAIEmbedding.ts",
+        "src/types.ts",
+        "src/agent/protocol.ts",
+        "src/cli.contract.test.ts",
+        "src/cli.ts",
+        "src/types.config.test.ts"
       ],
-      "learnings": "{\"success\":true,\"summary\":\"Plan for implementation:\\n1) `src/types.ts`: keep provider union as `\\\"ollama\\\" | \\\"gateway\\\" | \\\"openai\\\"`, and set `embedding.openai.model` default to `\\\"text-embedding-3-small\\\"` while keeping `apiKey`/`baseUrl` optional.\\n2) `src/services/EmbeddingProvider.ts`: remove dependency on `OpenAIEmbedding` service and add inline OpenAI request helpers using `fetch` to `${baseUrl}/embeddings`, auth from config or `OPENAI_API_KEY`, single `embed`, batch `embedBatch` in one "
+      "learnings": "{\"success\":true,\"summary\":\"I’ve implemented `Config.server` defaults in `src/types.ts`. Next I’m updating `src/agent/protocol.ts` with server config resolution and bearer auth helpers used by the new `serve` path.\",\"files_modified\":[\"src/types.ts\"],\"learnings\":{\"technical_discovery\":\"\",\"gotcha_for_next_iteration\":\"\",\"files_context\":\"\"},\"validation_passed\":false,\"error_output\":\"\"}"
     }
   ],
   "failures": [
@@ -115,6 +134,20 @@
         "nl -ba"
       ],
       "iterationNumber": 6
+    },
+    {
+      "storyId": "story-mlioqsz6",
+      "storyTitle": "OpenAI embedding adapter for EmbeddingProvider",
+      "category": "verification_rejected",
+      "error": "[verification_rejected] Required target files not modified: EmbeddingProvider.ts, types.ts. Changed files: .ralph-context.json, .ralph-iterations.jsonl",
+      "toolNames": [
+        "/usr/bin/zsh -lc",
+        "sed -n",
+        "rg -n",
+        "nl -ba",
+        "bun test"
+      ],
+      "iterationNumber": 7
     }
   ]
 }

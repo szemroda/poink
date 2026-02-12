@@ -18,6 +18,22 @@ const DEFAULT_EMBEDDING_DIM = 1024;
 const DOCUMENT_VECTOR_DIM = 1;
 const SCROLL_PAGE_SIZE = 256;
 
+/**
+ * Convert a short hex ID (e.g. "ee8fe2f3c810") to a valid UUID for Qdrant.
+ * Pads/truncates to 32 hex chars and formats as UUID v4-ish.
+ */
+function hexToUuid(hex: string): string {
+  const clean = hex.replace(/[^0-9a-fA-F]/g, "").padEnd(32, "0").slice(0, 32);
+  return `${clean.slice(0, 8)}-${clean.slice(8, 12)}-${clean.slice(12, 16)}-${clean.slice(16, 20)}-${clean.slice(20, 32)}`;
+}
+
+/**
+ * Convert a UUID back to the original short hex ID.
+ */
+function uuidToHex(uuid: string): string {
+  return uuid.replace(/-/g, "").replace(/0+$/, "") || "0";
+}
+
 type QdrantPayload = Record<string, unknown>;
 type QdrantPoint = {
   id: string | number;
@@ -104,13 +120,18 @@ export class QdrantDatabase {
           await ensureCollections();
           return run();
         },
-        catch: (error) => new DatabaseError({ reason: String(error) }),
+        catch: (error) => {
+          const msg = error instanceof Error ? error.message : String(error);
+          const stack = error instanceof Error ? error.stack : undefined;
+          console.error(`[QdrantDatabase] Error:`, msg, stack ? `\n${stack}` : '');
+          return new DatabaseError({ reason: msg });
+        },
       });
 
     const readDocumentsByIds = async (docIds: string[]): Promise<Map<string, QdrantPayload>> => {
       if (docIds.length === 0) return new Map();
       const records = await client.retrieve(documentsCollection, {
-        ids: docIds,
+        ids: docIds.map(hexToUuid),
         with_payload: true,
         with_vector: false,
       });
@@ -118,7 +139,7 @@ export class QdrantDatabase {
       const map = new Map<string, QdrantPayload>();
       for (const record of records as unknown as QdrantPoint[]) {
         if (record.payload) {
-          map.set(String(record.id), record.payload);
+          map.set(uuidToHex(String(record.id)), record.payload);
         }
       }
       return map;
@@ -131,7 +152,7 @@ export class QdrantDatabase {
             wait: true,
             points: [
               {
-                id: doc.id,
+                id: hexToUuid(doc.id),
                 vector: [0],
                 payload: serializeDocument(doc),
               },
@@ -142,7 +163,7 @@ export class QdrantDatabase {
       getDocument: (id) =>
         withDb(async () => {
           const records = await client.retrieve(documentsCollection, {
-            ids: [id],
+            ids: [hexToUuid(id)],
             with_payload: true,
             with_vector: false,
           });
@@ -202,7 +223,7 @@ export class QdrantDatabase {
         withDb(async () => {
           await client.delete(documentsCollection, {
             wait: true,
-            points: [id],
+            points: [hexToUuid(id)],
           });
 
           await client.delete(chunksCollection, {
@@ -221,7 +242,7 @@ export class QdrantDatabase {
       updateTags: (id, tags) =>
         withDb(async () => {
           await client.setPayload(documentsCollection, {
-            points: [id],
+            points: [hexToUuid(id)],
             payload: { tags },
           });
 
@@ -249,10 +270,10 @@ export class QdrantDatabase {
             const docPayload = docsById.get(chunk.docId);
 
             return {
-              id: chunk.id,
+              id: hexToUuid(chunk.id),
               vector: zeroVector(embeddingDimension),
               payload: {
-                id: chunk.id,
+                id: hexToUuid(chunk.id),
                 docId: chunk.docId,
                 page: chunk.page,
                 chunkIndex: chunk.chunkIndex,
@@ -275,7 +296,7 @@ export class QdrantDatabase {
       getChunk: (chunkId) =>
         withDb(async () => {
           const records = await client.retrieve(chunksCollection, {
-            ids: [chunkId],
+            ids: [hexToUuid(chunkId)],
             with_payload: true,
             with_vector: false,
           });
@@ -317,7 +338,7 @@ export class QdrantDatabase {
         withDb(async () => {
           if (embeddings.length === 0) return;
 
-          const ids = embeddings.map((item) => item.chunkId);
+          const ids = embeddings.map((item) => hexToUuid(item.chunkId));
           const existing = await client.retrieve(chunksCollection, {
             ids,
             with_payload: true,
@@ -336,10 +357,10 @@ export class QdrantDatabase {
 
             if (!existingPayload) {
               return {
-                id: item.chunkId,
+                id: hexToUuid(item.chunkId),
                 vector: item.embedding,
                 payload: {
-                  id: item.chunkId,
+                  id: hexToUuid(item.chunkId),
                   docId: "",
                   page: 0,
                   chunkIndex: 0,
@@ -354,7 +375,7 @@ export class QdrantDatabase {
             }
 
             return {
-              id: item.chunkId,
+              id: hexToUuid(item.chunkId),
               vector: item.embedding,
               payload: {
                 ...existingPayload,
@@ -376,7 +397,7 @@ export class QdrantDatabase {
             wait: true,
             points: [
               {
-                id: doc.id,
+                id: hexToUuid(doc.id),
                 vector: [0],
                 payload: serializeDocument(doc),
               },
@@ -399,10 +420,10 @@ export class QdrantDatabase {
             await client.upsert(chunksCollection, {
               wait: true,
               points: chunks.map((chunk) => ({
-                id: chunk.id,
+                id: hexToUuid(chunk.id),
                 vector: zeroVector(embeddingDimension),
                 payload: {
-                  id: chunk.id,
+                  id: hexToUuid(chunk.id),
                   docId: chunk.docId,
                   page: chunk.page,
                   chunkIndex: chunk.chunkIndex,
@@ -425,11 +446,11 @@ export class QdrantDatabase {
             await client.upsert(chunksCollection, {
               wait: true,
               points: chunks.map((chunk) => ({
-                id: chunk.id,
+                id: hexToUuid(chunk.id),
                 vector:
                   embeddingMap.get(chunk.id) ?? zeroVector(embeddingDimension),
                 payload: {
-                  id: chunk.id,
+                  id: hexToUuid(chunk.id),
                   docId: chunk.docId,
                   page: chunk.page,
                   chunkIndex: chunk.chunkIndex,
@@ -804,7 +825,7 @@ async function scrollAll(
 
 function serializeDocument(doc: Document): QdrantPayload {
   return {
-    id: doc.id,
+    id: hexToUuid(doc.id),
     title: doc.title,
     path: doc.path,
     addedAt: doc.addedAt.toISOString(),
@@ -818,7 +839,7 @@ function serializeDocument(doc: Document): QdrantPayload {
 
 function payloadToDocument(id: string | number, payload: QdrantPayload): Document {
   return new Document({
-    id: String(id),
+    id: uuidToHex(String(id)),
     title: asString(payload.title),
     path: asString(payload.path),
     addedAt: new Date(asString(payload.addedAt)),
@@ -832,7 +853,7 @@ function payloadToDocument(id: string | number, payload: QdrantPayload): Documen
 
 function payloadToChunk(id: string | number, payload: QdrantPayload): PDFChunk {
   return new PDFChunk({
-    id: String(id),
+    id: uuidToHex(String(id)),
     docId: asString(payload.docId),
     page: asNumber(payload.page),
     chunkIndex: asNumber(payload.chunkIndex),
