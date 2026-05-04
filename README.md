@@ -136,6 +136,9 @@ pdf-brain add https://raw.githubusercontent.com/user/repo/main/README.md
 # Add with manual tags
 pdf-brain add document.pdf --tags "ai,agents,research"
 
+# Add with auto-tagging only (faster)
+pdf-brain add document.pdf --auto-tag
+
 # Add with AI enrichment (extracts title, summary, concepts)
 pdf-brain add document.pdf --enrich
 pdf-brain add notes.md --enrich

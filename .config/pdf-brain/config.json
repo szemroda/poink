@@ -1,0 +1,36 @@
+{
+  "embedding": {
+    "provider": "ollama",
+    "model": "mxbai-embed-large",
+    "openai": {
+      "model": "text-embedding-3-small"
+    }
+  },
+  "enrichment": {
+    "provider": "ollama",
+    "model": "llama3.2"
+  },
+  "judge": {
+    "provider": "ollama",
+    "model": "llama3.2"
+  },
+  "ollama": {
+    "host": "http://localhost:11434",
+    "autoInstall": true
+  },
+  "gateway": {},
+  "database": {
+    "backend": "libsql",
+    "qdrant": {
+      "url": "http://localhost:6333",
+      "collection": "pdf-brain"
+    }
+  },
+  "server": {
+    "host": "127.0.0.1",
+    "port": 3838,
+    "auth": {
+      "enabled": false
+    }
+  }
+}

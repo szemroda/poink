@@ -908,29 +908,29 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
 
       yield* Console.log(`Adding: ${localPath}`);
 
-      // Enrich by default unless --no-enrich is passed
-      const enrich = opts["no-enrich"] !== true;
+      const autoTag = opts["auto-tag"] === true;
+      const enrich = opts.enrich === true;
       const forceProvider = opts.provider as "ollama" | "anthropic" | undefined;
       let enrichedTitle = title;
       let enrichedTags = tags || [];
 
-      if (enrich) {
-        const providerLabel = forceProvider || "auto";
-        yield* Console.log(`  Enriching with LLM (${providerLabel})...`);
+      if (autoTag || enrich) {
         const tagger = yield* AutoTagger;
         const pdfExtractor = yield* PDFExtractor;
         const ext = extname(localPath).toLowerCase();
         let content: string | undefined;
 
         if (ext === ".pdf") {
-          const extractResult = yield* Effect.either(
-            pdfExtractor.extract(localPath)
-          );
-          if (extractResult._tag === "Right") {
-            const pages = extractResult.right.pages.slice(0, 10);
-            content = pages.map((p) => p.text).join("\n\n");
-            if (content.length > 8000) {
-              content = content.slice(0, 8000);
+          if (enrich) {
+            const extractResult = yield* Effect.either(
+              pdfExtractor.extract(localPath)
+            );
+            if (extractResult._tag === "Right") {
+              const pages = extractResult.right.pages.slice(0, 10);
+              content = pages.map((p) => p.text).join("\n\n");
+              if (content.length > 8000) {
+                content = content.slice(0, 8000);
+              }
             }
           }
         } else if (ext === ".md" || ext === ".markdown") {
@@ -942,7 +942,9 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
           }
         }
 
-        if (content) {
+        if (enrich && content) {
+          const providerLabel = forceProvider || "auto";
+          yield* Console.log(`  Enriching with LLM (${providerLabel})...`);
           const enrichResult = yield* tagger.enrich(localPath, content, {
             provider: forceProvider,
           });
@@ -959,6 +961,18 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
               `  Auto-accepted ${enrichResult.proposedConcepts.length} concept(s)`
             );
           }
+        } else if (enrich && !content) {
+          yield* Console.log(`  No content extracted, using heuristics`);
+          const tagResult = yield* tagger.generateTags(localPath, undefined, {
+            heuristicsOnly: true,
+          });
+          enrichedTags = [...enrichedTags, ...tagResult.allTags];
+        } else {
+          yield* Console.log(`  Auto-tagging...`);
+          const tagResult = yield* tagger.generateTags(localPath, content, {
+            heuristicsOnly: !content,
+          });
+          enrichedTags = [...enrichedTags, ...tagResult.allTags];
         }
       }
 

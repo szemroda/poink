@@ -57,7 +57,7 @@ ${docCount} documents indexed. Every command returns contextual next-action hint
   pdf-brain taxonomy add <id> --label "<name>" [--broader <parent>]
 
 ### Document Management
-  pdf-brain add <path|url> [--tags t1,t2] [--no-enrich]
+  pdf-brain add <path|url> [--tags t1,t2] [--enrich] [--auto-tag]
   pdf-brain remove "<id|title>"
   pdf-brain tag "<id|title>" "tag1,tag2"
   pdf-brain ingest <dir> [--enrich] [--auto-tag] [--recursive]

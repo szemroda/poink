@@ -358,3 +358,31 @@ describe("CLI integration: cluster command with --soft flag", () => {
   // The cluster command implementation is part of a separate cell/PR
   // This cell focuses on CLI argument parsing and wiring flags to services
 });
+
+describe("CLI integration: add and ingest enrichment flags", () => {
+  test("parseArgs handles add with --enrich and --auto-tag", () => {
+    const args = ["add", "paper.pdf", "--enrich", "--auto-tag"];
+    const opts = parseArgs(args.slice(2));
+
+    expect(opts.enrich).toBe(true);
+    expect(opts["auto-tag"]).toBe(true);
+    expect(opts["no-enrich"]).toBeUndefined();
+  });
+
+  test("parseArgs does not enable enrichment by default for add", () => {
+    const args = ["add", "paper.pdf"];
+    const opts = parseArgs(args.slice(2));
+
+    expect(opts.enrich).toBeUndefined();
+    expect(opts["auto-tag"]).toBeUndefined();
+    expect(opts["no-enrich"]).toBeUndefined();
+  });
+
+  test("parseArgs handles ingest with --enrich and --auto-tag", () => {
+    const args = ["ingest", "./docs", "--enrich", "--auto-tag"];
+    const opts = parseArgs(args.slice(2));
+
+    expect(opts.enrich).toBe(true);
+    expect(opts["auto-tag"]).toBe(true);
+  });
+});
