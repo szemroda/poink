@@ -2,14 +2,13 @@
  * PDF Extraction Service
  */
 
-import { Effect, Context, Layer } from "effect";
-import { $ } from "bun";
+import { Context, Effect, Layer } from "effect";
+import { getData } from "pdf-parse/worker";
 import {
+  LibraryConfig,
   PDFExtractionError,
   PDFNotFoundError,
-  LibraryConfig,
 } from "../types.js";
-import { existsSync } from "fs";
 
 // ============================================================================
 // Service Definition
@@ -35,10 +34,10 @@ export class PDFExtractor extends Context.Tag("PDFExtractor")<
   PDFExtractor,
   {
     readonly extract: (
-      path: string
+      path: string,
     ) => Effect.Effect<ExtractedPDF, PDFExtractionError | PDFNotFoundError>;
     readonly process: (
-      path: string
+      path: string,
     ) => Effect.Effect<
       { pageCount: number; chunks: ProcessedChunk[] },
       PDFExtractionError | PDFNotFoundError
@@ -50,19 +49,37 @@ export class PDFExtractor extends Context.Tag("PDFExtractor")<
 // Implementation
 // ============================================================================
 
-const EXTRACT_SCRIPT = `
-import sys
-import json
-from pypdf import PdfReader
+function resolvePath(path: string): string {
+  return path.startsWith("~")
+    ? path.replace("~", process.env.HOME || "")
+    : path;
+}
 
-reader = PdfReader(sys.argv[1])
-pages = []
-for i, page in enumerate(reader.pages):
-    text = page.extract_text() or ""
-    pages.append({"page": i + 1, "text": text})
+const pdfParseModulePromise = (async () => {
+  const { PDFParse } = await import("pdf-parse");
+  PDFParse.setWorker(getData());
+  return PDFParse;
+})();
 
-print(json.dumps({"pageCount": len(reader.pages), "pages": pages}))
-`;
+async function extractFromResolvedPath(path: string): Promise<ExtractedPDF> {
+  // Bun is reliable here when parsing local buffers. URL loading was less stable.
+  const data = await Bun.file(path).bytes();
+  const PDFParse = await pdfParseModulePromise;
+  const parser = new PDFParse({ data });
+
+  try {
+    const result = await parser.getText({ pageJoiner: "" });
+    return {
+      pageCount: result.total,
+      pages: result.pages.map(({ num, text }) => ({
+        page: num,
+        text,
+      })),
+    };
+  } finally {
+    await parser.destroy();
+  }
+}
 
 /**
  * Sanitize text by removing null bytes that crash PostgreSQL TEXT columns
@@ -78,7 +95,7 @@ export function sanitizeText(text: string): string {
 export function chunkText(
   text: string,
   chunkSize: number,
-  chunkOverlap: number
+  chunkOverlap: number,
 ): string[] {
   const chunks: string[] = [];
 
@@ -113,7 +130,12 @@ export function chunkText(
     // - within a paragraph, join wrapped lines with spaces
     const paragraphs = t
       .split(/\n\s*\n+/)
-      .map((p) => p.replace(/\n+/g, " ").replace(/[ \t]+/g, " ").trim())
+      .map((p) =>
+        p
+          .replace(/\n+/g, " ")
+          .replace(/[ \t]+/g, " ")
+          .trim(),
+      )
       .filter(Boolean);
 
     return paragraphs.join("\n\n").trim();
@@ -184,22 +206,16 @@ export const PDFExtractorLive = Layer.effect(
       extract: (path: string) =>
         Effect.gen(function* () {
           // Resolve path
-          const resolvedPath = path.startsWith("~")
-            ? path.replace("~", process.env.HOME || "")
-            : path;
+          const resolvedPath = resolvePath(path);
 
-          if (!existsSync(resolvedPath)) {
+          if (!Bun.file(resolvedPath).exists()) {
             return yield* Effect.fail(
-              new PDFNotFoundError({ path: resolvedPath })
+              new PDFNotFoundError({ path: resolvedPath }),
             );
           }
 
           const result = yield* Effect.tryPromise({
-            try: async () => {
-              const output =
-                await $`uv run --with pypdf python3 -c ${EXTRACT_SCRIPT} ${resolvedPath}`.text();
-              return JSON.parse(output) as ExtractedPDF;
-            },
+            try: async () => extractFromResolvedPath(resolvedPath),
             catch: (e) =>
               new PDFExtractionError({ path: resolvedPath, reason: String(e) }),
           });
@@ -209,21 +225,17 @@ export const PDFExtractorLive = Layer.effect(
 
       process: (path: string) =>
         Effect.gen(function* () {
-          const resolvedPath = path.startsWith("~")
-            ? path.replace("~", process.env.HOME || "")
-            : path;
+          const resolvedPath = resolvePath(path);
 
-          if (!existsSync(resolvedPath)) {
+          if (!Bun.file(resolvedPath).exists()) {
             return yield* Effect.fail(
-              new PDFNotFoundError({ path: resolvedPath })
+              new PDFNotFoundError({ path: resolvedPath }),
             );
           }
 
           const extracted = yield* Effect.tryPromise({
             try: async () => {
-              const output =
-                await $`uv run --with pypdf python3 -c ${EXTRACT_SCRIPT} ${resolvedPath}`.text();
-              return JSON.parse(output) as ExtractedPDF;
+              return extractFromResolvedPath(resolvedPath);
             },
             catch: (e) =>
               new PDFExtractionError({ path: resolvedPath, reason: String(e) }),
@@ -235,7 +247,7 @@ export const PDFExtractorLive = Layer.effect(
             const pageChunks = chunkText(
               text,
               config.chunkSize,
-              config.chunkOverlap
+              config.chunkOverlap,
             );
             pageChunks.forEach((content, chunkIndex) => {
               allChunks.push({ page, chunkIndex, content });
@@ -245,5 +257,5 @@ export const PDFExtractorLive = Layer.effect(
           return { pageCount: extracted.pageCount, chunks: allChunks };
         }),
     };
-  })
+  }),
 );
