@@ -15,7 +15,6 @@ import {
   readFileSync,
   readdirSync,
   statSync,
-  rmSync,
 } from "fs";
 import { basename, extname, join, dirname } from "path";
 import { fileURLToPath } from "url";
@@ -40,11 +39,9 @@ try {
   );
   VERSION = pkg.version;
 } catch {
-  // Compiled binary — package.json not on disk.
-  // Version injected via --define at build time.
-  VERSION = typeof __PDF_BRAIN_VERSION__ !== "undefined" ? __PDF_BRAIN_VERSION__ : "0.0.0-compiled";
+  // Fallback for test or tooling contexts where package metadata is unavailable.
+  VERSION = "0.0.0";
 }
-declare const __PDF_BRAIN_VERSION__: string;
 import {
   PDFLibrary,
   makePDFLibraryLive,
@@ -62,7 +59,6 @@ import {
   resolveConfigPath,
   saveConfig,
 } from "./types.js";
-import { Migration, MigrationLive } from "./services/Migration.js";
 import { assessDocChunker } from "./chunking.js";
 import {
   TaxonomyService,
@@ -77,7 +73,6 @@ import {
 import { type CommandResult, generateHints, generateNextActions } from "./agent/hints.js";
 import { formatHintBlock } from "./agent/format.js";
 import { renderHelp } from "./agent/manifest.js";
-import { backgroundUpdateCheck, runUpdate } from "./updater.js";
 import {
   DEFAULT_SERVER_CONFIG,
   PDF_BRAIN_PROTOCOL_VERSION,
@@ -193,29 +188,6 @@ export function assessWALHealth(stats: {
 }
 
 /**
- * Corrupted directories check result
- */
-export interface CorruptedDirsResult {
-  healthy: boolean;
-  issues: string[];
-}
-
-/**
- * Check for corrupted directories (directories with " 2" suffix)
- * Known corruption patterns: "base 2", "pg_multixact 2"
- */
-export function checkCorruptedDirs(
-  libraryPath: string,
-  dirs: string[]
-): CorruptedDirsResult {
-  const corrupted = dirs.filter((d) => d.endsWith(" 2"));
-  return {
-    healthy: corrupted.length === 0,
-    issues: corrupted,
-  };
-}
-
-/**
  * Overall doctor health assessment result
  */
 export interface DoctorHealthResult {
@@ -241,7 +213,6 @@ export interface HealthCheck {
  */
 export function assessDoctorHealth(data: {
   walHealth: WALHealthResult;
-  corruptedDirs: CorruptedDirsResult;
   ollamaReachable: boolean;
   orphanedData: { chunks: number; embeddings: number };
   chunker: { missing: number; mismatch: number };
@@ -256,17 +227,6 @@ export function assessDoctorHealth(data: {
     details:
       data.walHealth.warnings.length > 0
         ? data.walHealth.warnings.join("; ")
-        : undefined,
-  });
-
-  // Corrupted directories check
-  checks.push({
-    name: "Corrupted Directories",
-    healthy: data.corruptedDirs.healthy,
-    severity: data.corruptedDirs.healthy ? "ok" : "error",
-    details:
-      data.corruptedDirs.issues.length > 0
-        ? `Found: ${data.corruptedDirs.issues.join(", ")}`
         : undefined,
   });
 
@@ -830,7 +790,6 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
               "Re-embed existing chunks in-place (updates embeddings only; does NOT remove/re-add documents)",
           },
           { name: "config", argv: ["config", "<subcommand>"], description: "Config show/get/set" },
-          { name: "update", argv: ["update"], description: "Self-update (text mode only)" },
           { name: "mcp", argv: ["mcp"], description: "Start MCP server (stdio)" },
           {
             name: "serve",
@@ -2017,12 +1976,11 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
 	      const config = LibraryConfig.fromEnv();
 	      const dbPath = config.dbPath;
 	      const walPath = `${dbPath}-wal`;
-	      const legacyLibraryPath = join(config.libraryPath, "library"); // pglite-era data dir
 
 	      yield* Console.log("🔍 Checking database health...\n");
 
-	      // Check if library exists (either libsql DB file or legacy pglite dir)
-	      if (!existsSync(dbPath) && !existsSync(legacyLibraryPath)) {
+	      // Check if library exists
+	      if (!existsSync(dbPath)) {
 	        yield* Console.log("✓ Library not initialized yet (nothing to check)");
 	        resultPayload = {
 	          healthy: true,
@@ -2052,15 +2010,7 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
 	        walHealth = { healthy: true, warnings: [] };
 	      }
 
-	      // 2. Check for corrupted directories
-	      const legacyDirs = existsSync(legacyLibraryPath)
-	        ? readdirSync(legacyLibraryPath)
-	        : [];
-	      const corruptedDirs = existsSync(legacyLibraryPath)
-	        ? checkCorruptedDirs(legacyLibraryPath, legacyDirs)
-	        : { healthy: true, issues: [] };
-
-      // 3. Check Ollama connectivity
+      // 2. Check Ollama connectivity
       let ollamaReachable = false;
       try {
         yield* library.checkReady();
@@ -2069,7 +2019,7 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
         ollamaReachable = false;
       }
 
-      // 4. Check for orphaned data
+      // 3. Check for orphaned data
       let orphanedData = { chunks: 0, embeddings: 0 };
       try {
         const repairResult = yield* library.repair();
@@ -2081,7 +2031,7 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
 	        // If repair fails, assume no orphans (database might not exist)
 	      }
 
-	      // 5. Check chunker metadata freshness (agent usefulness depends on this)
+	      // 4. Check chunker metadata freshness (agent usefulness depends on this)
 	      let chunkerMissing = 0;
 	      let chunkerMismatch = 0;
 	      const chunkerSample: Array<{ id: string; title: string; reason: string; code: string }> = [];
@@ -2111,7 +2061,6 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
 	      // Assess overall health
 	      const doctorHealth = assessDoctorHealth({
 	        walHealth,
-	        corruptedDirs,
 	        ollamaReachable,
 	        orphanedData,
 	        chunker: { missing: chunkerMissing, mismatch: chunkerMismatch },
@@ -2121,7 +2070,6 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
 	        healthy: doctorHealth.healthy,
 	        checks: doctorHealth.checks,
 	        walHealth,
-	        corruptedDirs,
 	        ollamaReachable,
 	        orphanedData,
 	        chunker: {
@@ -2166,19 +2114,6 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
         if (shouldFix) {
           yield* Console.log("🔧 Attempting auto-repair...\n");
 
-	          // Fix corrupted directories
-	          if (!corruptedDirs.healthy) {
-	            for (const dir of corruptedDirs.issues) {
-	              const dirPath = join(legacyLibraryPath, dir);
-	              try {
-	                rmSync(dirPath, { recursive: true, force: true });
-	                yield* Console.log(`  ✓ Removed corrupted directory: ${dir}`);
-	              } catch (error) {
-                yield* Console.log(`  ✗ Failed to remove ${dir}: ${error}`);
-              }
-            }
-          }
-
           // Fix orphaned data (already done via repair() call)
 	          if (orphanedData.chunks > 0 || orphanedData.embeddings > 0) {
 	            yield* Console.log(
@@ -2201,17 +2136,7 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
 
           if (!walHealth.healthy) {
             yield* Console.log(
-              "  WAL: Run CHECKPOINT or export/import to compact database"
-            );
-            yield* Console.log(
-              "       pdf-brain export --output backup.tar.gz"
-            );
-            yield* Console.log("       pdf-brain import backup.tar.gz --force");
-          }
-
-          if (!corruptedDirs.healthy) {
-            yield* Console.log(
-              `  Corrupted dirs: Run 'pdf-brain doctor --fix' to remove`
+              "  WAL: large write-ahead log detected; run a maintenance write or restart processes using the database"
             );
           }
 
@@ -2394,148 +2319,21 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
       };
       break;
     }
-
-	    case "export": {
-	      const opts = parseArgs(args.slice(1));
-	      const config = LibraryConfig.fromEnv();
-	      const outputPath =
-        (opts.output as string) ||
-        join(process.cwd(), "pdf-brain-export.tar.gz");
-
-      yield* Console.log(`Exporting library database...`);
-      yield* Console.log(`  Source: ${config.libraryPath}/library`);
-      yield* Console.log(`  Output: ${outputPath}`);
-
-      // Get stats first
-      const stats = yield* library.stats();
-      yield* Console.log(
-        `  Contents: ${stats.documents} docs, ${stats.chunks} chunks, ${stats.embeddings} embeddings`
+    case "export":
+    case "import":
+      return yield* Effect.fail(
+        new CLIError(
+          "UNSUPPORTED_COMMAND",
+          `${command} has been removed from this fork`,
+          {
+            command,
+            reason:
+              "The legacy backup/import flow depended on old repository distribution assumptions and has been intentionally removed during cleanup.",
+          }
+        )
       );
 
-      // Use tar to create archive
-	      const tarResult = Bun.spawnSync(
-	        ["tar", "-czf", outputPath, "-C", config.libraryPath, "library"],
-	        { stdout: "pipe", stderr: "pipe" }
-	      );
-	      if (tarResult.exitCode !== 0) {
-	        const stderr = tarResult.stderr.toString();
-	        yield* Console.error(`Export failed: ${stderr}`);
-	        return yield* Effect.fail(
-	          new CLIError("EXPORT_FAILED", "Export failed", {
-	            exitCode: tarResult.exitCode,
-	            stderr,
-	            outputPath,
-	          })
-	        );
-	      }
-
-      // Get file size
-      const fileSize = Bun.file(outputPath).size;
-      const sizeMB = (fileSize / 1024 / 1024).toFixed(1);
-
-	      yield* Console.log(`\n✓ Exported to ${outputPath} (${sizeMB} MB)`);
-	      yield* Console.log(`\nTo import on another machine:`);
-	      yield* Console.log(`  pdf-brain import ${basename(outputPath)}`);
-	      resultPayload = {
-	        outputPath,
-	        sizeBytes: fileSize,
-	        sizeMB: Number(sizeMB),
-	        sourceDir: join(config.libraryPath, "library"),
-	      };
-	      break;
-	    }
-
-	    case "import": {
-	      const importFile = args[1];
-	      if (!importFile) {
-	        yield* Console.error("Error: Import file required");
-	        yield* Console.error("Usage: pdf-brain import <file.tar.gz> [--force]");
-	        return yield* Effect.fail(
-	          new CLIError("INVALID_ARGS", "Import file required", {
-	            command: "import",
-	            hint: "pdf-brain import ./pdf-brain-export.tar.gz --force",
-	          })
-	        );
-	      }
-
-	      if (!existsSync(importFile)) {
-	        yield* Console.error(`Error: File not found: ${importFile}`);
-	        return yield* Effect.fail(
-	          new CLIError("NOT_FOUND", `File not found: ${importFile}`, {
-	            importFile,
-	          })
-	        );
-	      }
-
-      const opts = parseArgs(args.slice(2));
-      const config = LibraryConfig.fromEnv();
-      const libraryDir = join(config.libraryPath, "library");
-
-	      // Check if library already exists
-	      if (existsSync(libraryDir) && !opts.force) {
-	        yield* Console.error(`Error: Library already exists at ${libraryDir}`);
-	        yield* Console.error("Use --force to overwrite");
-	        return yield* Effect.fail(
-	          new CLIError("ALREADY_EXISTS", "Library already exists", {
-	            libraryDir,
-	            hint: "pdf-brain import <file.tar.gz> --force",
-	          })
-	        );
-	      }
-
-      yield* Console.log(`Importing library database...`);
-      yield* Console.log(`  Source: ${importFile}`);
-      yield* Console.log(`  Target: ${config.libraryPath}`);
-
-      // Ensure parent directory exists
-      if (!existsSync(config.libraryPath)) {
-        mkdirSync(config.libraryPath, { recursive: true });
-      }
-
-      // Remove existing if force
-	      if (existsSync(libraryDir) && opts.force) {
-	        yield* Console.log(`  Removing existing library...`);
-	        const rmResult = Bun.spawnSync(["rm", "-rf", libraryDir]);
-	        if (rmResult.exitCode !== 0) {
-	          yield* Console.error("Failed to remove existing library");
-	          return yield* Effect.fail(
-	            new CLIError("IO_ERROR", "Failed to remove existing library", {
-	              libraryDir,
-	              exitCode: rmResult.exitCode,
-	            })
-	          );
-	        }
-	      }
-
-      // Extract archive
-      const tarResult = Bun.spawnSync(
-        ["tar", "-xzf", importFile, "-C", config.libraryPath],
-        { stdout: "pipe", stderr: "pipe" }
-      );
-	      if (tarResult.exitCode !== 0) {
-	        const stderr = tarResult.stderr.toString();
-	        yield* Console.error(`Import failed: ${stderr}`);
-	        return yield* Effect.fail(
-	          new CLIError("IMPORT_FAILED", "Import failed", {
-	            exitCode: tarResult.exitCode,
-	            stderr,
-	            importFile,
-	            targetDir: config.libraryPath,
-	          })
-	        );
-	      }
-
-	      yield* Console.log(`\n✓ Library imported successfully`);
-	      yield* Console.log(`\nRun 'pdf-brain stats' to verify`);
-	      resultPayload = {
-	        importFile,
-	        targetDir: config.libraryPath,
-	        overwritten: Boolean(opts.force),
-	      };
-	      break;
-	    }
-
-	    case "ingest": {
+    case "ingest": {
       // Support multiple directories: pdf-brain ingest dir1 dir2 dir3 --enrich
       const directories: string[] = [];
       let i = 1;
@@ -3899,6 +3697,24 @@ async function connectMcpServer<ROut, E>(
   };
 }
 
+async function runMcpServer<ROut, E>(
+  appLayer: Layer.Layer<ROut, E, never>,
+  globals: GlobalCLIOptions,
+): Promise<void> {
+  const transport = new StdioServerTransport();
+  const closeMcp = await connectMcpServer(appLayer, globals, transport);
+
+  const shutdown = async () => {
+    await closeMcp();
+    process.exit(0);
+  };
+
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
+
+  await new Promise(() => {});
+}
+
 async function runServeCommand<ROut, E>(
   appLayer: Layer.Layer<ROut, E, never>,
   globals: GlobalCLIOptions,
@@ -4029,52 +3845,7 @@ if (import.meta.main) {
     // stderr-only logging, opt-in.
     setLogLevel(globals.logLevel);
 
-    // Background update checks are disabled by default. If you really want them,
-    // set `PDF_BRAIN_BACKGROUND_UPDATE=1`.
-    backgroundUpdateCheck(VERSION);
-
     const command = args[0];
-
-	    // Update is an explicit human-ish command. If you want the full interactive output,
-	    // force `--format text`.
-	    if (command === "update") {
-      if (globals.format !== "text") {
-        writeEnvelope(
-          globals.format,
-          {
-            ok: false,
-            command: "update",
-            protocolVersion: PDF_BRAIN_PROTOCOL_VERSION,
-            error: {
-              code: "UNSUPPORTED_FORMAT",
-              message:
-                "update currently requires --format text (prints progress output).",
-              details: { hint: "pdf-brain update --format text" },
-            },
-            nextActions: [
-              {
-                kind: "shell",
-                argv: ["pdf-brain", "update", "--format", "text"],
-                description: "Run update with human-readable output",
-              },
-            ],
-            meta: { pdfBrainVersion: VERSION },
-          },
-          globals.pretty
-        );
-        process.exit(1);
-        return;
-      }
-
-      // runUpdate handles its own printing in text mode.
-      try {
-        await runUpdate(VERSION);
-      } catch (err) {
-        console.error(`Update failed: ${err}`);
-        process.exit(1);
-      }
-	      return;
-	    }
 
 	    // MCP server mode: exposes pdf-brain as an agent tool server (stdio).
 	    // IMPORTANT: MCP uses stdout for protocol messages. Do not write envelopes.
@@ -4087,10 +3858,7 @@ if (import.meta.main) {
         const pdfLibraryLive = makePDFLibraryLive();
 	      const AppLayer = Layer.merge(
 	        Layer.merge(Layer.merge(pdfLibraryLive, AutoTaggerLive), PDFExtractorLive),
-	        Layer.merge(
-	          Layer.merge(TaxonomyServiceLive, EmbeddingProviderFullLive),
-	          MigrationLive
-	        )
+	        Layer.merge(TaxonomyServiceLive, EmbeddingProviderFullLive)
 	      );
 	
 	      try {
@@ -4111,10 +3879,7 @@ if (import.meta.main) {
     const pdfLibraryLive = makePDFLibraryLive();
     const AppLayer = Layer.merge(
       Layer.merge(Layer.merge(pdfLibraryLive, AutoTaggerLive), PDFExtractorLive),
-      Layer.merge(
-        Layer.merge(TaxonomyServiceLive, EmbeddingProviderFullLive),
-        MigrationLive
-      )
+      Layer.merge(TaxonomyServiceLive, EmbeddingProviderFullLive)
     );
 
     const toCLIError = (e: unknown): CLIError => {

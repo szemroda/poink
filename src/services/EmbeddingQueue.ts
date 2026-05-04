@@ -1,13 +1,13 @@
 /**
  * Embedding Queue Service - Gated batch processing with backpressure
  *
- * Solves PGlite daemon crashes under heavy embedding load by:
+ * Reduces memory pressure under heavy embedding load by:
  * 1. Processing embeddings in small batches (default: 50)
  * 2. Checkpointing after each batch to flush WAL
  * 3. Yielding to event loop between batches (backpressure)
  *
- * WASM Memory Constraints:
- * - PGlite runs in WASM with ~2GB memory limit
+ * Memory Constraints:
+ * - Large embedding runs can accumulate significant transient state
  * - Each 1024-dim embedding = 4KB
  * - WAL accumulates until CHECKPOINT
  * - HNSW index updates consume memory during inserts
@@ -62,7 +62,7 @@ export interface EmbeddingQueueConfig {
 /**
  * Default configuration - tuned for stability over speed
  *
- * CONSERVATIVE SETTINGS to prevent PGlite WASM crashes:
+ * CONSERVATIVE SETTINGS to prioritize stability:
  * - batchSize: 20 (was 50) - smaller batches = less memory pressure
  * - concurrency: 3 (was 5) - fewer parallel Ollama calls
  * - batchDelayMs: 50 (was 10) - more time for GC between batches

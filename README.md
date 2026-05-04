@@ -1,5 +1,7 @@
 # pdf-brain
 
+> This repository is a fork of the original `pdf-brain` package and is being adapted for a custom distribution path.
+
 Local **PDF & Markdown** knowledge base with semantic search and AI-powered enrichment.
 
 > **Works with PDFs AND Markdown files** - Index your research papers, books, notes, docs, and any `.md` files in one unified, searchable knowledge base.

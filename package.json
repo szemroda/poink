@@ -1,24 +1,18 @@
 {
   "name": "pdf-brain",
-  "version": "2.0.0",
-  "description": "Local PDF & Markdown knowledge base with semantic search, AI enrichment, and SKOS taxonomy",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local PDF and Markdown knowledge base with semantic search, enrichment, and MCP support.",
+  "license": "MIT",
   "type": "module",
   "main": "src/index.ts",
   "bin": {
     "pdf-brain": "./src/cli.ts"
   },
   "scripts": {
-    "build": "bun build src/index.ts src/cli.ts --outdir dist --target bun",
-    "compile": "./scripts/compile.sh",
-    "compile:all": "./scripts/compile.sh --all",
-    "release:binaries": "./scripts/release-binaries.sh",
     "dev": "bun run src/cli.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
-    "setup": "./scripts/setup.sh",
-    "changeset": "changeset",
-    "version": "changeset version",
-    "release": "bun test && bun run typecheck && changeset publish",
     "prepare": "husky"
   },
   "dependencies": {
@@ -27,7 +21,6 @@
     "@effect/platform": "^0.72.0",
     "@effect/platform-bun": "^0.52.0",
     "@effect/schema": "^0.75.0",
-    "@electric-sql/pglite": "^0.3.0",
     "@libsql/client": "^0.15.15",
     "@modelcontextprotocol/sdk": "1.26.0",
     "@qdrant/js-client-rest": "^1.16.2",
@@ -47,51 +40,18 @@
     "unist-util-visit": "^5.0.0"
   },
   "devDependencies": {
-    "@changesets/cli": "^2.29.8",
     "@secretlint/secretlint-rule-preset-recommend": "^11.2.5",
     "@types/bun": "latest",
     "@types/mdast": "^4.0.4",
     "@types/react": "^19.2.7",
     "husky": "^9.1.7",
     "lint-staged": "^16.2.7",
-    "react-devtools-core": "^7.0.1",
     "secretlint": "^11.2.5",
     "typescript": "^5.7.2"
-  },
-  "peerDependencies": {
-    "typescript": "^5.0.0"
   },
   "engines": {
     "bun": ">=1.0.0"
   },
-  "files": [
-    "src",
-    "scripts"
-  ],
-  "keywords": [
-    "pdf",
-    "markdown",
-    "md",
-    "knowledge-base",
-    "vector-search",
-    "semantic-search",
-    "embeddings",
-    "rag",
-    "ollama",
-    "local-first",
-    "ai",
-    "llm",
-    "taxonomy",
-    "skos",
-    "libsql",
-    "mcp",
-    "effect-ts",
-    "document-management",
-    "personal-knowledge-base",
-    "pkm"
-  ],
-  "author": "Joel Hooks",
-  "license": "MIT",
   "lint-staged": {
     "*": "secretlint"
   }

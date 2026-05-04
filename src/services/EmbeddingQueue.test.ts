@@ -341,7 +341,7 @@ describe("EmbeddingQueue", () => {
 
   describe("DEFAULT_QUEUE_CONFIG", () => {
     it("has sensible defaults", () => {
-      // Conservative settings to prevent PGlite WASM crashes
+      // Conservative settings that prioritize stability
       expect(DEFAULT_QUEUE_CONFIG.batchSize).toBe(20);
       expect(DEFAULT_QUEUE_CONFIG.concurrency).toBe(3);
       expect(DEFAULT_QUEUE_CONFIG.batchDelayMs).toBe(50);

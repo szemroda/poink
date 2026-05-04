@@ -2,7 +2,7 @@
  * Ollama Service Unit Tests
  *
  * Focus: Embedding dimension validation
- * Context: PGlite WAL accumulation was triggered by "different vector dimensions 1024 and 0" error
+ * Context: dimension mismatches can corrupt downstream indexing workflows
  * Goal: Validate embeddings BEFORE they reach the database
  */
 
