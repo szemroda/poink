@@ -4,7 +4,8 @@
 
 import { Schema } from "effect";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
-import { dirname } from "path";
+import { homedir } from "os";
+import { dirname, join } from "path";
 
 // ============================================================================
 // Domain Models
@@ -175,6 +176,22 @@ export type UnifiedSearchResult = DocumentSearchResult | ConceptSearchResult;
 // Configuration
 // ============================================================================
 
+function resolveHomeDir(): string {
+  return process.env.HOME || process.env.USERPROFILE || homedir() || ".";
+}
+
+export function getDefaultLibraryPath(): string {
+  return join(resolveHomeDir(), ".pdf-brain");
+}
+
+export function expandHomePath(path: string): string {
+  if (path === "~") return resolveHomeDir();
+  if (path.startsWith("~/") || path.startsWith("~\\")) {
+    return join(resolveHomeDir(), path.slice(2));
+  }
+  return path;
+}
+
 export class LibraryConfig extends Schema.Class<LibraryConfig>("LibraryConfig")(
   {
     libraryPath: Schema.String,
@@ -186,8 +203,8 @@ export class LibraryConfig extends Schema.Class<LibraryConfig>("LibraryConfig")(
   }
 ) {
   static readonly Default = new LibraryConfig({
-    libraryPath: `${process.env.HOME}/Documents/.pdf-library`,
-    dbPath: `${process.env.HOME}/Documents/.pdf-library/library.db`,
+    libraryPath: getDefaultLibraryPath(),
+    dbPath: join(getDefaultLibraryPath(), "library.db"),
     ollamaModel: process.env.OLLAMA_MODEL || "mxbai-embed-large",
     ollamaHost: process.env.OLLAMA_HOST || "http://localhost:11434",
     chunkSize: 512,
@@ -195,12 +212,10 @@ export class LibraryConfig extends Schema.Class<LibraryConfig>("LibraryConfig")(
   });
 
   static fromEnv(): LibraryConfig {
-    const libraryPath =
-      process.env.PDF_LIBRARY_PATH ||
-      `${process.env.HOME}/Documents/.pdf-library`;
+    const libraryPath = process.env.PDF_LIBRARY_PATH || getDefaultLibraryPath();
     return new LibraryConfig({
       libraryPath,
-      dbPath: `${libraryPath}/library.db`,
+      dbPath: join(libraryPath, "library.db"),
       ollamaModel: process.env.OLLAMA_MODEL || "mxbai-embed-large",
       ollamaHost: process.env.OLLAMA_HOST || "http://localhost:11434",
       chunkSize: 512,
@@ -368,8 +383,7 @@ export class Config extends Schema.Class<Config>("Config")({
  * Preferred config path (~/.config/pdf-brain/config.json unless overridden).
  */
 export function getDefaultConfigPath(): string {
-  const home = process.env.HOME || ".";
-  return `${home}/.config/pdf-brain/config.json`;
+  return join(resolveHomeDir(), ".config", "pdf-brain", "config.json");
 }
 
 /**
@@ -378,8 +392,8 @@ export function getDefaultConfigPath(): string {
 export function getLegacyConfigPath(): string {
   const libraryPath =
     process.env.PDF_LIBRARY_PATH ||
-    `${process.env.HOME}/Documents/.pdf-library`;
-  return `${libraryPath}/config.json`;
+    join(resolveHomeDir(), "Documents", ".pdf-library");
+  return join(libraryPath, "config.json");
 }
 
 /**

@@ -14,6 +14,7 @@ import {
   Document,
   DocumentExistsError,
   DocumentNotFoundError,
+  expandHomePath,
   LibraryConfig,
   SearchOptions,
   SearchResult,
@@ -106,9 +107,7 @@ export class PDFLibrary extends Effect.Service<PDFLibrary>()("PDFLibrary", {
       add: (pdfPath: string, options: AddOptions = new AddOptions({})) =>
         Effect.gen(function* () {
           // Resolve path
-          const resolvedPath = pdfPath.startsWith("~")
-            ? pdfPath.replace("~", process.env.HOME || "")
-            : pdfPath;
+          const resolvedPath = expandHomePath(pdfPath);
 
           // Check if already exists
           const existing = yield* db.getDocumentByPath(resolvedPath);
@@ -335,9 +334,7 @@ export class PDFLibrary extends Effect.Service<PDFLibrary>()("PDFLibrary", {
       replace: (pdfPath: string, options: AddOptions = new AddOptions({})) =>
         Effect.gen(function* () {
           // Resolve path
-          const resolvedPath = pdfPath.startsWith("~")
-            ? pdfPath.replace("~", process.env.HOME || "")
-            : pdfPath;
+          const resolvedPath = expandHomePath(pdfPath);
 
           // Require existing doc (this is "replace", not "add")
           const existing = yield* db.getDocumentByPath(resolvedPath);

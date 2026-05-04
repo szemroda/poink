@@ -34,3 +34,4 @@ vector.tar.gz
 *.tar.gz
 .opencode/
 .opencode/streams
+.env

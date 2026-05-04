@@ -10,6 +10,8 @@ import {
   UnifiedSearchResult,
   SearchResult,
   SearchOptions,
+  LibraryConfig,
+  expandHomePath,
 } from "./types";
 
 describe("Unified Search Types", () => {
@@ -223,5 +225,69 @@ describe("Unified Search Types", () => {
       // @ts-expect-error - entityType should not exist on SearchResult
       expect(result.entityType).toBeUndefined();
     });
+  });
+});
+
+describe("LibraryConfig path resolution", () => {
+  test("defaults to .pdf-brain when PDF_LIBRARY_PATH is unset", () => {
+    const originalPdfLibraryPath = process.env.PDF_LIBRARY_PATH;
+    const originalHome = process.env.HOME;
+    const originalUserProfile = process.env.USERPROFILE;
+
+    delete process.env.PDF_LIBRARY_PATH;
+    delete process.env.HOME;
+    process.env.USERPROFILE = "C:\\Users\\tester";
+
+    try {
+      const config = LibraryConfig.fromEnv();
+
+      expect(config.libraryPath).toBe("C:\\Users\\tester\\.pdf-brain");
+      expect(config.dbPath).toBe("C:\\Users\\tester\\.pdf-brain\\library.db");
+    } finally {
+      if (originalPdfLibraryPath === undefined) {
+        delete process.env.PDF_LIBRARY_PATH;
+      } else {
+        process.env.PDF_LIBRARY_PATH = originalPdfLibraryPath;
+      }
+
+      if (originalHome === undefined) {
+        delete process.env.HOME;
+      } else {
+        process.env.HOME = originalHome;
+      }
+
+      if (originalUserProfile === undefined) {
+        delete process.env.USERPROFILE;
+      } else {
+        process.env.USERPROFILE = originalUserProfile;
+      }
+    }
+  });
+
+  test("expands ~ using the resolved home directory", () => {
+    const originalHome = process.env.HOME;
+    const originalUserProfile = process.env.USERPROFILE;
+
+    delete process.env.HOME;
+    process.env.USERPROFILE = "C:\\Users\\tester";
+
+    try {
+      expect(expandHomePath("~")).toBe("C:\\Users\\tester");
+      expect(expandHomePath("~/docs/file.pdf")).toBe(
+        "C:\\Users\\tester\\docs\\file.pdf"
+      );
+    } finally {
+      if (originalHome === undefined) {
+        delete process.env.HOME;
+      } else {
+        process.env.HOME = originalHome;
+      }
+
+      if (originalUserProfile === undefined) {
+        delete process.env.USERPROFILE;
+      } else {
+        process.env.USERPROFILE = originalUserProfile;
+      }
+    }
   });
 });

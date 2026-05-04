@@ -14,7 +14,7 @@ import remarkGfm from "remark-gfm";
 import { toString as mdastToString } from "mdast-util-to-string";
 import matter from "gray-matter";
 import type { Root, Heading, RootContent } from "mdast";
-import { LibraryConfig } from "../types.js";
+import { expandHomePath, LibraryConfig } from "../types.js";
 
 // ============================================================================
 // Custom Error Types
@@ -475,9 +475,7 @@ function chunkText(
  * Resolve path with home directory expansion
  */
 function resolvePath(path: string): string {
-  return path.startsWith("~")
-    ? path.replace("~", process.env.HOME || "")
-    : path;
+  return expandHomePath(path);
 }
 
 // ============================================================================
