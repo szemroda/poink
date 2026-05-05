@@ -229,8 +229,8 @@ export class TaxonomyServiceImpl {
 
         // Cleanup on scope close
         yield* Effect.addFinalizer(() =>
-          Effect.sync(() => {
-            client.close();
+          Effect.promise(async () => {
+            await client.close();
           })
         );
 

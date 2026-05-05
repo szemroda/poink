@@ -4,34 +4,41 @@
  * Tests for SKOS taxonomy operations using TDD approach.
  */
 
-import { describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "fs";
+import { afterAll, describe, expect, test } from "bun:test";
+import { mkdtempSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { Effect, Layer } from "effect";
 import { TaxonomyService, TaxonomyServiceImpl } from "./TaxonomyService.js";
 import { LibSQLDatabase } from "./LibSQLDatabase.js";
+import { removeDirWithRetries } from "../testUtils.js";
+
+const tempDir = mkdtempSync(join(tmpdir(), "pdf-brain-taxonomy-"));
+let testDbCounter = 0;
+
+afterAll(async () => {
+  await removeDirWithRetries(tempDir, 200, 50);
+});
 
 // Test layer - LibSQLDatabase.make initializes the schema (including taxonomy tables)
 // Then we use the same DB URL for TaxonomyService
 const makeTestLayer = () => {
-  // Use a temp file DB so schema persists across layer creations without cluttering the repo.
-  const tempDir = mkdtempSync(join(tmpdir(), "pdf-brain-taxonomy-"));
-  const testDbPath = `file:${join(tempDir, "library.db")}`;
+  // Use a unique file-backed DB per test for isolation, but clean up the temp
+  // directory once per suite so Windows file-handle release latency does not
+  // count against individual test timeouts.
+  const testDbPath = `file:${join(tempDir, `library-${testDbCounter++}.db`)}`;
   return {
     layer: Layer.mergeAll(
       LibSQLDatabase.make({ url: testDbPath }),
       TaxonomyServiceImpl.make({ url: testDbPath })
     ),
-    cleanup: () => {
-      rmSync(tempDir, { recursive: true, force: true });
-    },
+    cleanup: () => Promise.resolve(),
   };
 };
 
 const runTest = <A, E>(effect: Effect.Effect<A, E, TaxonomyService>) => {
   const { layer, cleanup } = makeTestLayer();
-  return Effect.provide(effect, layer)
+  return Effect.scoped(Effect.provide(effect, layer))
     .pipe(Effect.runPromise)
     .finally(cleanup);
 };

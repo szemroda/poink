@@ -1,11 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { Effect } from "effect";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { Database } from "./Database.js";
 import { DatabaseRegistry } from "./DatabaseRegistry.js";
 import { LibraryConfig } from "../types.js";
+import { removeDirWithRetries } from "../testUtils.js";
 
 function withTempEnv(
   env: Record<string, string>,
@@ -79,7 +80,7 @@ describe("DatabaseRegistry", () => {
           });
 
           const stats = await Effect.runPromise(
-            program.pipe(Effect.provide(DatabaseRegistry.make()))
+            Effect.scoped(program.pipe(Effect.provide(DatabaseRegistry.make())))
           );
 
           expect(stats.documents).toBe(0);
@@ -88,7 +89,7 @@ describe("DatabaseRegistry", () => {
         }
       );
     } finally {
-      rmSync(tempDir, { recursive: true, force: true });
+      await removeDirWithRetries(tempDir);
     }
   });
 
@@ -133,7 +134,7 @@ describe("DatabaseRegistry", () => {
           });
 
           const result = await Effect.runPromise(
-            program.pipe(Effect.provide(DatabaseRegistry.make()))
+            Effect.scoped(program.pipe(Effect.provide(DatabaseRegistry.make())))
           );
 
           expect(result.hasAddDocument).toBe(true);
@@ -141,7 +142,7 @@ describe("DatabaseRegistry", () => {
         }
       );
     } finally {
-      rmSync(tempDir, { recursive: true, force: true });
+      await removeDirWithRetries(tempDir);
     }
   });
 
@@ -164,19 +165,21 @@ describe("DatabaseRegistry", () => {
       });
 
       const stats = await Effect.runPromise(
-        program.pipe(
-          Effect.provide(
-            DatabaseRegistry.make({
-              config: legacyShapeConfig as any,
-              libraryConfig: new LibraryConfig({
-                libraryPath: tempDir,
-                dbPath,
-                ollamaModel: "mxbai-embed-large",
-                ollamaHost: "http://localhost:11434",
-                chunkSize: 512,
-                chunkOverlap: 50,
-              }),
-            })
+        Effect.scoped(
+          program.pipe(
+            Effect.provide(
+              DatabaseRegistry.make({
+                config: legacyShapeConfig as any,
+                libraryConfig: new LibraryConfig({
+                  libraryPath: tempDir,
+                  dbPath,
+                  ollamaModel: "mxbai-embed-large",
+                  ollamaHost: "http://localhost:11434",
+                  chunkSize: 512,
+                  chunkOverlap: 50,
+                }),
+              })
+            )
           )
         )
       );
@@ -185,7 +188,7 @@ describe("DatabaseRegistry", () => {
       expect(stats.chunks).toBe(0);
       expect(stats.embeddings).toBe(0);
     } finally {
-      rmSync(tempDir, { recursive: true, force: true });
+      await removeDirWithRetries(tempDir);
     }
   });
 });
