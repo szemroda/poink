@@ -16,8 +16,8 @@
     "prepare": "husky"
   },
   "dependencies": {
-    "@ai-sdk/anthropic": "^2.0.56",
-    "@ai-sdk/openai-compatible": "^1.0.29",
+    "@ai-sdk/gateway": "^3.0.110",
+    "@ai-sdk/openai": "^3.0.60",
     "@effect/platform": "^0.72.0",
     "@effect/platform-bun": "^0.52.0",
     "@effect/schema": "^0.75.0",
@@ -31,6 +31,7 @@
     "ink": "^6.5.1",
     "ink-spinner": "^5.0.0",
     "mdast-util-to-string": "^4.0.0",
+    "ollama-ai-provider-v2": "^3.5.0",
     "pdf-parse": "^2.4.5",
     "react": "^19.2.3",
     "remark-frontmatter": "^5.0.0",

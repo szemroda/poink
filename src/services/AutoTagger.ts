@@ -8,11 +8,9 @@
  * - Brief summaries
  * - Document type classification
  *
- * Strategy: Local LLM first (Ollama), fallback to Anthropic Haiku
+ * Uses the configured provider directly with fail-fast behavior.
  */
 
-// AI Gateway uses model strings directly, no provider import needed
-import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { generateObject, generateText } from "ai";
 import { Context, Effect, Layer } from "effect";
 import { z } from "zod";
@@ -20,17 +18,21 @@ import { logDebug, logInfo } from "../logger.js";
 import { getPathFilename, getPathSegments } from "../pathUtils.js";
 import {
   TaxonomyService,
-  generateConceptEmbedding,
 } from "./TaxonomyService.js";
 import { EmbeddingProvider } from "./EmbeddingProvider.js";
 import { loadConfig } from "../types.js";
+import {
+  getConfiguredLanguageModel,
+  resolveLanguageModel,
+  type SupportedProvider,
+} from "./AIProvider.js";
 
 // ============================================================================
 // Types
 // ============================================================================
 
 /** LLM provider options */
-export type LLMProvider = "ollama" | "anthropic";
+export type LLMProvider = SupportedProvider;
 
 /** Document type classification */
 export type DocumentType =
@@ -104,7 +106,7 @@ export interface TagResult {
 
 /** Options for enrichment */
 export interface EnrichmentOptions {
-  /** Preferred LLM provider (default: ollama, falls back to anthropic) */
+  /** Preferred LLM provider */
   provider?: LLMProvider;
   /** Specific model to use (overrides provider default) */
   model?: string;
@@ -119,15 +121,6 @@ export interface EnrichmentOptions {
 // ============================================================================
 // Constants
 // ============================================================================
-
-/** Default models per provider */
-const DEFAULT_MODELS: Record<LLMProvider, string> = {
-  ollama: "llama3.2:3b",
-  anthropic: "anthropic/claude-haiku-4-5",
-};
-
-/** Ollama base URL */
-const OLLAMA_BASE_URL = process.env.OLLAMA_HOST || "http://localhost:11434";
 
 /** Stop words for keyword extraction */
 const STOP_WORDS = new Set([
@@ -320,60 +313,6 @@ const TagSchema = z.object({
   category: z.string().optional().describe("Primary category"),
   author: z.string().optional().describe("Author if identifiable"),
 });
-
-// ============================================================================
-// Providers
-// ============================================================================
-
-/** Create Ollama provider */
-const createOllamaProvider = () =>
-  createOpenAICompatible({
-    name: "ollama",
-    baseURL: `${OLLAMA_BASE_URL}/v1`,
-  });
-
-/** Check if Ollama is available */
-async function isOllamaAvailable(): Promise<boolean> {
-  try {
-    const response = await fetch(`${OLLAMA_BASE_URL}/api/tags`, {
-      signal: AbortSignal.timeout(2000),
-    });
-    return response.ok;
-  } catch {
-    return false;
-  }
-}
-
-/** Check if a specific model is available in Ollama */
-async function isModelAvailable(modelName: string): Promise<boolean> {
-  try {
-    const response = await fetch(`${OLLAMA_BASE_URL}/api/tags`, {
-      signal: AbortSignal.timeout(2000),
-    });
-    if (!response.ok) return false;
-    const data = (await response.json()) as {
-      models?: Array<{ name: string }>;
-    };
-    return (
-      data.models?.some((m) => m.name.startsWith(modelName.split(":")[0])) ??
-      false
-    );
-  } catch {
-    return false;
-  }
-}
-
-/** Get model for provider */
-function getModel(provider: LLMProvider, modelName?: string) {
-  const model = modelName || DEFAULT_MODELS[provider];
-
-  if (provider === "ollama") {
-    return createOllamaProvider()(model);
-  }
-  // AI Gateway - just pass the model string like "anthropic/claude-haiku-4-5"
-  // Vercel AI SDK picks it up automatically
-  return model as any;
-}
 
 // ============================================================================
 // Heuristic Extraction (No LLM)
@@ -581,19 +520,32 @@ function formatConceptsForPrompt(concepts: TaxonomyConcept[]): string {
   )}`;
 }
 
+function describeEnrichmentCause(error: unknown): string {
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "_tag" in error &&
+    "reason" in error &&
+    typeof (error as { reason?: unknown }).reason === "string"
+  ) {
+    return (error as { reason: string }).reason;
+  }
+
+  return String(error);
+}
+
 /**
  * Use LLM to judge if two concepts are duplicates or distinct
  * More accurate than pure embedding similarity
  *
- * Supports both providers:
- * - gateway: Uses AI Gateway with configured model (e.g., "anthropic/claude-haiku-4-5")
- * - ollama: Uses Ollama with configured model (e.g., "llama3.2")
+ * Uses the configured provider/model directly via the shared AI SDK resolver.
  */
 async function llmJudgeDuplicate(
   proposed: ProposedConcept,
   existing: { id: string; prefLabel: string; definition?: string | null }
-): Promise<{ isDuplicate: boolean; available: boolean }> {
+): Promise<boolean> {
   const config = loadConfig();
+  const resolved = getConfiguredLanguageModel(config, "judge");
 
   const prompt = `You are a taxonomy curator. Determine if these two concepts are essentially the SAME concept (duplicates that should be merged) or DISTINCT concepts that both belong in a knowledge taxonomy.
 
@@ -612,53 +564,12 @@ Consider:
 
 Reply with ONLY one word: DUPLICATE or DISTINCT`;
 
-  if (config.judge.provider === "gateway") {
-    // Try AI Gateway
-    const gatewayKey = config.gatewayApiKey;
-    if (!gatewayKey) {
-      logInfo("AutoTagger: gateway API key not set; LLM judge unavailable");
-      return { isDuplicate: false, available: false };
-    }
-
-    try {
-      const result = await generateText({
-        model: config.judge.model as any,
-        prompt,
-      });
-      const answer = result.text.trim().toUpperCase();
-      return { isDuplicate: answer.includes("DUPLICATE"), available: true };
-    } catch (e) {
-      logInfo(`AutoTagger: gateway LLM judge failed: ${String(e)}`);
-      return { isDuplicate: false, available: false };
-    }
-  } else {
-    // Use Ollama
-    const ollamaHost = config.ollama.host;
-    const ollamaModel = config.judge.model;
-
-    try {
-      const response = await fetch(`${ollamaHost}/api/generate`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: ollamaModel,
-          prompt,
-          stream: false,
-        }),
-      });
-
-      if (!response.ok) {
-        return { isDuplicate: false, available: false };
-      }
-
-      const data = (await response.json()) as { response?: string };
-      const answer = (data.response || "").trim().toUpperCase();
-      return { isDuplicate: answer.includes("DUPLICATE"), available: true };
-    } catch (e) {
-      // Ollama not available
-      return { isDuplicate: false, available: false };
-    }
-  }
+  const result = await generateText({
+    model: resolved.model,
+    prompt,
+  });
+  const answer = result.text.trim().toUpperCase();
+  return answer.includes("DUPLICATE");
 }
 
 /**
@@ -698,12 +609,12 @@ function autoAcceptProposals(
 
       if (similar.length > 0) {
         // Use LLM to judge if it's actually a duplicate
-        const judgeResult = yield* Effect.tryPromise({
+        const isDuplicate = yield* Effect.tryPromise({
           try: () => llmJudgeDuplicate(proposal, similar[0]),
-          catch: () => ({ isDuplicate: false, available: false }),
+          catch: (error) => error,
         });
 
-        if (judgeResult.isDuplicate) {
+        if (isDuplicate) {
           logDebug(
             `AutoTagger: rejected duplicate "${proposal.prefLabel}" ~= "${similar[0].prefLabel}"`
           );
@@ -732,13 +643,7 @@ function autoAcceptProposals(
     Effect.mapError(
       (e) =>
         new EnrichmentError(
-          `Auto-accept failed: ${
-            "_tag" in e && (e._tag === "OllamaError" || e._tag === "GatewayError")
-              ? e.reason
-              : "_tag" in e && e._tag === "TaxonomyError"
-              ? e.reason
-              : String(e)
-          }`,
+          `Auto-accept failed: ${describeEnrichmentCause(e)}`,
           e
         )
     )
@@ -781,13 +686,7 @@ function extractRAGContext(
     Effect.mapError(
       (e) =>
         new EnrichmentError(
-          `RAG context extraction failed: ${
-            "_tag" in e && (e._tag === "OllamaError" || e._tag === "GatewayError")
-              ? e.reason
-              : "_tag" in e && e._tag === "TaxonomyError"
-              ? e.reason
-              : String(e)
-          }`,
+          `RAG context extraction failed: ${describeEnrichmentCause(e)}`,
           e
         )
     )
@@ -805,13 +704,18 @@ async function enrichWithLLM(
   availableConcepts: TaxonomyConcept[] = [],
   model?: string
 ): Promise<Omit<EnrichmentResult, "provider" | "confidence">> {
+  const config = loadConfig();
+  const resolvedModel = resolveLanguageModel(
+    config,
+    provider,
+    model ?? config.enrichment.model,
+  );
   const truncatedContent = content.slice(0, 6000);
   const conceptsList = formatConceptsForPrompt(availableConcepts);
 
-  // For Anthropic, use structured output
-  if (provider === "anthropic") {
+  if (provider !== "ollama") {
     const { object } = await generateObject({
-      model: getModel(provider, model),
+      model: resolvedModel.model,
       schema: EnrichmentSchema,
       prompt: `Analyze this document and extract metadata for a personal knowledge library.
 
@@ -851,9 +755,9 @@ Do NOT propose concepts that are variations of existing ones.`,
     };
   }
 
-  // For local models, use generateText with JSON prompt and multishot examples
+  // Ollama remains on prompted JSON because local structured output is less reliable.
   const { text } = await generateText({
-    model: getModel(provider, model),
+    model: resolvedModel.model,
     prompt: `<role>You are a librarian cataloging documents for a personal knowledge library.</role>
 
 <taxonomy>
@@ -1033,12 +937,17 @@ async function tagWithLLM(
   provider: LLMProvider,
   model?: string
 ): Promise<{ tags: string[]; category?: string; author?: string }> {
+  const config = loadConfig();
+  const resolvedModel = resolveLanguageModel(
+    config,
+    provider,
+    model ?? config.enrichment.model,
+  );
   const truncatedContent = content.slice(0, 4000);
 
-  // For Anthropic, use structured output
-  if (provider === "anthropic") {
+  if (provider !== "ollama") {
     const { object } = await generateObject({
-      model: getModel(provider, model),
+      model: resolvedModel.model,
       schema: TagSchema,
       prompt: `Generate tags for this document. Filename: ${filename}\n\nContent:\n${truncatedContent}`,
     });
@@ -1050,9 +959,9 @@ async function tagWithLLM(
     };
   }
 
-  // For local models, use generateText with JSON prompt
+  // Ollama remains on prompted JSON because local structured output is less reliable.
   const { text } = await generateText({
-    model: getModel(provider, model),
+    model: resolvedModel.model,
     prompt: `Generate tags for this document. Return ONLY a JSON object.
 
 Filename: ${filename}
@@ -1104,8 +1013,6 @@ export class EnrichmentError {
 export interface AutoTagger {
   /**
    * Full document enrichment (title, summary, tags, etc.)
-   * Uses local LLM first, falls back to Anthropic
-   *
    * Requires: TaxonomyService and EmbeddingProvider for auto-accept and RAG context
    */
   readonly enrich: (
@@ -1128,17 +1035,13 @@ export interface AutoTagger {
     options?: EnrichmentOptions
   ) => Effect.Effect<TagResult, EnrichmentError>;
 
-  /**
-   * Check if local LLM (Ollama) is available
-   */
-  readonly isLocalAvailable: () => Effect.Effect<boolean>;
 }
 
 export const AutoTagger = Context.GenericTag<AutoTagger>("AutoTagger");
 
 /**
  * Create the AutoTagger service
- * Requires TaxonomyService and Ollama for auto-accept and RAG context
+ * Requires TaxonomyService and EmbeddingProvider for auto-accept and RAG context
  */
 export const AutoTaggerLive = Layer.effect(
   AutoTagger,
@@ -1152,6 +1055,7 @@ export const AutoTaggerLive = Layer.effect(
         Effect.gen(function* () {
           const filename = getPathFilename(filePath);
           const opts = options || {};
+          const config = loadConfig();
           let availableConcepts = opts.availableConcepts || [];
 
           // If heuristics only, build from extraction
@@ -1172,18 +1076,11 @@ export const AutoTaggerLive = Layer.effect(
               ].slice(0, 10),
               concepts: [],
               confidence: 0.3,
-              provider: "ollama" as LLMProvider, // Placeholder
+              provider: config.enrichment.provider,
             };
           }
 
-          // STEP 1: Extract RAG context (relevant concepts from taxonomy)
-          // This helps LLM match existing concepts instead of proposing duplicates
-          const ragConcepts = yield* extractRAGContext(content).pipe(
-            Effect.catchAll(() =>
-              // If RAG extraction fails, continue with empty list
-              Effect.succeed([])
-            )
-          );
+          const ragConcepts = yield* extractRAGContext(content);
 
           // Merge RAG concepts with provided concepts (RAG first for priority)
           const conceptsForPrompt: TaxonomyConcept[] = [
@@ -1197,44 +1094,9 @@ export const AutoTaggerLive = Layer.effect(
             `AutoTagger: RAG context found ${ragConcepts.length} relevant concept(s)`
           );
 
-          // Load config for provider/model defaults
-          const config = loadConfig();
+          const provider: LLMProvider = opts.provider || config.enrichment.provider;
+          const model: string | undefined = opts.model || config.enrichment.model;
 
-          // Use options or fallback to config (map "gateway" to "anthropic" for LLMProvider type)
-          let provider: LLMProvider =
-            opts.provider ||
-            (config.enrichment.provider === "gateway" ? "anthropic" : "ollama");
-          let model: string | undefined = opts.model || config.enrichment.model;
-
-          if (provider === "ollama") {
-            const available = yield* Effect.promise(() => isOllamaAvailable());
-            if (!available) {
-              logInfo("AutoTagger: Ollama not available; falling back to gateway");
-              provider = "anthropic";
-              model =
-                config.enrichment.provider === "gateway"
-                  ? config.enrichment.model
-                  : DEFAULT_MODELS.anthropic;
-            } else if (!model) {
-              // Check if default model is available
-              const modelAvailable = yield* Effect.promise(() =>
-                isModelAvailable(DEFAULT_MODELS.ollama)
-              );
-              if (!modelAvailable) {
-                logInfo(
-                  `AutoTagger: model ${DEFAULT_MODELS.ollama} not available; falling back to gateway`
-                );
-                provider = "anthropic";
-                model =
-                  config.enrichment.provider === "gateway"
-                    ? config.enrichment.model
-                    : DEFAULT_MODELS.anthropic;
-              }
-            }
-          }
-
-          // STEP 2: Run enrichment with RAG-enhanced concept list
-          // If LLM fails (schema mismatch, JSON parse error, etc.), fall back to heuristics
           const result = yield* Effect.tryPromise({
             try: () =>
               enrichWithLLM(
@@ -1251,34 +1113,8 @@ export const AutoTaggerLive = Layer.effect(
                 }`,
                 error
               ),
-          }).pipe(
-            Effect.catchAll((error) => {
-              // Log the actual error for debugging
-              logInfo(`AutoTagger: LLM enrichment failed: ${error.message}`);
-              logInfo(`AutoTagger: falling back to heuristics`);
+          });
 
-              // Fall back to heuristics instead of failing
-              const pathTags = extractPathTags(filePath, opts.basePath);
-              const filenameTags = extractFilenameTags(filename);
-              const contentTags = extractContentKeywords(content, 5);
-
-              return Effect.succeed({
-                title: cleanTitle(filename),
-                author: extractAuthor(filename),
-                summary:
-                  content.slice(0, 200).replace(/\s+/g, " ").trim() + "...",
-                documentType: "other" as DocumentType,
-                category: pathTags[0] || "uncategorized",
-                tags: [
-                  ...new Set([...pathTags, ...filenameTags, ...contentTags]),
-                ].slice(0, 10),
-                concepts: [],
-                proposedConcepts: undefined,
-              });
-            })
-          );
-
-          // STEP 3: Auto-accept novel proposed concepts
           const validatedProposals = result.proposedConcepts || [];
           if (validatedProposals.length > 0) {
             logDebug(
@@ -1287,12 +1123,6 @@ export const AutoTaggerLive = Layer.effect(
 
             const { accepted, rejected } = yield* autoAcceptProposals(
               validatedProposals
-            ).pipe(
-              Effect.catchAll((error) => {
-                // If auto-accept fails, log and continue (don't fail enrichment)
-                logInfo(`AutoTagger: auto-accept failed: ${error.message}`);
-                return Effect.succeed({ accepted: 0, rejected: 0 });
-              })
             );
 
             logDebug(
@@ -1315,6 +1145,7 @@ export const AutoTaggerLive = Layer.effect(
         Effect.gen(function* () {
           const filename = getPathFilename(filePath);
           const opts = options || {};
+          const config = loadConfig();
 
           // Always extract heuristic tags
           const pathTags = extractPathTags(filePath, opts.basePath);
@@ -1328,29 +1159,10 @@ export const AutoTaggerLive = Layer.effect(
 
           // Add LLM tags if not heuristics-only and we have content
           if (!opts.heuristicsOnly && content) {
-            // Load config for provider/model defaults
-            const config = loadConfig();
-
-            let provider: LLMProvider =
-              opts.provider ||
-              (config.enrichment.provider === "gateway"
-                ? "anthropic"
-                : "ollama");
-            let model: string | undefined =
+            const provider: LLMProvider =
+              opts.provider || config.enrichment.provider;
+            const model: string | undefined =
               opts.model || config.enrichment.model;
-
-            if (provider === "ollama") {
-              const available = yield* Effect.promise(() =>
-                isOllamaAvailable()
-              );
-              if (!available) {
-                provider = "anthropic";
-                model =
-                  config.enrichment.provider === "gateway"
-                    ? config.enrichment.model
-                    : DEFAULT_MODELS.anthropic;
-              }
-            }
 
             const llmResult = yield* Effect.tryPromise({
               try: () => tagWithLLM(filename, content, provider, model),
@@ -1361,18 +1173,7 @@ export const AutoTaggerLive = Layer.effect(
                   }`,
                   error
                 ),
-            }).pipe(
-              Effect.catchAll((error) => {
-                logInfo(
-                  `AutoTagger: LLM tagging failed; using heuristics only: ${error.message}`
-                );
-                return Effect.succeed({
-                  tags: [],
-                  category: undefined,
-                  author: undefined,
-                });
-              })
-            );
+            });
 
             llmTags = llmResult.tags;
             category = llmResult.category;
@@ -1401,8 +1202,6 @@ export const AutoTaggerLive = Layer.effect(
             category: category || pathTags[0],
           };
         }),
-
-      isLocalAvailable: () => Effect.promise(() => isOllamaAvailable()),
     });
   })
 );

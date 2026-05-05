@@ -22,18 +22,11 @@ import {
 import { DEFAULT_QUEUE_CONFIG } from "./services/EmbeddingQueue.js";
 
 import {
-  Ollama,
-  OllamaLive,
-  probeEmbeddingDimension,
-  getEmbeddingDimension,
-} from "./services/Ollama.js";
-import {
   EmbeddingProvider,
   EmbeddingProviderLive,
   EmbeddingProviderFullLive,
 } from "./services/EmbeddingProvider.js";
 import type { EmbeddingError } from "./services/EmbeddingProvider.js";
-import { GatewayLive } from "./services/Gateway.js";
 import { PDFExtractor, PDFExtractorLive } from "./services/PDFExtractor.js";
 import {
   MarkdownExtractor,
@@ -796,7 +789,7 @@ export const makePDFLibraryLive = () => {
   const dbLayer = DatabaseRegistry.make();
   logDebug("Using database layer from DatabaseRegistry");
 
-  // Provide all dependencies internally: EmbeddingProvider (with Ollama + Gateway) and database
+  // Provide all dependencies internally: the configured embedding provider and database.
   // This makes PDFLibraryLive a complete, self-contained layer
   const fullDeps = Layer.merge(EmbeddingProviderFullLive, dbLayer);
 

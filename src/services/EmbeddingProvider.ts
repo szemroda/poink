@@ -1,17 +1,19 @@
 /**
  * Unified Embedding Provider - Routes to Ollama, Gateway, or OpenAI based on config
  */
+import { embed, embedMany } from "ai";
 import { Effect, Context, Layer } from "effect";
-import { loadConfig, OllamaError, GatewayError, OpenAIError } from "../types.js";
-import { Ollama, OllamaLive } from "./Ollama.js";
-import { Gateway, GatewayLive } from "./Gateway.js";
+import { GatewayError, loadConfig, OllamaError, OpenAIError } from "../types.js";
+import {
+  getConfiguredEmbeddingModel,
+  type ProviderError,
+} from "./AIProvider.js";
 
 // ============================================================================
 // Service Definition
 // ============================================================================
 
-// Union error type
-export type EmbeddingError = OllamaError | GatewayError | OpenAIError;
+export type EmbeddingError = ProviderError;
 
 export class EmbeddingProvider extends Context.Tag("EmbeddingProvider")<
   EmbeddingProvider,
@@ -26,16 +28,6 @@ export class EmbeddingProvider extends Context.Tag("EmbeddingProvider")<
   }
 >() {}
 
-/**
- * Agent workflows tend to call `search` repeatedly with the same query within a
- * single session (especially via MCP). Cache query embeddings in-process to
- * avoid repeated embed calls.
- *
- * Notes:
- * - This only wraps `embed()` (single text) and intentionally does NOT cache
- *   `embedBatch()` (chunk embeddings would explode memory).
- * - Cache is per-process (MCP session), not persisted.
- */
 const DEFAULT_QUERY_EMBED_CACHE_SIZE = 256;
 
 const readQueryEmbedCacheSize = (): number => {
@@ -52,7 +44,6 @@ const makeLruCache = <V>(maxSize: number) => {
     get(key: string): V | undefined {
       const value = map.get(key);
       if (value === undefined) return undefined;
-      // Refresh recency.
       map.delete(key);
       map.set(key, value);
       return value;
@@ -68,153 +59,51 @@ const makeLruCache = <V>(maxSize: number) => {
   };
 };
 
-interface OpenAIEmbeddingsResponse {
-  data: Array<{ embedding: number[]; index: number }>;
-  error?: {
-    message?: string;
-  };
+function toEmbeddingError(provider: string, message: string): EmbeddingError {
+  if (provider === "gateway") {
+    return new GatewayError({ reason: message });
+  }
+  if (provider === "openai") {
+    return new OpenAIError({ reason: message });
+  }
+  return new OllamaError({ reason: message });
 }
 
-const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1";
-const DEFAULT_OPENAI_MODEL = "text-embedding-3-small";
+function validateEmbedding(
+  embedding: number[],
+  expectedDimension: number | null,
+  provider: string,
+): Effect.Effect<{ embedding: number[]; expectedDimension: number }, EmbeddingError> {
+  if (embedding.length === 0) {
+    return Effect.fail(
+      toEmbeddingError(provider, "Invalid embedding: dimension 0 (empty vector)"),
+    );
+  }
 
-const normalizeOpenAIBaseUrl = (baseUrl: string | undefined): string => {
-  const value = (baseUrl ?? DEFAULT_OPENAI_BASE_URL).trim();
-  return value.endsWith("/") ? value.slice(0, -1) : value;
-};
+  const nextExpectedDimension = expectedDimension ?? embedding.length;
+  if (embedding.length !== nextExpectedDimension) {
+    return Effect.fail(
+      toEmbeddingError(
+        provider,
+        `Invalid embedding: dimension ${embedding.length} (expected ${nextExpectedDimension})`,
+      ),
+    );
+  }
 
-const makeOpenAIProvider = (
-  config: ReturnType<typeof loadConfig>,
-): Effect.Effect<
-  {
-    readonly model: string;
-    readonly embed: (text: string) => Effect.Effect<number[], OpenAIError>;
-    readonly embedBatch: (
-      texts: string[],
-      concurrency?: number,
-    ) => Effect.Effect<number[][], OpenAIError>;
-    readonly checkHealth: () => Effect.Effect<void, OpenAIError>;
-  },
-  OpenAIError
-> =>
-  Effect.gen(function* () {
-    const apiKey = config.openaiApiKey;
-    if (!apiKey) {
-      return yield* Effect.fail(
-        new OpenAIError({
-          reason:
-            "OpenAI API key not set. Use embedding.openai.apiKey or OPENAI_API_KEY.",
-        }),
-      );
-    }
+  if (embedding.some((value) => !Number.isFinite(value))) {
+    return Effect.fail(
+      toEmbeddingError(
+        provider,
+        "Invalid embedding: contains non-finite values (NaN or Infinity)",
+      ),
+    );
+  }
 
-    const baseUrl = normalizeOpenAIBaseUrl(config.embedding.openai.baseUrl);
-    const model = config.embedding.openai.model ?? DEFAULT_OPENAI_MODEL;
-
-    const requestEmbeddings = (
-      texts: string[],
-    ): Effect.Effect<number[][], OpenAIError> =>
-      Effect.tryPromise({
-        try: async () => {
-          if (texts.length === 0) return [];
-
-          const response = await fetch(`${baseUrl}/embeddings`, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              Authorization: `Bearer ${apiKey}`,
-            },
-            body: JSON.stringify({
-              model,
-              input: texts,
-            }),
-          });
-
-          if (!response.ok) {
-            const responseText = await response.text();
-            let reason = responseText || response.statusText;
-            try {
-              const parsed = JSON.parse(responseText) as OpenAIEmbeddingsResponse;
-              reason = parsed.error?.message ?? reason;
-            } catch {
-              // Keep plain text when response body is not JSON.
-            }
-            throw new Error(
-              `OpenAI embeddings failed (${response.status}): ${reason}`,
-            );
-          }
-
-          const payload = (await response.json()) as OpenAIEmbeddingsResponse;
-          if (!Array.isArray(payload.data)) {
-            throw new Error("Invalid OpenAI embeddings response");
-          }
-
-          if (payload.data.length !== texts.length) {
-            throw new Error(
-              `OpenAI embeddings response size mismatch: expected ${texts.length}, received ${payload.data.length}`,
-            );
-          }
-
-          const ordered: Array<number[] | undefined> = Array(texts.length).fill(
-            undefined,
-          );
-          for (const item of payload.data) {
-            if (!Number.isInteger(item.index)) {
-              throw new Error("Invalid OpenAI embeddings response index");
-            }
-            if (item.index < 0 || item.index >= texts.length) {
-              throw new Error(
-                `OpenAI embeddings response index out of range: ${item.index}`,
-              );
-            }
-            if (!Array.isArray(item.embedding)) {
-              throw new Error("Invalid OpenAI embeddings response embedding");
-            }
-            if (ordered[item.index] !== undefined) {
-              throw new Error(
-                `Duplicate OpenAI embeddings response index: ${item.index}`,
-              );
-            }
-            ordered[item.index] = item.embedding;
-          }
-
-          if (ordered.some((embedding) => embedding === undefined)) {
-            throw new Error("OpenAI embeddings response missing indices");
-          }
-
-          return ordered as number[][];
-        },
-        catch: (e) =>
-          new OpenAIError({
-            reason: `Embedding failed: ${
-              e instanceof Error ? e.message : String(e)
-            }`,
-          }),
-      });
-
-    return {
-      model,
-      embed: (text: string) =>
-        Effect.gen(function* () {
-          const embeddings = yield* requestEmbeddings([text]);
-          const embedding = embeddings[0];
-          if (!embedding) {
-            return yield* Effect.fail(
-              new OpenAIError({
-                reason: "Embedding failed: empty embeddings response",
-              }),
-            );
-          }
-          return embedding;
-        }),
-      embedBatch: (texts: string[]) => requestEmbeddings(texts),
-      checkHealth: () => Effect.asVoid(requestEmbeddings(["test"])),
-    };
+  return Effect.succeed({
+    embedding,
+    expectedDimension: nextExpectedDimension,
   });
-
-// ============================================================================
-// Implementation
-// ============================================================================
+}
 
 /**
  * Live implementation that routes based on config.embedding.provider
@@ -223,79 +112,88 @@ export const EmbeddingProviderLive = Layer.effect(
   EmbeddingProvider,
   Effect.gen(function* () {
     const config = loadConfig();
-    const provider = config.embedding.provider;
-    const defaultModel = config.embedding.model;
+    const resolved = getConfiguredEmbeddingModel(config);
     const queryCacheSize = readQueryEmbedCacheSize();
     const queryEmbedCache = makeLruCache<number[]>(queryCacheSize);
+    let expectedDimension: number | null = null;
 
-    const wrapQueryCache = <E>(
-      embed: (text: string) => Effect.Effect<number[], E>,
-      label: string,
-      model: string = defaultModel,
+    const runEmbed = (
+      texts: string[],
+      maxParallelCalls?: number,
+    ): Effect.Effect<number[][], EmbeddingError> =>
+      Effect.tryPromise({
+        try: async () => {
+          if (texts.length === 0) return [];
+
+          if (texts.length === 1) {
+            const result = await embed({
+              model: resolved.model,
+              value: texts[0],
+              maxRetries: 3,
+            });
+            return [result.embedding];
+          }
+
+          const result = await embedMany({
+            model: resolved.model,
+            values: texts,
+            maxRetries: 3,
+            maxParallelCalls,
+          });
+          return result.embeddings;
+        },
+        catch: (error) =>
+          toEmbeddingError(
+            resolved.provider,
+            `Embedding failed: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          ),
+      }).pipe(
+        Effect.flatMap((embeddings) =>
+          Effect.gen(function* () {
+            const validated: number[][] = [];
+            for (const embedding of embeddings) {
+              const result = yield* validateEmbedding(
+                embedding,
+                expectedDimension,
+                resolved.provider,
+              );
+              expectedDimension = result.expectedDimension;
+              validated.push(result.embedding);
+            }
+            return validated;
+          }),
+        ),
+      );
+
+    const wrapQueryCache = (
+      embedSingle: (text: string) => Effect.Effect<number[], EmbeddingError>,
     ) => {
-      if (queryCacheSize <= 0) return embed;
+      if (queryCacheSize <= 0) return embedSingle;
       return (text: string) =>
         Effect.gen(function* () {
-          const key = `${label}:${model}:${text}`;
+          const key = `${resolved.provider}:${resolved.modelId}:${text}`;
           const cached = queryEmbedCache.get(key);
           if (cached) return cached;
-          const embedding = yield* embed(text);
+          const embedding = yield* embedSingle(text);
           queryEmbedCache.set(key, embedding);
           return embedding;
         });
     };
 
-    if (provider === "gateway") {
-      // Use Gateway
-      const gateway = yield* Gateway;
-      return {
-        embed: wrapQueryCache(gateway.embed, "gateway", defaultModel),
-        embedBatch: gateway.embedBatch,
-        checkHealth: gateway.checkHealth,
-        provider: "gateway" as const,
-      };
-    } else if (provider === "openai") {
-      const openai = yield* makeOpenAIProvider(config);
-      return {
-        embed: wrapQueryCache(openai.embed, "openai", openai.model),
-        embedBatch: openai.embedBatch,
-        checkHealth: openai.checkHealth,
-        provider: "openai" as const,
-      };
-    } else {
-      // Default to Ollama
-      const ollama = yield* Ollama;
-      return {
-        embed: wrapQueryCache(ollama.embed, "ollama", defaultModel),
-        embedBatch: ollama.embedBatch,
-        checkHealth: ollama.checkHealth,
-        provider: "ollama" as const,
-      };
-    }
+    return {
+      embed: wrapQueryCache((text: string) =>
+        Effect.map(runEmbed([text]), (embeddings) => embeddings[0] as number[]),
+      ),
+      embedBatch: (texts: string[], concurrency = 10) => runEmbed(texts, concurrency),
+      checkHealth: () => Effect.asVoid(runEmbed(["health check"])),
+      provider: resolved.provider,
+    };
   }),
 );
 
 /**
  * Full layer with dependencies - use this in app composition.
- * Only constructs the provider layer that's actually configured.
  */
-export const EmbeddingProviderFullLive = Layer.unwrapEffect(
-  Effect.gen(function* () {
-    const config = loadConfig();
-    const gatewayStub = Layer.succeed(Gateway, {
-      embed: () =>
-        Effect.fail(new GatewayError({ reason: "Gateway not configured" })),
-      embedBatch: () =>
-        Effect.fail(new GatewayError({ reason: "Gateway not configured" })),
-      checkHealth: () =>
-        Effect.fail(new GatewayError({ reason: "Gateway not configured" })),
-    });
-
-    const deps =
-      config.embedding.provider === "gateway"
-        ? Layer.merge(OllamaLive, GatewayLive)
-        : Layer.merge(OllamaLive, gatewayStub);
-
-    return Layer.provide(EmbeddingProviderLive, deps);
-  }),
-);
+export const EmbeddingProviderFullLive = EmbeddingProviderLive;

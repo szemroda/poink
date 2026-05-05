@@ -99,7 +99,7 @@ describe("ClusterSummarizerService - LLM Abstractive Summarization", () => {
     );
   });
 
-  it("should handle empty chunks array with fallback", async () => {
+  it("should handle empty chunks array without invoking the LLM", async () => {
     const chunks: Array<{ id: string; content: string }> = [];
 
     const result = await Effect.runPromise(
@@ -141,8 +141,7 @@ describe("ClusterSummarizerService - LLM Abstractive Summarization", () => {
     expect(result.chunkCount).toBe(5); // Total count, not limited
   });
 
-  it("should fall back to extractive summarization when LLM fails", async () => {
-    // Mock LLM failure
+  it("should fail fast when LLM summarization fails", async () => {
     mockGenerateObject.mockImplementationOnce(() =>
       Promise.reject(new Error("API unavailable"))
     );
@@ -159,22 +158,17 @@ describe("ClusterSummarizerService - LLM Abstractive Summarization", () => {
       },
     ];
 
-    const result = await Effect.runPromise(
-      Effect.gen(function* () {
-        const service = yield* ClusterSummarizerService;
-        return yield* service.summarize(chunks, { clusterId: 4 });
-      }).pipe(Effect.provide(ClusterSummarizerImpl.Default))
-    );
-
-    expect(result.clusterId).toBe(4);
-    expect(result.summary).toBeDefined();
-    // Extractive fallback should still produce a summary
-    expect(result.summary.length).toBeGreaterThan(10);
-    // No key topics in extractive mode
-    expect(result.keyTopics).toBeUndefined();
+    await expect(
+      Effect.runPromise(
+        Effect.gen(function* () {
+          const service = yield* ClusterSummarizerService;
+          return yield* service.summarize(chunks, { clusterId: 4 });
+        }).pipe(Effect.provide(ClusterSummarizerImpl.Default))
+      )
+    ).rejects.toThrow("API unavailable");
   });
 
-  it("should use claude-haiku-4-5 model via AI SDK", async () => {
+  it("should use the configured enrichment model via AI SDK", async () => {
     const chunks = [
       { id: "1", content: "Test content for model verification." },
     ];
@@ -191,8 +185,6 @@ describe("ClusterSummarizerService - LLM Abstractive Summarization", () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const calls = mockGenerateObject.mock.calls as any[];
     expect(calls.length).toBeGreaterThan(0);
-    expect(calls[calls.length - 1][0]?.model).toBe(
-      "anthropic/claude-haiku-4-5"
-    );
+    expect(calls[calls.length - 1][0]?.model?.modelId).toBe("llama3.2");
   });
 });

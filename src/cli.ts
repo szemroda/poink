@@ -916,7 +916,7 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
 
       const autoTag = opts["auto-tag"] === true;
       const enrich = opts.enrich === true;
-      const forceProvider = opts.provider as "ollama" | "anthropic" | undefined;
+      const forceProvider = opts.provider as "ollama" | "gateway" | "openai" | undefined;
       let enrichedTitle = title;
       let enrichedTags = tags || [];
 

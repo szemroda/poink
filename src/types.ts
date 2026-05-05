@@ -224,12 +224,11 @@ export class LibraryConfig extends Schema.Class<LibraryConfig>("LibraryConfig")(
   }
 }
 
-/**
- * Multi-provider configuration for embedding, enrichment, and judge models.
- * Supports Ollama (local), AI Gateway, and OpenAI-compatible embeddings.
- */
 const DEFAULT_OPENAI_EMBEDDING_MODEL = "text-embedding-3-small";
 
+/**
+ * Multi-provider configuration for embedding, enrichment, and judge models.
+ */
 export class Config extends Schema.Class<Config>("Config")({
   embedding: Schema.Struct({
     provider: Schema.Literal("ollama", "gateway", "openai"),
@@ -244,11 +243,11 @@ export class Config extends Schema.Class<Config>("Config")({
     ),
   }),
   enrichment: Schema.Struct({
-    provider: Schema.Literal("ollama", "gateway"),
+    provider: Schema.Literal("ollama", "gateway", "openai"),
     model: Schema.String,
   }),
   judge: Schema.Struct({
-    provider: Schema.Literal("ollama", "gateway"),
+    provider: Schema.Literal("ollama", "gateway", "openai"),
     model: Schema.String,
   }),
   ollama: Schema.Struct({
@@ -257,6 +256,10 @@ export class Config extends Schema.Class<Config>("Config")({
   }),
   gateway: Schema.optionalWith(Schema.Struct({
     apiKey: Schema.optional(Schema.String),
+  }), { default: () => ({}) }),
+  openai: Schema.optionalWith(Schema.Struct({
+    apiKey: Schema.optional(Schema.String),
+    baseUrl: Schema.optional(Schema.String),
   }), { default: () => ({}) }),
   database: Schema.optionalWith(
     Schema.Struct({
@@ -344,6 +347,7 @@ export class Config extends Schema.Class<Config>("Config")({
       autoInstall: true,
     },
     gateway: {},
+    openai: {},
     database: {
       backend: "libsql",
       qdrant: {
@@ -371,7 +375,14 @@ export class Config extends Schema.Class<Config>("Config")({
    * Resolve the OpenAI API key: config takes precedence over env var.
    */
   get openaiApiKey(): string | undefined {
-    return this.embedding.openai.apiKey ?? process.env.OPENAI_API_KEY;
+    return this.openai.apiKey ?? this.embedding.openai.apiKey ?? process.env.OPENAI_API_KEY;
+  }
+
+  /**
+   * Resolve the OpenAI base URL: top-level config takes precedence over legacy embedding config.
+   */
+  get openaiBaseUrl(): string | undefined {
+    return this.openai.baseUrl ?? this.embedding.openai.baseUrl;
   }
 }
 
@@ -410,7 +421,7 @@ export function resolveConfigPath(): string {
  * Decode config data and apply schema defaults for missing fields.
  */
 export function normalizeConfig(configData: unknown): Config {
-  return Schema.decodeSync(Config)(configData);
+  return Schema.decodeUnknownSync(Config)(configData);
 }
 
 /**

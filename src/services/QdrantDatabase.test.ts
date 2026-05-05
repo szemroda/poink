@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, mock, test } from "bun:test";
 import { Effect } from "effect";
 import { Database } from "./Database.js";
-import { Document } from "../types.js";
+import { Document, SearchOptions } from "../types.js";
 
 type PointId = string | number;
 
@@ -472,12 +472,18 @@ describe("QdrantDatabase", () => {
           { chunkId: "chunk-2", embedding: [0, 1, 0] },
         ]);
 
-        const vectorResults = yield* db.vectorSearch([1, 0, 0], {
-          limit: 5,
-          tags: ["ml"],
-          threshold: 0.5,
-        });
-        const ftsResults = yield* db.ftsSearch("TypeScript", { limit: 5 });
+        const vectorResults = yield* db.vectorSearch(
+          [1, 0, 0],
+          new SearchOptions({
+            limit: 5,
+            tags: ["ml"],
+            threshold: 0.5,
+          }),
+        );
+        const ftsResults = yield* db.ftsSearch(
+          "TypeScript",
+          new SearchOptions({ limit: 5 }),
+        );
 
         return { vectorResults, ftsResults };
       }).pipe(Effect.provide(makeLayer())),
@@ -538,7 +544,10 @@ describe("QdrantDatabase", () => {
         );
 
         const chunks = yield* db.listChunksByDocument("doc-replace");
-        const vector = yield* db.vectorSearch([0, 1, 0], { limit: 5 });
+        const vector = yield* db.vectorSearch(
+          [0, 1, 0],
+          new SearchOptions({ limit: 5 }),
+        );
 
         return { chunks, vector };
       }).pipe(Effect.provide(makeLayer())),

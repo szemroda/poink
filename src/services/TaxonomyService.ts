@@ -215,7 +215,7 @@ export class TaxonomyServiceImpl {
    *   - url: ":memory:" for in-memory, "file:./path.db" for local file, or remote URL
    *   - authToken: Optional auth token for Turso/remote databases
    *
-   * Requires: Ollama service for embedding generation
+   * Requires: the configured embedding provider for concept embeddings
    */
   static make(config: { url: string; authToken?: string }) {
     return Layer.scoped(

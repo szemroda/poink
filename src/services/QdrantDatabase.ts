@@ -724,7 +724,7 @@ export class QdrantDatabase {
       streamEmbeddings: async function* (batchSize: number) {
         await ensureCollections();
 
-        let offset: string | number | undefined;
+        let offset: string | number | Record<string, unknown> | null | undefined;
 
         while (true) {
           const page = await client.scroll(chunksCollection, {
@@ -801,7 +801,7 @@ async function scrollAll(
   },
 ): Promise<QdrantPoint[]> {
   const points: QdrantPoint[] = [];
-  let offset: string | number | undefined;
+  let offset: string | number | Record<string, unknown> | null | undefined;
 
   while (true) {
     const page = await client.scroll(collection, {

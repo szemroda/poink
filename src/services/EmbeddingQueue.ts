@@ -31,8 +31,8 @@ export interface EmbeddingQueueConfig {
   batchSize: number;
 
   /**
-   * Concurrency for Ollama embedding calls within a batch
-   * Limited by Ollama's capacity and network
+   * Concurrency for embedding calls within a batch
+   * Limited by provider capacity and network
    * Default: 5
    */
   concurrency: number;
@@ -62,10 +62,7 @@ export interface EmbeddingQueueConfig {
 /**
  * Default configuration - tuned for stability over speed
  *
- * CONSERVATIVE SETTINGS to prioritize stability:
- * - batchSize: 20 (was 50) - smaller batches = less memory pressure
- * - concurrency: 3 (was 5) - fewer parallel Ollama calls
- * - batchDelayMs: 50 (was 10) - more time for GC between batches
+ * CONSERVATIVE SETTINGS to prioritize stability
  */
 export const DEFAULT_QUEUE_CONFIG: EmbeddingQueueConfig = {
   batchSize: 20,
