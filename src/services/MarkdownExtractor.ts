@@ -14,6 +14,7 @@ import remarkGfm from "remark-gfm";
 import { toString as mdastToString } from "mdast-util-to-string";
 import matter from "gray-matter";
 import type { Root, Heading, RootContent } from "mdast";
+import { assertValidChunking } from "../chunking.js";
 import { resolveUserPath } from "../pathUtils.js";
 import { LibraryConfig } from "../types.js";
 
@@ -367,6 +368,9 @@ function chunkText(
   chunkSize: number,
   chunkOverlap: number,
 ): string[] {
+  assertValidChunking(chunkSize, chunkOverlap);
+  const sentenceSplitStep = chunkSize - chunkOverlap;
+
   const chunks: string[] = [];
 
   // Sanitize first to remove null bytes
@@ -439,7 +443,7 @@ function chunkText(
               for (
                 let i = 0;
                 i < sentence.length;
-                i += chunkSize - chunkOverlap
+                i += sentenceSplitStep
               ) {
                 chunks.push(sentence.slice(i, i + chunkSize).trim());
               }

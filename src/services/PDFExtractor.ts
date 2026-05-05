@@ -4,6 +4,7 @@
 
 import { Context, Effect, Layer } from "effect";
 import { getData } from "pdf-parse/worker";
+import { assertValidChunking } from "../chunking.js";
 import { resolveUserPath } from "../pathUtils.js";
 import {
   LibraryConfig,
@@ -96,6 +97,9 @@ export function chunkText(
   chunkSize: number,
   chunkOverlap: number,
 ): string[] {
+  assertValidChunking(chunkSize, chunkOverlap);
+  const sentenceSplitStep = chunkSize - chunkOverlap;
+
   const chunks: string[] = [];
 
   // Clean up text - sanitize first, then normalize while preserving paragraph structure.
@@ -173,7 +177,7 @@ export function chunkText(
               for (
                 let i = 0;
                 i < sentence.length;
-                i += chunkSize - chunkOverlap
+                i += sentenceSplitStep
               ) {
                 chunks.push(sentence.slice(i, i + chunkSize).trim());
               }

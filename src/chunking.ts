@@ -33,10 +33,28 @@ export function inferFileTypeFromPath(path: string): DocumentFileType {
   return "pdf";
 }
 
+export function assertValidChunking(
+  chunkSize: number,
+  chunkOverlap: number,
+): void {
+  if (!Number.isFinite(chunkSize) || chunkSize <= 0) {
+    throw new Error(`chunkSize must be > 0, got ${chunkSize}`);
+  }
+  if (!Number.isFinite(chunkOverlap) || chunkOverlap < 0) {
+    throw new Error(`chunkOverlap must be >= 0, got ${chunkOverlap}`);
+  }
+  if (chunkOverlap >= chunkSize) {
+    throw new Error(
+      `chunkOverlap (${chunkOverlap}) must be smaller than chunkSize (${chunkSize})`,
+    );
+  }
+}
+
 export function buildChunkerMetadata(
   fileType: DocumentFileType,
   config: Pick<LibraryConfig, "chunkSize" | "chunkOverlap">,
 ): ChunkerMetadata {
+  assertValidChunking(config.chunkSize, config.chunkOverlap);
   const base = CURRENT_CHUNKER[fileType];
   return {
     id: base.id,

@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { buildChunkerMetadata, inferFileTypeFromPath } from "./chunking.js";
+import {
+  assertValidChunking,
+  buildChunkerMetadata,
+  inferFileTypeFromPath,
+} from "./chunking.js";
 
 describe("document file type inference", () => {
   test("infers supported document types from path extensions", () => {
@@ -16,5 +20,16 @@ describe("document file type inference", () => {
 
     expect(buildChunkerMetadata("docx", config).id).toContain("docx");
     expect(buildChunkerMetadata("odt", config).id).toContain("odt");
+  });
+
+  test("rejects invalid chunking config when overlap is not smaller than chunk size", () => {
+    expect(() => assertValidChunking(100, 100)).toThrow(
+      "chunkOverlap (100) must be smaller than chunkSize (100)",
+    );
+    expect(() =>
+      buildChunkerMetadata("pdf", { chunkSize: 100, chunkOverlap: 150 }),
+    ).toThrow(
+      "chunkOverlap (150) must be smaller than chunkSize (100)",
+    );
   });
 });

@@ -6,6 +6,7 @@ import { Schema } from "effect";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
 import { homedir } from "os";
 import { dirname, join } from "path";
+import { assertValidChunking } from "./chunking.js";
 
 // ============================================================================
 // Domain Models
@@ -197,6 +198,22 @@ export function expandHomePath(path: string): string {
   return path;
 }
 
+const DEFAULT_CHUNK_SIZE = 512;
+const DEFAULT_CHUNK_OVERLAP = 50;
+
+function getLibraryConfigProps(libraryPath: string) {
+  assertValidChunking(DEFAULT_CHUNK_SIZE, DEFAULT_CHUNK_OVERLAP);
+
+  return {
+    libraryPath,
+    dbPath: join(libraryPath, "library.db"),
+    ollamaModel: process.env.OLLAMA_MODEL || "mxbai-embed-large",
+    ollamaHost: process.env.OLLAMA_HOST || "http://localhost:11434",
+    chunkSize: DEFAULT_CHUNK_SIZE,
+    chunkOverlap: DEFAULT_CHUNK_OVERLAP,
+  };
+}
+
 export class LibraryConfig extends Schema.Class<LibraryConfig>("LibraryConfig")(
   {
     libraryPath: Schema.String,
@@ -207,25 +224,13 @@ export class LibraryConfig extends Schema.Class<LibraryConfig>("LibraryConfig")(
     chunkOverlap: Schema.Number,
   }
 ) {
-  static readonly Default = new LibraryConfig({
-    libraryPath: getDefaultLibraryPath(),
-    dbPath: join(getDefaultLibraryPath(), "library.db"),
-    ollamaModel: process.env.OLLAMA_MODEL || "mxbai-embed-large",
-    ollamaHost: process.env.OLLAMA_HOST || "http://localhost:11434",
-    chunkSize: 512,
-    chunkOverlap: 50,
-  });
+  static readonly Default = new LibraryConfig(
+    getLibraryConfigProps(getDefaultLibraryPath()),
+  );
 
   static fromEnv(): LibraryConfig {
     const libraryPath = process.env.PDF_LIBRARY_PATH || getDefaultLibraryPath();
-    return new LibraryConfig({
-      libraryPath,
-      dbPath: join(libraryPath, "library.db"),
-      ollamaModel: process.env.OLLAMA_MODEL || "mxbai-embed-large",
-      ollamaHost: process.env.OLLAMA_HOST || "http://localhost:11434",
-      chunkSize: 512,
-      chunkOverlap: 50,
-    });
+    return new LibraryConfig(getLibraryConfigProps(libraryPath));
   }
 }
 

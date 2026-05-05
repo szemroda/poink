@@ -94,4 +94,11 @@ describe("chunkText", () => {
     // but the tiny "Short" paragraph should be filtered out.
     expect(chunks.join("\n")).not.toContain("Short");
   });
+
+  test("throws when chunk overlap is not smaller than chunk size", () => {
+    const input = `${"word ".repeat(50)}.`;
+    expect(() => chunkText(input, 100, 100)).toThrow(
+      "chunkOverlap (100) must be smaller than chunkSize (100)",
+    );
+  });
 });
