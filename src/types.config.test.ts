@@ -56,6 +56,8 @@ describe("loadConfig path and database defaults", () => {
       expect(config.server.port).toBe(3838);
       expect(config.server.auth.enabled).toBe(false);
       expect(config.server.auth.token).toBeUndefined();
+      expect(config.enrichment.model).toBe("llama3.2:3b");
+      expect(config.judge.model).toBe("llama3.2:3b");
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }
@@ -77,6 +79,8 @@ describe("loadConfig path and database defaults", () => {
       expect(config.server.port).toBe(3838);
       expect(config.server.auth.enabled).toBe(false);
       expect(config.server.auth.token).toBeUndefined();
+      expect(config.enrichment.model).toBe("llama3.2");
+      expect(config.judge.model).toBe("llama3.2");
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }

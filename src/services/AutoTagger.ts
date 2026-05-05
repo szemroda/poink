@@ -22,6 +22,7 @@ import {
 import { EmbeddingProvider } from "./EmbeddingProvider.js";
 import { loadConfig } from "../types.js";
 import {
+  describeLanguageModelError,
   getConfiguredLanguageModel,
   resolveLanguageModel,
   type SupportedProvider,
@@ -1002,7 +1003,12 @@ Rules:
 /** Error for enrichment failures */
 export class EnrichmentError {
   readonly _tag = "EnrichmentError";
+  readonly name = "EnrichmentError";
   constructor(readonly message: string, readonly cause?: unknown) {}
+
+  toString(): string {
+    return this.message;
+  }
 }
 
 /**
@@ -1080,7 +1086,15 @@ export const AutoTaggerLive = Layer.effect(
             };
           }
 
-          const ragConcepts = yield* extractRAGContext(content);
+          const ragContextResult = yield* Effect.either(extractRAGContext(content));
+          const ragConcepts =
+            ragContextResult._tag === "Right" ? ragContextResult.right : [];
+
+          if (ragContextResult._tag === "Left") {
+            logDebug(
+              `AutoTagger: continuing without RAG context (${ragContextResult.left.message})`
+            );
+          }
 
           // Merge RAG concepts with provided concepts (RAG first for priority)
           const conceptsForPrompt: TaxonomyConcept[] = [
@@ -1108,9 +1122,7 @@ export const AutoTaggerLive = Layer.effect(
               ),
             catch: (error) =>
               new EnrichmentError(
-                `Enrichment failed: ${
-                  error instanceof Error ? error.message : String(error)
-                }`,
+                `Enrichment failed: ${describeLanguageModelError(error)}`,
                 error
               ),
           });
@@ -1121,13 +1133,20 @@ export const AutoTaggerLive = Layer.effect(
               `AutoTagger: processing ${validatedProposals.length} proposed concept(s)...`
             );
 
-            const { accepted, rejected } = yield* autoAcceptProposals(
-              validatedProposals
+            const autoAcceptResult = yield* Effect.either(
+              autoAcceptProposals(validatedProposals)
             );
 
-            logDebug(
-              `AutoTagger: auto-accept results: ${accepted} accepted, ${rejected} rejected`
-            );
+            if (autoAcceptResult._tag === "Right") {
+              const { accepted, rejected } = autoAcceptResult.right;
+              logDebug(
+                `AutoTagger: auto-accept results: ${accepted} accepted, ${rejected} rejected`
+              );
+            } else {
+              logDebug(
+                `AutoTagger: skipped auto-accept (${autoAcceptResult.left.message})`
+              );
+            }
           }
 
           return {
@@ -1168,9 +1187,7 @@ export const AutoTaggerLive = Layer.effect(
               try: () => tagWithLLM(filename, content, provider, model),
               catch: (error) =>
                 new EnrichmentError(
-                  `LLM tagging failed: ${
-                    error instanceof Error ? error.message : String(error)
-                  }`,
+                  `LLM tagging failed: ${describeLanguageModelError(error)}`,
                   error
                 ),
             });

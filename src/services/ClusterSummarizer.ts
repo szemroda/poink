@@ -1,7 +1,7 @@
 import { Context, Effect, Layer } from "effect";
 import { generateObject } from "ai";
 import { z } from "zod";
-import { getConfiguredLanguageModel } from "./AIProvider.js";
+import { describeLanguageModelError, getConfiguredLanguageModel } from "./AIProvider.js";
 import { loadConfig } from "../types.js";
 
 /**
@@ -103,7 +103,7 @@ export class ClusterSummarizerImpl {
           try: () => generateSummary(chunks, options),
           catch: (error) =>
             new ClusterSummarizerError(
-              error instanceof Error ? error.message : String(error),
+              describeLanguageModelError(error),
               error
             ),
         }),

@@ -32,6 +32,60 @@ function normalizeBaseUrl(baseUrl: string | undefined): string | undefined {
   return trimmed.endsWith("/") ? trimmed.slice(0, -1) : trimmed;
 }
 
+export function normalizeOllamaBaseUrl(
+  baseUrl: string | undefined,
+): string | undefined {
+  const normalized = normalizeBaseUrl(baseUrl);
+  if (!normalized) return undefined;
+  return normalized.endsWith("/api") ? normalized : `${normalized}/api`;
+}
+
+export function describeLanguageModelError(error: unknown): string {
+  if (error instanceof Error && typeof error.message === "string") {
+    const request = error as Error & {
+      requestBodyValues?: { model?: unknown };
+      responseBody?: unknown;
+      url?: unknown;
+    };
+    const model =
+      typeof request.requestBodyValues?.model === "string"
+        ? request.requestBodyValues.model
+        : undefined;
+    const url = typeof request.url === "string" ? request.url : undefined;
+
+    if (typeof request.responseBody === "string") {
+      try {
+        const parsed = JSON.parse(request.responseBody) as { error?: unknown };
+        if (typeof parsed.error === "string") {
+          if (model && /model .* not found/i.test(parsed.error)) {
+            return `Ollama model "${model}" not found. Configure an exact installed model name from \`ollama list\` (for example \`llama3.2:3b\` or \`llama3.2:11b\`).`;
+          }
+          return parsed.error;
+        }
+      } catch {
+        // Fall through to the generic message.
+      }
+    }
+
+    if (model && url && error.message === "Not Found") {
+      return `Ollama model "${model}" not found at ${url}. Configure an exact installed model name from \`ollama list\`.`;
+    }
+
+    return error.message;
+  }
+
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "message" in error &&
+    typeof (error as { message?: unknown }).message === "string"
+  ) {
+    return (error as { message: string }).message;
+  }
+
+  return String(error);
+}
+
 function requireGatewayApiKey(config: Config): string {
   const apiKey = config.gatewayApiKey;
   if (!apiKey) {
@@ -67,7 +121,7 @@ function createConfiguredOpenAIProvider(config: Config) {
 
 function createConfiguredOllamaProvider(config: Config) {
   return createOllama({
-    baseURL: normalizeBaseUrl(config.ollama.host),
+    baseURL: normalizeOllamaBaseUrl(config.ollama.host),
     compatibility: "strict",
   });
 }

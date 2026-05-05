@@ -193,6 +193,44 @@ describe("CLI JSON Envelope Contract", () => {
       expect(res.stdout).toContain("libsql");
       expect(res.stdout).toContain("Qdrant:");
     }));
+
+  test("config show succeeds when PDF_LIBRARY_PATH does not exist yet", () =>
+    withTempLibraryPath((libraryRoot) => {
+      const libraryPath = join(libraryRoot, "missing-library");
+      const configPath = join(libraryRoot, "config.json");
+      const res = runCli(["config", "show", "--format", "text"], {
+        env: {
+          PDF_LIBRARY_PATH: libraryPath,
+          PDF_BRAIN_CONFIG: configPath,
+          OLLAMA_HOST: "http://127.0.0.1:1",
+        },
+      });
+
+      expect(res.exitCode).toBe(0);
+      expect(res.stdout).toContain("PDF Library Config");
+      expect(res.stdout).toContain("Database:");
+    }));
+
+  test("init creates a missing library directory before opening the database", () =>
+    withTempLibraryPath((libraryRoot) => {
+      const libraryPath = join(libraryRoot, "missing-library");
+      const configPath = join(libraryRoot, "config.json");
+      const res = runCli(["init", "--format", "json", "--quiet"], {
+        env: {
+          PDF_LIBRARY_PATH: libraryPath,
+          PDF_BRAIN_CONFIG: configPath,
+          OLLAMA_HOST: "http://127.0.0.1:1",
+        },
+      });
+
+      expect(res.exitCode).toBe(0);
+
+      const obj = JSON.parse(res.stdout);
+      expect(obj.ok).toBe(true);
+      expect(obj.command).toBe("init");
+      expect(obj.result.libraryPath).toBe(libraryPath);
+      expect(obj.result.dbPath).toBe(join(libraryPath, "library.db"));
+    }));
 });
 
 describe("MCP Tool Output Contract", () => {

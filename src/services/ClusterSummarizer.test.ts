@@ -1,5 +1,8 @@
 import { describe, it, expect, mock } from "bun:test";
 import { Effect, Layer } from "effect";
+import { mkdtempSync, rmSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
 import {
   ClusterSummarizerService,
   ClusterSummarizerImpl,
@@ -169,22 +172,57 @@ describe("ClusterSummarizerService - LLM Abstractive Summarization", () => {
   });
 
   it("should use the configured enrichment model via AI SDK", async () => {
+    const originalConfigPath = process.env.PDF_BRAIN_CONFIG;
+    const tempDir = mkdtempSync(join(tmpdir(), "pdf-brain-cluster-summarizer-"));
+    const configPath = join(tempDir, "config.json");
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        embedding: { provider: "ollama", model: "mxbai-embed-large" },
+        enrichment: { provider: "ollama", model: "llama3.2:3b" },
+        judge: { provider: "ollama", model: "llama3.2:3b" },
+        ollama: { host: "http://localhost:11434", autoInstall: true },
+        gateway: {},
+        openai: {},
+        database: {
+          backend: "libsql",
+          qdrant: { url: "http://localhost:6333", collection: "pdf-brain" },
+        },
+        server: {
+          host: "127.0.0.1",
+          port: 3838,
+          auth: { enabled: false },
+        },
+      }),
+      "utf-8"
+    );
+    process.env.PDF_BRAIN_CONFIG = configPath;
+
     const chunks = [
       { id: "1", content: "Test content for model verification." },
     ];
 
-    await Effect.runPromise(
-      Effect.gen(function* () {
-        const service = yield* ClusterSummarizerService;
-        return yield* service.summarize(chunks, { clusterId: 5 });
-      }).pipe(Effect.provide(ClusterSummarizerImpl.Default))
-    );
+    try {
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          const service = yield* ClusterSummarizerService;
+          return yield* service.summarize(chunks, { clusterId: 5 });
+        }).pipe(Effect.provide(ClusterSummarizerImpl.Default))
+      );
+    } finally {
+      if (originalConfigPath === undefined) {
+        delete process.env.PDF_BRAIN_CONFIG;
+      } else {
+        process.env.PDF_BRAIN_CONFIG = originalConfigPath;
+      }
+      rmSync(tempDir, { recursive: true, force: true });
+    }
 
     // Verify generateObject was called with correct model
     expect(mockGenerateObject).toHaveBeenCalled();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const calls = mockGenerateObject.mock.calls as any[];
     expect(calls.length).toBeGreaterThan(0);
-    expect(calls[calls.length - 1][0]?.model?.modelId).toBe("llama3.2");
+    expect(calls[calls.length - 1][0]?.model?.modelId).toBe("llama3.2:3b");
   });
 });

@@ -51,6 +51,17 @@ describe("AutoTagger - Concept validation", () => {
   });
 });
 
+describe("AutoTagger errors", () => {
+  it("stringifies EnrichmentError using its message", async () => {
+    const { EnrichmentError } = await import("./AutoTagger.js");
+
+    const error = new EnrichmentError("RAG context extraction failed");
+
+    expect(String(error)).toBe("RAG context extraction failed");
+    expect(error.message).toBe("RAG context extraction failed");
+  });
+});
+
 describe("AutoTagger path handling", () => {
   it("extracts path tags from Windows-style paths", async () => {
     const { extractPathTags } = await import("./AutoTagger.js");

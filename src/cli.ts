@@ -223,6 +223,12 @@ export function assessWALHealth(stats: {
   };
 }
 
+function ensureLibraryDirectoryExists(config: LibraryConfig): void {
+  if (!existsSync(config.libraryPath)) {
+    mkdirSync(config.libraryPath, { recursive: true });
+  }
+}
+
 /**
  * Overall doctor health assessment result
  */
@@ -561,6 +567,21 @@ class CLIError extends Error {
   }
 }
 
+function describeCliFailure(error: unknown): string {
+  if (error instanceof Error && typeof error.message === "string") {
+    return error.message;
+  }
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "message" in error &&
+    typeof (error as { message?: unknown }).message === "string"
+  ) {
+    return (error as { message: string }).message;
+  }
+  return String(error);
+}
+
 type GlobalCLIOptions = {
   format: OutputFormat;
   pretty: boolean;
@@ -718,6 +739,7 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
     let agentResult: CommandResult | null = null;
     let resultPayload: unknown = null;
     const startedAt = Date.now();
+    let loadedLibrary: PDFLibrary | undefined;
 
     // Agent-first: when `--format json|ndjson`, stdout must be pure data.
     // We keep the existing `yield* Console.log/error` calls, but gate them
@@ -728,9 +750,27 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
       error: (message: string) =>
         format === "text" ? EffectConsole.error(message) : Effect.void,
     };
+    const library = new Proxy({} as PDFLibrary, {
+      get(_target, prop, receiver) {
+        return (...args: unknown[]) =>
+          Effect.flatMap(
+            Effect.gen(function* () {
+              if (loadedLibrary) return loadedLibrary;
+              loadedLibrary = yield* PDFLibrary;
+              return loadedLibrary;
+            }),
+            (service) => {
+              const value = Reflect.get(service as object, prop, receiver);
+              if (typeof value !== "function") {
+                return value;
+              }
+              return value.apply(service, args);
+            }
+          );
+      },
+    });
 
   if (args.length === 0 || args.includes("--help") || args.includes("-h")) {
-    const library = yield* PDFLibrary;
     const stats = yield* Effect.either(library.stats());
     const statsData = stats._tag === "Right" ? stats.right : undefined;
     if (format === "text") {
@@ -763,7 +803,6 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
   }
 
   const command = args[0];
-  const library = yield* PDFLibrary;
 
   switch (command) {
     case "capabilities": {
@@ -3343,7 +3382,9 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
     if (format === "text") {
       const hints = generateHints(agentResult);
       if (hints.length > 0) {
-        const statsResult = yield* Effect.either(library.stats());
+        const statsResult = loadedLibrary
+          ? yield* Effect.either(loadedLibrary.stats())
+          : { _tag: "Left" as const };
         const statsData =
           statsResult._tag === "Right"
             ? { documents: statsResult.right.documents }
@@ -3423,7 +3464,7 @@ async function connectMcpServer<ROut, E>(
       typeof (e as any)._tag === "string"
         ? String((e as any)._tag)
         : "UNKNOWN_ERROR";
-    const message = e instanceof Error ? e.message : String(e);
+    const message = describeCliFailure(e);
     return new CLIError(tag, message, e);
   };
 
@@ -3898,6 +3939,7 @@ if (import.meta.main) {
 	    // IMPORTANT: MCP uses stdout for protocol messages. Do not write envelopes.
 	    if (command === "mcp") {
 	      const config = LibraryConfig.fromEnv();
+        ensureLibraryDirectoryExists(config);
 	      const TaxonomyServiceLive = TaxonomyServiceImpl.make({
 	        url: `file:${config.dbPath}`,
 	      });
@@ -3919,6 +3961,7 @@ if (import.meta.main) {
 
 	    // Build app layer for all commands (including taxonomy/migrate once they move into makeProgram).
 	    const config = LibraryConfig.fromEnv();
+      ensureLibraryDirectoryExists(config);
 	    const TaxonomyServiceLive = TaxonomyServiceImpl.make({
 	      url: `file:${config.dbPath}`,
 	    });
@@ -3935,7 +3978,7 @@ if (import.meta.main) {
         e && typeof e === "object" && "_tag" in e && typeof (e as any)._tag === "string"
           ? String((e as any)._tag)
           : "UNKNOWN_ERROR";
-      const message = e instanceof Error ? e.message : String(e);
+      const message = describeCliFailure(e);
       return new CLIError(tag, message, e);
     };
 
