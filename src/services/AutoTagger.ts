@@ -11,7 +11,7 @@
  * Uses the configured provider directly with fail-fast behavior.
  */
 
-import { generateObject, generateText } from "ai";
+import { generateText, Output } from "ai";
 import { Context, Effect, Layer } from "effect";
 import { z } from "zod";
 import { logDebug, logInfo } from "../logger.js";
@@ -715,9 +715,9 @@ async function enrichWithLLM(
   const conceptsList = formatConceptsForPrompt(availableConcepts);
 
   if (provider !== "ollama") {
-    const { object } = await generateObject({
+    const { output } = await generateText({
       model: resolvedModel.model,
-      schema: EnrichmentSchema,
+      output: Output.object({ schema: EnrichmentSchema }),
       prompt: `Analyze this document and extract metadata for a personal knowledge library.
 
 Filename: ${filename}
@@ -745,14 +745,14 @@ Do NOT propose concepts that are variations of existing ones.`,
     });
 
     return {
-      title: object.title,
-      author: object.author,
-      summary: object.summary,
-      documentType: object.documentType,
-      category: normalizeTag(object.category),
-      tags: object.tags.map(normalizeTag).filter((t) => t.length >= 2),
-      concepts: object.concepts,
-      proposedConcepts: validateProposedConcepts(object.proposedConcepts),
+      title: output.title,
+      author: output.author,
+      summary: output.summary,
+      documentType: output.documentType,
+      category: normalizeTag(output.category),
+      tags: output.tags.map(normalizeTag).filter((t) => t.length >= 2),
+      concepts: output.concepts,
+      proposedConcepts: validateProposedConcepts(output.proposedConcepts),
     };
   }
 
@@ -947,16 +947,16 @@ async function tagWithLLM(
   const truncatedContent = content.slice(0, 4000);
 
   if (provider !== "ollama") {
-    const { object } = await generateObject({
+    const { output } = await generateText({
       model: resolvedModel.model,
-      schema: TagSchema,
+      output: Output.object({ schema: TagSchema }),
       prompt: `Generate tags for this document. Filename: ${filename}\n\nContent:\n${truncatedContent}`,
     });
 
     return {
-      tags: object.tags.map(normalizeTag).filter((t) => t.length >= 2),
-      category: object.category ? normalizeTag(object.category) : undefined,
-      author: object.author,
+      tags: output.tags.map(normalizeTag).filter((t) => t.length >= 2),
+      category: output.category ? normalizeTag(output.category) : undefined,
+      author: output.author,
     };
   }
 

@@ -1,4 +1,4 @@
-import { createGateway } from "@ai-sdk/gateway";
+import { createGateway } from "ai";
 import { createOpenAI } from "@ai-sdk/openai";
 import { createOllama } from "ollama-ai-provider-v2";
 import {
@@ -90,7 +90,8 @@ function requireGatewayApiKey(config: Config): string {
   const apiKey = config.gatewayApiKey;
   if (!apiKey) {
     throw new GatewayError({
-      reason: "Gateway API key not set. Use: pdf-brain config set gateway.apiKey <key>",
+      reason:
+        "Gateway API key not set. Use: pdf-brain config set gateway.apiKey <key> or set AI_GATEWAY_API_KEY.",
     });
   }
   return apiKey;
@@ -139,7 +140,7 @@ export function getConfiguredEmbeddingModel(
     return {
       provider,
       modelId,
-      model: createConfiguredGatewayProvider(config).textEmbeddingModel(modelId),
+      model: createConfiguredGatewayProvider(config).embeddingModel(modelId),
     };
   }
 

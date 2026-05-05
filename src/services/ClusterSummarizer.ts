@@ -1,5 +1,5 @@
 import { Context, Effect, Layer } from "effect";
-import { generateObject } from "ai";
+import { generateText, Output } from "ai";
 import { z } from "zod";
 import { describeLanguageModelError, getConfiguredLanguageModel } from "./AIProvider.js";
 import { loadConfig } from "../types.js";
@@ -70,9 +70,9 @@ async function generateSummary(
     .map((chunk, index) => `[Chunk ${index + 1}]\n${chunk.content}`)
     .join("\n\n");
 
-  const { object } = await generateObject({
+  const { output } = await generateText({
     model: resolvedModel.model,
-    schema: SummarySchema,
+    output: Output.object({ schema: SummarySchema }),
     prompt: `Analyze these document chunks from a knowledge library cluster and create an abstractive summary.
 
 ${combinedContent.slice(0, 6000)}
@@ -87,10 +87,10 @@ Focus on synthesizing ideas across chunks, not just listing them.`,
 
   return {
     clusterId: options.clusterId,
-    summary: object.summary,
+    summary: output.summary,
     chunkCount: chunks.length,
-    keyTopics: object.keyTopics,
-    representativeQuote: object.representativeQuote,
+    keyTopics: output.keyTopics,
+    representativeQuote: output.representativeQuote,
   };
 }
 

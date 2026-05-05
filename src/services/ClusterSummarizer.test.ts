@@ -10,9 +10,9 @@ import {
 } from "./ClusterSummarizer.js";
 
 // Mock the AI SDK
-const mockGenerateObject = mock(() =>
+const mockGenerateText = mock(() =>
   Promise.resolve({
-    object: {
+    output: {
       summary:
         "This cluster explores React hooks, focusing on useState and useEffect patterns, along with best practices for creating custom hooks.",
       keyTopics: ["React hooks", "useState", "useEffect", "custom hooks"],
@@ -22,7 +22,10 @@ const mockGenerateObject = mock(() =>
 );
 
 mock.module("ai", () => ({
-  generateObject: mockGenerateObject,
+  Output: {
+    object: (spec: unknown) => spec,
+  },
+  generateText: mockGenerateText,
 }));
 
 describe("ClusterSummarizerService - LLM Abstractive Summarization", () => {
@@ -69,9 +72,9 @@ describe("ClusterSummarizerService - LLM Abstractive Summarization", () => {
   });
 
   it("should include representative quote when LLM provides one", async () => {
-    mockGenerateObject.mockImplementationOnce(() =>
+    mockGenerateText.mockImplementationOnce(() =>
       Promise.resolve({
-        object: {
+        output: {
           summary:
             "Comprehensive guide to TypeScript generics and type inference.",
           keyTopics: ["TypeScript", "generics", "type inference"],
@@ -145,7 +148,7 @@ describe("ClusterSummarizerService - LLM Abstractive Summarization", () => {
   });
 
   it("should fail fast when LLM summarization fails", async () => {
-    mockGenerateObject.mockImplementationOnce(() =>
+    mockGenerateText.mockImplementationOnce(() =>
       Promise.reject(new Error("API unavailable"))
     );
 
@@ -218,10 +221,10 @@ describe("ClusterSummarizerService - LLM Abstractive Summarization", () => {
       rmSync(tempDir, { recursive: true, force: true });
     }
 
-    // Verify generateObject was called with correct model
-    expect(mockGenerateObject).toHaveBeenCalled();
+    // Verify generateText was called with correct model
+    expect(mockGenerateText).toHaveBeenCalled();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const calls = mockGenerateObject.mock.calls as any[];
+    const calls = mockGenerateText.mock.calls as any[];
     expect(calls.length).toBeGreaterThan(0);
     expect(calls[calls.length - 1][0]?.model?.modelId).toBe("llama3.2:3b");
   });
