@@ -5,6 +5,9 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
 import { Effect, Layer } from "effect";
 import { TaxonomyService, TaxonomyServiceImpl } from "./TaxonomyService.js";
 import { LibSQLDatabase } from "./LibSQLDatabase.js";
@@ -12,22 +15,25 @@ import { LibSQLDatabase } from "./LibSQLDatabase.js";
 // Test layer - LibSQLDatabase.make initializes the schema (including taxonomy tables)
 // Then we use the same DB URL for TaxonomyService
 const makeTestLayer = () => {
-  // Use file DB for tests to ensure schema persistence across layer creations
-  const testDbPath = `file:${process.cwd()}/.test-db-${Date.now()}.db`;
+  // Use a temp file DB so schema persists across layer creations without cluttering the repo.
+  const tempDir = mkdtempSync(join(tmpdir(), "pdf-brain-taxonomy-"));
+  const testDbPath = `file:${join(tempDir, "library.db")}`;
   return {
     layer: Layer.mergeAll(
       LibSQLDatabase.make({ url: testDbPath }),
       TaxonomyServiceImpl.make({ url: testDbPath })
     ),
     cleanup: () => {
-      // Cleanup handled by Layer finalizers
+      rmSync(tempDir, { recursive: true, force: true });
     },
   };
 };
 
 const runTest = <A, E>(effect: Effect.Effect<A, E, TaxonomyService>) => {
-  const { layer } = makeTestLayer();
-  return Effect.provide(effect, layer).pipe(Effect.runPromise);
+  const { layer, cleanup } = makeTestLayer();
+  return Effect.provide(effect, layer)
+    .pipe(Effect.runPromise)
+    .finally(cleanup);
 };
 
 describe("TaxonomyService - Concept CRUD", () => {
