@@ -5,6 +5,8 @@ import { tmpdir } from "os";
 import { loadConfig } from "./types.js";
 
 const ORIGINAL_PDF_BRAIN_CONFIG = process.env.PDF_BRAIN_CONFIG;
+const ORIGINAL_OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
+const ORIGINAL_OPENROUTER_BASE_URL = process.env.OPENROUTER_BASE_URL;
 
 const LEGACY_CONFIG_SHAPE = {
   embedding: {
@@ -36,6 +38,18 @@ afterEach(() => {
   } else {
     process.env.PDF_BRAIN_CONFIG = ORIGINAL_PDF_BRAIN_CONFIG;
   }
+
+  if (ORIGINAL_OPENROUTER_API_KEY === undefined) {
+    delete process.env.OPENROUTER_API_KEY;
+  } else {
+    process.env.OPENROUTER_API_KEY = ORIGINAL_OPENROUTER_API_KEY;
+  }
+
+  if (ORIGINAL_OPENROUTER_BASE_URL === undefined) {
+    delete process.env.OPENROUTER_BASE_URL;
+  } else {
+    process.env.OPENROUTER_BASE_URL = ORIGINAL_OPENROUTER_BASE_URL;
+  }
 });
 
 describe("loadConfig path and database defaults", () => {
@@ -58,6 +72,8 @@ describe("loadConfig path and database defaults", () => {
       expect(config.server.auth.token).toBeUndefined();
       expect(config.enrichment.model).toBe("llama3.2:3b");
       expect(config.judge.model).toBe("llama3.2:3b");
+      expect(config.openrouter.apiKey).toBeUndefined();
+      expect(config.openrouter.baseUrl).toBeUndefined();
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }
@@ -81,6 +97,26 @@ describe("loadConfig path and database defaults", () => {
       expect(config.server.auth.token).toBeUndefined();
       expect(config.enrichment.model).toBe("llama3.2");
       expect(config.judge.model).toBe("llama3.2");
+      expect(config.openrouter.apiKey).toBeUndefined();
+      expect(config.openrouter.baseUrl).toBeUndefined();
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  test("resolves OpenRouter config from environment variables", () => {
+    const tempDir = makeTempDir();
+
+    try {
+      const configPath = join(tempDir, "config.json");
+      process.env.PDF_BRAIN_CONFIG = configPath;
+      process.env.OPENROUTER_API_KEY = "env-openrouter-key";
+      process.env.OPENROUTER_BASE_URL = "https://openrouter.example/api/v1";
+
+      const config = loadConfig();
+
+      expect(config.openrouterApiKey).toBe("env-openrouter-key");
+      expect(config.openrouterBaseUrl).toBe("https://openrouter.example/api/v1");
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }

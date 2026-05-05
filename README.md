@@ -275,6 +275,11 @@ pdf-brain config set enrichment.provider gateway
 pdf-brain config set enrichment.model anthropic/claude-haiku-4-5
 export AI_GATEWAY_API_KEY=your-key
 
+# Use OpenRouter
+pdf-brain config set enrichment.provider openrouter
+pdf-brain config set enrichment.model anthropic/claude-3.5-haiku
+export OPENROUTER_API_KEY=your-key
+
 # Provider priority: config > CLI flag > auto-detect
 pdf-brain add paper.pdf --enrich              # uses config
 pdf-brain add paper.pdf --enrich --provider ollama  # override
@@ -384,6 +389,9 @@ pdf-brain config set enrichment.model anthropic/claude-haiku-4-5
   "judge": {
     "provider": "gateway",
     "model": "anthropic/claude-haiku-4-5"
+  },
+  "openrouter": {
+    "apiKey": "..."
   }
 }
 ```
@@ -391,12 +399,14 @@ pdf-brain config set enrichment.model anthropic/claude-haiku-4-5
 | Setting               | Default                  | Description                          |
 | --------------------- | ------------------------ | ------------------------------------ |
 | `ollama.host`         | `http://localhost:11434` | Ollama API endpoint                  |
-| `embedding.provider`  | `ollama`                 | Embedding provider (ollama only)     |
+| `embedding.provider`  | `ollama`                 | Embedding provider: `ollama`, `gateway`, `openai`, or `openrouter` |
 | `embedding.model`     | `mxbai-embed-large`      | Embedding model (1024 dims)          |
-| `enrichment.provider` | `ollama`                 | LLM provider: `ollama` or `gateway`  |
+| `enrichment.provider` | `ollama`                 | LLM provider: `ollama`, `gateway`, `openai`, or `openrouter` |
 | `enrichment.model`    | `llama3.2:3b`            | Model for document enrichment        |
 | `judge.provider`      | `ollama`                 | Provider for concept deduplication   |
 | `judge.model`         | `llama3.2:3b`            | Model for judging duplicate concepts |
+| `openrouter.apiKey`   | -                        | OpenRouter API key                   |
+| `openrouter.baseUrl`  | `https://openrouter.ai/api/v1` | Optional OpenRouter API base URL |
 
 ### Environment Variables
 
@@ -405,6 +415,8 @@ pdf-brain config set enrichment.model anthropic/claude-haiku-4-5
 | `PDF_LIBRARY_PATH`   | `~/Documents/.pdf-library` | Library storage location |
 | `OLLAMA_HOST`        | `http://localhost:11434`   | Ollama API endpoint      |
 | `AI_GATEWAY_API_KEY` | -                          | API key for AI Gateway   |
+| `OPENROUTER_API_KEY` | -                          | API key for OpenRouter   |
+| `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | Optional OpenRouter base URL |
 | `PDF_BRAIN_LOG_LEVEL` | `silent`                  | stderr logging verbosity |
 | `PDF_BRAIN_QUERY_EMBED_CACHE_SIZE` | `256`        | Query embedding LRU cache size (0 disables) |
 
@@ -424,6 +436,24 @@ pdf-brain config set enrichment.model anthropic/claude-haiku-4-5
 # - anthropic/claude-sonnet-4-20250514
 # - openai/gpt-4o-mini
 # - openai/gpt-4o
+```
+
+### OpenRouter
+
+For OpenRouter, switch the provider and use an OpenRouter model ID. `pdf-brain` uses the official `@openrouter/ai-sdk-provider` integration for AI SDK v6.
+
+```bash
+export OPENROUTER_API_KEY=your-key
+
+pdf-brain config set enrichment.provider openrouter
+pdf-brain config set enrichment.model anthropic/claude-3.5-haiku
+```
+
+OpenRouter embeddings also work through the same provider abstraction:
+
+```bash
+pdf-brain config set embedding.provider openrouter
+pdf-brain config set embedding.model openai/text-embedding-3-small
 ```
 
 ## Storage

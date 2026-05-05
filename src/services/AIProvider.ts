@@ -1,15 +1,21 @@
 import { createGateway } from "ai";
 import { createOpenAI } from "@ai-sdk/openai";
+import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 import { createOllama } from "ollama-ai-provider-v2";
 import {
   GatewayError,
   type Config,
   OllamaError,
   OpenAIError,
+  OpenRouterError,
 } from "../types.js";
 
-export type SupportedProvider = "ollama" | "openai" | "gateway";
-export type ProviderError = GatewayError | OllamaError | OpenAIError;
+export type SupportedProvider = "ollama" | "openai" | "gateway" | "openrouter";
+export type ProviderError =
+  | GatewayError
+  | OllamaError
+  | OpenAIError
+  | OpenRouterError;
 export type ConfiguredLanguageRole = "enrichment" | "judge" | "summary";
 
 export interface ResolvedEmbeddingModel {
@@ -107,6 +113,17 @@ function requireOpenAIApiKey(config: Config): string {
   return apiKey;
 }
 
+function requireOpenRouterApiKey(config: Config): string {
+  const apiKey = config.openrouterApiKey;
+  if (!apiKey) {
+    throw new OpenRouterError({
+      reason:
+        "OpenRouter API key not set. Use openrouter.apiKey or OPENROUTER_API_KEY.",
+    });
+  }
+  return apiKey;
+}
+
 function createConfiguredGatewayProvider(config: Config) {
   return createGateway({
     apiKey: requireGatewayApiKey(config),
@@ -117,6 +134,14 @@ function createConfiguredOpenAIProvider(config: Config) {
   return createOpenAI({
     apiKey: requireOpenAIApiKey(config),
     baseURL: normalizeBaseUrl(config.openaiBaseUrl) ?? DEFAULT_OPENAI_BASE_URL,
+  });
+}
+
+function createConfiguredOpenRouterProvider(config: Config) {
+  return createOpenRouter({
+    apiKey: requireOpenRouterApiKey(config),
+    baseURL: normalizeBaseUrl(config.openrouterBaseUrl),
+    compatibility: "strict",
   });
 }
 
@@ -152,6 +177,14 @@ export function getConfiguredEmbeddingModel(
     };
   }
 
+  if (provider === "openrouter") {
+    return {
+      provider,
+      modelId,
+      model: createConfiguredOpenRouterProvider(config).textEmbeddingModel(modelId),
+    };
+  }
+
   return {
     provider,
     modelId,
@@ -184,6 +217,14 @@ export function resolveLanguageModel(
       provider,
       modelId,
       model: createConfiguredOpenAIProvider(config).languageModel(modelId),
+    };
+  }
+
+  if (provider === "openrouter") {
+    return {
+      provider,
+      modelId,
+      model: createConfiguredOpenRouterProvider(config).languageModel(modelId),
     };
   }
 

@@ -1,6 +1,19 @@
 import { describe, expect, test } from "bun:test";
 
-import { describeLanguageModelError, normalizeOllamaBaseUrl } from "./AIProvider.js";
+import { Config, normalizeConfig } from "../types.js";
+import {
+  describeLanguageModelError,
+  getConfiguredEmbeddingModel,
+  normalizeOllamaBaseUrl,
+  resolveLanguageModel,
+} from "./AIProvider.js";
+
+function makeTestConfig(overrides: Record<string, unknown>) {
+  return normalizeConfig({
+    ...JSON.parse(JSON.stringify(Config.Default)),
+    ...overrides,
+  });
+}
 
 describe("AIProvider", () => {
   test("appends /api to a plain Ollama host", () => {
@@ -33,5 +46,46 @@ describe("AIProvider", () => {
     );
     expect(describeLanguageModelError(error)).toContain("ollama list");
     expect(describeLanguageModelError(error)).toContain("llama3.2:3b");
+  });
+
+  test("resolves OpenRouter language models through the provider abstraction", () => {
+    const config = makeTestConfig({
+      openrouter: {
+        apiKey: "test-openrouter-key",
+      },
+    });
+
+    const resolved = resolveLanguageModel(
+      config,
+      "openrouter",
+      "anthropic/claude-3.5-haiku"
+    );
+
+    expect(resolved.provider).toBe("openrouter");
+    expect(resolved.modelId).toBe("anthropic/claude-3.5-haiku");
+    expect(resolved.model.provider).toBe("openrouter");
+    expect(resolved.model.modelId).toBe("anthropic/claude-3.5-haiku");
+  });
+
+  test("resolves OpenRouter embedding models through the provider abstraction", () => {
+    const config = makeTestConfig({
+      embedding: {
+        provider: "openrouter",
+        model: "openai/text-embedding-3-small",
+        openai: {
+          model: "text-embedding-3-small",
+        },
+      },
+      openrouter: {
+        apiKey: "test-openrouter-key",
+      },
+    });
+
+    const resolved = getConfiguredEmbeddingModel(config);
+
+    expect(resolved.provider).toBe("openrouter");
+    expect(resolved.model.provider).toBe("openrouter");
+    expect(resolved.modelId).toBe("openai/text-embedding-3-small");
+    expect(resolved.model.modelId).toBe("openai/text-embedding-3-small");
   });
 });

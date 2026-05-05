@@ -231,7 +231,7 @@ const DEFAULT_OPENAI_EMBEDDING_MODEL = "text-embedding-3-small";
  */
 export class Config extends Schema.Class<Config>("Config")({
   embedding: Schema.Struct({
-    provider: Schema.Literal("ollama", "gateway", "openai"),
+    provider: Schema.Literal("ollama", "gateway", "openai", "openrouter"),
     model: Schema.String,
     openai: Schema.optionalWith(
       Schema.Struct({
@@ -243,11 +243,11 @@ export class Config extends Schema.Class<Config>("Config")({
     ),
   }),
   enrichment: Schema.Struct({
-    provider: Schema.Literal("ollama", "gateway", "openai"),
+    provider: Schema.Literal("ollama", "gateway", "openai", "openrouter"),
     model: Schema.String,
   }),
   judge: Schema.Struct({
-    provider: Schema.Literal("ollama", "gateway", "openai"),
+    provider: Schema.Literal("ollama", "gateway", "openai", "openrouter"),
     model: Schema.String,
   }),
   ollama: Schema.Struct({
@@ -258,6 +258,10 @@ export class Config extends Schema.Class<Config>("Config")({
     apiKey: Schema.optional(Schema.String),
   }), { default: () => ({}) }),
   openai: Schema.optionalWith(Schema.Struct({
+    apiKey: Schema.optional(Schema.String),
+    baseUrl: Schema.optional(Schema.String),
+  }), { default: () => ({}) }),
+  openrouter: Schema.optionalWith(Schema.Struct({
     apiKey: Schema.optional(Schema.String),
     baseUrl: Schema.optional(Schema.String),
   }), { default: () => ({}) }),
@@ -348,6 +352,7 @@ export class Config extends Schema.Class<Config>("Config")({
     },
     gateway: {},
     openai: {},
+    openrouter: {},
     database: {
       backend: "libsql",
       qdrant: {
@@ -383,6 +388,20 @@ export class Config extends Schema.Class<Config>("Config")({
    */
   get openaiBaseUrl(): string | undefined {
     return this.openai.baseUrl ?? this.embedding.openai.baseUrl;
+  }
+
+  /**
+   * Resolve the OpenRouter API key: config takes precedence over env var.
+   */
+  get openrouterApiKey(): string | undefined {
+    return this.openrouter.apiKey ?? process.env.OPENROUTER_API_KEY;
+  }
+
+  /**
+   * Resolve the OpenRouter base URL: config takes precedence over env var.
+   */
+  get openrouterBaseUrl(): string | undefined {
+    return this.openrouter.baseUrl ?? process.env.OPENROUTER_BASE_URL;
   }
 }
 
@@ -540,6 +559,11 @@ export class GatewayError extends Schema.TaggedError<GatewayError>()(
 
 export class OpenAIError extends Schema.TaggedError<OpenAIError>()(
   "OpenAIError",
+  { reason: Schema.String }
+) {}
+
+export class OpenRouterError extends Schema.TaggedError<OpenRouterError>()(
+  "OpenRouterError",
   { reason: Schema.String }
 ) {}
 

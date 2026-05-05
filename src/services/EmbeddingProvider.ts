@@ -1,12 +1,23 @@
 /**
- * Unified Embedding Provider - Routes to Ollama, Gateway, or OpenAI based on config
+ * Unified embedding provider that resolves the configured backend lazily.
+ *
+ * Lazy resolution matters for CLI commands like `config set`: they should be
+ * able to update provider credentials without first constructing the current
+ * embedding client.
  */
 import { embed, embedMany } from "ai";
 import { Effect, Context, Layer } from "effect";
-import { GatewayError, loadConfig, OllamaError, OpenAIError } from "../types.js";
+import {
+  GatewayError,
+  loadConfig,
+  OllamaError,
+  OpenAIError,
+  OpenRouterError,
+} from "../types.js";
 import {
   getConfiguredEmbeddingModel,
   type ProviderError,
+  type SupportedProvider,
 } from "./AIProvider.js";
 
 // ============================================================================
@@ -24,7 +35,7 @@ export class EmbeddingProvider extends Context.Tag("EmbeddingProvider")<
       concurrency?: number,
     ) => Effect.Effect<number[][], EmbeddingError>;
     readonly checkHealth: () => Effect.Effect<void, EmbeddingError>;
-    readonly provider: "ollama" | "gateway" | "openai";
+    readonly provider: SupportedProvider;
   }
 >() {}
 
@@ -59,12 +70,18 @@ const makeLruCache = <V>(maxSize: number) => {
   };
 };
 
-function toEmbeddingError(provider: string, message: string): EmbeddingError {
+function toEmbeddingError(
+  provider: SupportedProvider,
+  message: string,
+): EmbeddingError {
   if (provider === "gateway") {
     return new GatewayError({ reason: message });
   }
   if (provider === "openai") {
     return new OpenAIError({ reason: message });
+  }
+  if (provider === "openrouter") {
+    return new OpenRouterError({ reason: message });
   }
   return new OllamaError({ reason: message });
 }
@@ -72,7 +89,7 @@ function toEmbeddingError(provider: string, message: string): EmbeddingError {
 function validateEmbedding(
   embedding: number[],
   expectedDimension: number | null,
-  provider: string,
+  provider: SupportedProvider,
 ): Effect.Effect<{ embedding: number[]; expectedDimension: number }, EmbeddingError> {
   if (embedding.length === 0) {
     return Effect.fail(
@@ -106,66 +123,72 @@ function validateEmbedding(
 }
 
 /**
- * Live implementation that routes based on config.embedding.provider
+ * Live implementation that resolves the configured client on first use.
  */
 export const EmbeddingProviderLive = Layer.effect(
   EmbeddingProvider,
   Effect.gen(function* () {
-    const config = loadConfig();
-    const resolved = getConfiguredEmbeddingModel(config);
     const queryCacheSize = readQueryEmbedCacheSize();
     const queryEmbedCache = makeLruCache<number[]>(queryCacheSize);
     let expectedDimension: number | null = null;
+    let resolvedCache: ReturnType<typeof getConfiguredEmbeddingModel> | null = null;
+
+    const getResolved = () => {
+      if (resolvedCache) return resolvedCache;
+      const config = loadConfig();
+      resolvedCache = getConfiguredEmbeddingModel(config);
+      return resolvedCache;
+    };
 
     const runEmbed = (
       texts: string[],
       maxParallelCalls?: number,
     ): Effect.Effect<number[][], EmbeddingError> =>
-      Effect.tryPromise({
-        try: async () => {
-          if (texts.length === 0) return [];
+      Effect.gen(function* () {
+        const resolved = getResolved();
+        const embeddings = yield* Effect.tryPromise({
+          try: async () => {
+            if (texts.length === 0) return [];
 
-          if (texts.length === 1) {
-            const result = await embed({
-              model: resolved.model,
-              value: texts[0],
-              maxRetries: 3,
-            });
-            return [result.embedding];
-          }
-
-          const result = await embedMany({
-            model: resolved.model,
-            values: texts,
-            maxRetries: 3,
-            maxParallelCalls,
-          });
-          return result.embeddings;
-        },
-        catch: (error) =>
-          toEmbeddingError(
-            resolved.provider,
-            `Embedding failed: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
-          ),
-      }).pipe(
-        Effect.flatMap((embeddings) =>
-          Effect.gen(function* () {
-            const validated: number[][] = [];
-            for (const embedding of embeddings) {
-              const result = yield* validateEmbedding(
-                embedding,
-                expectedDimension,
-                resolved.provider,
-              );
-              expectedDimension = result.expectedDimension;
-              validated.push(result.embedding);
+            if (texts.length === 1) {
+              const result = await embed({
+                model: resolved.model,
+                value: texts[0],
+                maxRetries: 3,
+              });
+              return [result.embedding];
             }
-            return validated;
-          }),
-        ),
-      );
+
+            const result = await embedMany({
+              model: resolved.model,
+              values: texts,
+              maxRetries: 3,
+              maxParallelCalls,
+            });
+            return result.embeddings;
+          },
+          catch: (error) =>
+            toEmbeddingError(
+              resolved.provider,
+              `Embedding failed: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            ),
+        });
+
+        const validated: number[][] = [];
+        for (const embedding of embeddings) {
+          const result = yield* validateEmbedding(
+            embedding,
+            expectedDimension,
+            resolved.provider,
+          );
+          expectedDimension = result.expectedDimension;
+          validated.push(result.embedding);
+        }
+
+        return validated;
+      });
 
     const wrapQueryCache = (
       embedSingle: (text: string) => Effect.Effect<number[], EmbeddingError>,
@@ -173,6 +196,7 @@ export const EmbeddingProviderLive = Layer.effect(
       if (queryCacheSize <= 0) return embedSingle;
       return (text: string) =>
         Effect.gen(function* () {
+          const resolved = getResolved();
           const key = `${resolved.provider}:${resolved.modelId}:${text}`;
           const cached = queryEmbedCache.get(key);
           if (cached) return cached;
@@ -188,7 +212,9 @@ export const EmbeddingProviderLive = Layer.effect(
       ),
       embedBatch: (texts: string[], concurrency = 10) => runEmbed(texts, concurrency),
       checkHealth: () => Effect.asVoid(runEmbed(["health check"])),
-      provider: resolved.provider,
+      get provider() {
+        return loadConfig().embedding.provider;
+      },
     };
   }),
 );

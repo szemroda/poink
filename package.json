@@ -22,6 +22,7 @@
     "@effect/schema": "^0.75.0",
     "@libsql/client": "^0.15.15",
     "@modelcontextprotocol/sdk": "1.26.0",
+    "@openrouter/ai-sdk-provider": "^2.9.0",
     "@qdrant/js-client-rest": "^1.16.2",
     "ai": "^6.0.175",
     "dotenv": "^17.2.3",

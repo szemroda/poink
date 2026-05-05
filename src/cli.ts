@@ -955,7 +955,12 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
 
       const autoTag = opts["auto-tag"] === true;
       const enrich = opts.enrich === true;
-      const forceProvider = opts.provider as "ollama" | "gateway" | "openai" | undefined;
+      const forceProvider = opts.provider as
+        | "ollama"
+        | "gateway"
+        | "openai"
+        | "openrouter"
+        | undefined;
       let enrichedTitle = title;
       let enrichedTags = tags || [];
 
@@ -1938,16 +1943,23 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
           }${config.server.auth.token ? " (token set)" : ""}`
         );
         yield* Console.log("");
-	        const hasKey = config.gatewayApiKey;
+	        const hasGatewayKey = config.gatewayApiKey;
+	        const hasOpenRouterKey = config.openrouterApiKey;
 	        yield* Console.log(
-	          hasKey
+	          hasGatewayKey
 	            ? `Gateway:     API key configured`
 	            : `Gateway:     No API key (set via: pdf-brain config set gateway.apiKey <key>)`
 	        );
+        yield* Console.log(
+          hasOpenRouterKey
+            ? `OpenRouter:  API key configured`
+            : `OpenRouter:  No API key (set via: pdf-brain config set openrouter.apiKey <key>)`
+        );
 	        resultPayload = {
 	          configPath,
 	          config,
-	          gatewayApiKeyConfigured: Boolean(hasKey),
+	          gatewayApiKeyConfigured: Boolean(hasGatewayKey),
+            openrouterApiKeyConfigured: Boolean(hasOpenRouterKey),
 	        };
 	      } else if (subcommand === "get") {
 	        const path = args[2];
@@ -3893,6 +3905,25 @@ async function runServeCommand<ROut, E>(
   await new Promise(() => {});
 }
 
+function buildCliAppLayer() {
+  const config = LibraryConfig.fromEnv();
+  ensureLibraryDirectoryExists(config);
+
+  const taxonomyServiceLive = TaxonomyServiceImpl.make({
+    url: `file:${config.dbPath}`,
+  });
+
+  const pdfLibraryLive = makePDFLibraryLive();
+  return Layer.merge(
+    Layer.merge(Layer.merge(pdfLibraryLive, AutoTaggerLive), PDFExtractorLive),
+    Layer.merge(taxonomyServiceLive, EmbeddingProviderFullLive)
+  );
+}
+
+function isServiceFreeCommand(command: string | undefined): boolean {
+  return command === "config";
+}
+
 // ============================================================================
 // Graceful Shutdown Handlers
 // ============================================================================
@@ -3935,42 +3966,17 @@ if (import.meta.main) {
 
     const command = args[0];
 
-	    // MCP server mode: exposes pdf-brain as an agent tool server (stdio).
-	    // IMPORTANT: MCP uses stdout for protocol messages. Do not write envelopes.
-	    if (command === "mcp") {
-	      const config = LibraryConfig.fromEnv();
-        ensureLibraryDirectoryExists(config);
-	      const TaxonomyServiceLive = TaxonomyServiceImpl.make({
-	        url: `file:${config.dbPath}`,
-	      });
-	
-        const pdfLibraryLive = makePDFLibraryLive();
-	      const AppLayer = Layer.merge(
-	        Layer.merge(Layer.merge(pdfLibraryLive, AutoTaggerLive), PDFExtractorLive),
-	        Layer.merge(TaxonomyServiceLive, EmbeddingProviderFullLive)
-	      );
-	
-	      try {
-	        await runMcpServer(AppLayer, globals);
-	      } catch (err) {
-	        console.error(`MCP server failed: ${err}`);
-	        process.exit(1);
-	      }
-	      return;
-	    }
-
-	    // Build app layer for all commands (including taxonomy/migrate once they move into makeProgram).
-	    const config = LibraryConfig.fromEnv();
-      ensureLibraryDirectoryExists(config);
-	    const TaxonomyServiceLive = TaxonomyServiceImpl.make({
-	      url: `file:${config.dbPath}`,
-	    });
-
-    const pdfLibraryLive = makePDFLibraryLive();
-    const AppLayer = Layer.merge(
-      Layer.merge(Layer.merge(pdfLibraryLive, AutoTaggerLive), PDFExtractorLive),
-      Layer.merge(TaxonomyServiceLive, EmbeddingProviderFullLive)
-    );
+    // MCP server mode: exposes pdf-brain as an agent tool server (stdio).
+    // IMPORTANT: MCP uses stdout for protocol messages. Do not write envelopes.
+    if (command === "mcp") {
+      try {
+        await runMcpServer(buildCliAppLayer(), globals);
+      } catch (err) {
+        console.error(`MCP server failed: ${err}`);
+        process.exit(1);
+      }
+      return;
+    }
 
     const toCLIError = (e: unknown): CLIError => {
       if (e instanceof CLIError) return e;
@@ -3985,13 +3991,23 @@ if (import.meta.main) {
     let outEither: any;
 
     try {
-      outEither = await Effect.runPromise(
-        makeProgram(args, globals).pipe(
-          Effect.provide(AppLayer),
-          Effect.scoped,
-          Effect.either
-        )
-      );
+      const program = makeProgram(args, globals);
+
+      if (isServiceFreeCommand(command)) {
+        outEither = await Effect.runPromise(
+          // `makeProgram` is typed with the union of all command requirements.
+          // Pure commands like `config` do not need runtime services.
+          (program as Effect.Effect<any, any, never>).pipe(Effect.either)
+        );
+      } else {
+        outEither = await Effect.runPromise(
+          program.pipe(
+            Effect.provide(buildCliAppLayer()),
+            Effect.scoped,
+            Effect.either
+          )
+        );
+      }
     } catch (e) {
       // Defect / unexpected exception (not an Effect "failure").
       const err = toCLIError(e);

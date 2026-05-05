@@ -1,9 +1,48 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { Client } from "@modelcontextprotocol/sdk/client";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+
+const OPENROUTER_CONFIG_WITHOUT_KEY = {
+  embedding: {
+    provider: "openrouter",
+    model: "openai/text-embedding-3-small",
+    openai: {
+      model: "text-embedding-3-small",
+    },
+  },
+  enrichment: {
+    provider: "openrouter",
+    model: "anthropic/claude-3.5-haiku",
+  },
+  judge: {
+    provider: "openrouter",
+    model: "anthropic/claude-3.5-haiku",
+  },
+  ollama: {
+    host: "http://localhost:11434",
+    autoInstall: true,
+  },
+  gateway: {},
+  openai: {},
+  openrouter: {},
+  database: {
+    backend: "libsql",
+    qdrant: {
+      url: "http://localhost:6333",
+      collection: "pdf-brain",
+    },
+  },
+  server: {
+    host: "127.0.0.1",
+    port: 3838,
+    auth: {
+      enabled: false,
+    },
+  },
+};
 
 function runCli(
   argv: string[],
@@ -209,6 +248,39 @@ describe("CLI JSON Envelope Contract", () => {
       expect(res.exitCode).toBe(0);
       expect(res.stdout).toContain("PDF Library Config");
       expect(res.stdout).toContain("Database:");
+    }));
+
+  test("config set openrouter.apiKey succeeds even when current config uses openrouter without a key", () =>
+    withTempLibraryPath((libraryRoot) => {
+      const libraryPath = join(libraryRoot, "library");
+      const configPath = join(libraryRoot, "config.json");
+
+      writeFileSync(
+        configPath,
+        JSON.stringify(OPENROUTER_CONFIG_WITHOUT_KEY),
+        "utf-8",
+      );
+
+      const res = runCli(
+        ["config", "set", "openrouter.apiKey", "test-openrouter-key"],
+        {
+          env: {
+            PDF_LIBRARY_PATH: libraryPath,
+            PDF_BRAIN_CONFIG: configPath,
+            OLLAMA_HOST: "http://127.0.0.1:1",
+          },
+        },
+      );
+
+      expect(res.exitCode).toBe(0);
+      const obj = JSON.parse(res.stdout);
+      expect(obj.ok).toBe(true);
+      expect(obj.command).toBe("config");
+      expect(obj.result.path).toBe("openrouter.apiKey");
+      expect(obj.result.value).toBe("test-openrouter-key");
+
+      const saved = JSON.parse(readFileSync(configPath, "utf-8"));
+      expect(saved.openrouter.apiKey).toBe("test-openrouter-key");
     }));
 
   test("init creates a missing library directory before opening the database", () =>
