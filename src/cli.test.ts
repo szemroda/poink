@@ -27,6 +27,14 @@ describe("filenameFromURL", () => {
     );
   });
 
+  test("preserves office document extensions", () => {
+    expect(filenameFromURL("https://example.com/brief.docx")).toBe(
+      "brief.docx"
+    );
+    expect(filenameFromURL("https://example.com/notes.odt")).toBe("notes.odt");
+    expect(filenameFromURL("https://example.com/flat.fodt")).toBe("flat.fodt");
+  });
+
   test("defaults to .pdf for unknown extensions", () => {
     expect(filenameFromURL("https://example.com/document")).toBe(
       "document.pdf"
@@ -100,6 +108,22 @@ describe("getDownloadTargetPath", () => {
         "markdown"
       )
     ).toBe(join("tmp", "downloads", "guide.markdown"));
+  });
+
+  test("keeps office extensions when detected from URL downloads", () => {
+    expect(
+      getDownloadTargetPath(
+        "https://example.com/report.docx",
+        downloadsDir,
+        "docx"
+      )
+    ).toBe(join("tmp", "downloads", "report.docx"));
+    expect(
+      getDownloadTargetPath("https://example.com/notes.odt", downloadsDir, "odt")
+    ).toBe(join("tmp", "downloads", "notes.odt"));
+    expect(
+      getDownloadTargetPath("https://example.com/flat.fodt", downloadsDir, "odt")
+    ).toBe(join("tmp", "downloads", "flat.fodt"));
   });
 });
 

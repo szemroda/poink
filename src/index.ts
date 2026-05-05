@@ -13,6 +13,7 @@ import {
   AddOptions,
   Document,
   DocumentExistsError,
+  type DocumentFileType,
   DocumentNotFoundError,
   expandHomePath,
   LibraryConfig,
@@ -32,11 +33,15 @@ import {
   MarkdownExtractor,
   MarkdownExtractorLive,
 } from "./services/MarkdownExtractor.js";
+import {
+  OfficeExtractor,
+  OfficeExtractorLive,
+} from "./services/OfficeExtractor.js";
 import { Database } from "./services/Database.js";
 import { LibSQLDatabase } from "./services/LibSQLDatabase.js";
 import { DatabaseRegistry } from "./services/DatabaseRegistry.js";
 import { logDebug } from "./logger.js";
-import { buildChunkerMetadata } from "./chunking.js";
+import { buildChunkerMetadata, inferFileTypeFromPath } from "./chunking.js";
 
 // Re-export types and services
 export * from "./types.js";
@@ -57,6 +62,10 @@ export {
   MarkdownExtractor,
   MarkdownExtractorLive,
 } from "./services/MarkdownExtractor.js";
+export {
+  OfficeExtractor,
+  OfficeExtractorLive,
+} from "./services/OfficeExtractor.js";
 export { Database } from "./services/Database.js";
 export { LibSQLDatabase } from "./services/LibSQLDatabase.js";
 export { DatabaseRegistry } from "./services/DatabaseRegistry.js";
@@ -65,13 +74,13 @@ export { DatabaseRegistry } from "./services/DatabaseRegistry.js";
 // Helper Functions
 // ============================================================================
 
-/**
- * Check if a file is a markdown file based on extension
- */
-function isMarkdownFile(path: string): boolean {
-  const lowerPath = path.toLowerCase();
-  return lowerPath.endsWith(".md") || lowerPath.endsWith(".markdown");
-}
+const DOCUMENT_TITLE_EXTENSION_RE = /\.(pdf|md|markdown|docx|odt|fodt)$/i;
+
+type LibraryProcessedChunk = {
+  page: number;
+  chunkIndex: number;
+  content: string;
+};
 
 // ============================================================================
 // Library Service
@@ -85,8 +94,61 @@ export class PDFLibrary extends Effect.Service<PDFLibrary>()("PDFLibrary", {
     const embedProvider = yield* EmbeddingProvider;
     const pdfExtractor = yield* PDFExtractor;
     const markdownExtractor = yield* MarkdownExtractor;
+    const officeExtractor = yield* OfficeExtractor;
     const db = yield* Database;
     const config = LibraryConfig.fromEnv();
+
+    const fallbackTitle = (path: string) =>
+      basename(path).replace(DOCUMENT_TITLE_EXTENSION_RE, "");
+
+    const resolveTitle = (
+      resolvedPath: string,
+      fileType: DocumentFileType,
+      explicitTitle?: string,
+    ) =>
+      Effect.gen(function* () {
+        if (explicitTitle) return explicitTitle;
+        if (fileType !== "markdown") return fallbackTitle(resolvedPath);
+
+        const frontmatterResult = yield* Effect.either(
+          markdownExtractor.extractFrontmatter(resolvedPath),
+        );
+        if (
+          frontmatterResult._tag === "Right" &&
+          frontmatterResult.right.title
+        ) {
+          return frontmatterResult.right.title;
+        }
+
+        const extractResult = yield* Effect.either(
+          markdownExtractor.extract(resolvedPath),
+        );
+        if (
+          extractResult._tag === "Right" &&
+          extractResult.right.sections.length > 0
+        ) {
+          const firstHeading = extractResult.right.sections.find(
+            (section) => section.heading,
+          );
+          return firstHeading?.heading || fallbackTitle(resolvedPath);
+        }
+
+        return fallbackTitle(resolvedPath);
+      });
+
+    const processDocument = (
+      resolvedPath: string,
+      fileType: DocumentFileType,
+    ): Effect.Effect<
+      { pageCount: number; chunks: LibraryProcessedChunk[] },
+      unknown
+    > => {
+      if (fileType === "markdown") return markdownExtractor.process(resolvedPath);
+      if (fileType === "docx" || fileType === "odt") {
+        return officeExtractor.process(resolvedPath);
+      }
+      return pdfExtractor.process(resolvedPath);
+    };
 
     return {
       /**
@@ -123,84 +185,23 @@ export class PDFLibrary extends Effect.Service<PDFLibrary>()("PDFLibrary", {
             .slice(0, 12);
 
           // Detect file type and route to appropriate extractor
-          const isMarkdown = isMarkdownFile(resolvedPath);
-          const fileType = isMarkdown
-            ? ("markdown" as const)
-            : ("pdf" as const);
+          const fileType = inferFileTypeFromPath(resolvedPath);
 
-          // Determine title based on file type
-          let title: string;
-          if (options.title) {
-            title = options.title;
-          } else if (isMarkdown) {
-            // For markdown: try frontmatter title, then first H1, then filename
-            const frontmatterResult = yield* Effect.either(
-              markdownExtractor.extractFrontmatter(resolvedPath),
+          const title = yield* resolveTitle(
+            resolvedPath,
+            fileType,
+            options.title,
+          );
+          const processResult = yield* Effect.either(
+            processDocument(resolvedPath, fileType),
+          );
+          if (processResult._tag === "Left") {
+            yield* Effect.log(
+              `${fileType} extraction failed for ${resolvedPath}: ${processResult.left}`,
             );
-
-            if (
-              frontmatterResult._tag === "Right" &&
-              frontmatterResult.right.title
-            ) {
-              // Use frontmatter title if available
-              title = frontmatterResult.right.title;
-            } else {
-              // Try first H1 from sections
-              const extractResult = yield* Effect.either(
-                markdownExtractor.extract(resolvedPath),
-              );
-              if (
-                extractResult._tag === "Right" &&
-                extractResult.right.sections.length > 0
-              ) {
-                const firstH1 = extractResult.right.sections.find(
-                  (s) => s.heading,
-                );
-                title =
-                  firstH1?.heading ||
-                  basename(resolvedPath).replace(/\.(md|markdown)$/i, "");
-              } else {
-                // Fallback to filename without extension
-                title = basename(resolvedPath).replace(/\.(md|markdown)$/i, "");
-              }
-            }
-          } else {
-            title = basename(resolvedPath, ".pdf");
+            return yield* Effect.fail(processResult.left);
           }
-
-          // Process file with appropriate extractor
-          let pageCount: number;
-          let chunks: Array<{
-            page: number;
-            chunkIndex: number;
-            content: string;
-          }>;
-
-          if (isMarkdown) {
-            const processResult = yield* Effect.either(
-              markdownExtractor.process(resolvedPath),
-            );
-            if (processResult._tag === "Left") {
-              yield* Effect.log(
-                `Markdown extraction failed for ${resolvedPath}: ${processResult.left}`,
-              );
-              return yield* Effect.fail(processResult.left);
-            }
-            pageCount = processResult.right.pageCount;
-            chunks = processResult.right.chunks;
-          } else {
-            const processResult = yield* Effect.either(
-              pdfExtractor.process(resolvedPath),
-            );
-            if (processResult._tag === "Left") {
-              yield* Effect.log(
-                `PDF extraction failed for ${resolvedPath}: ${processResult.left}`,
-              );
-              return yield* Effect.fail(processResult.left);
-            }
-            pageCount = processResult.right.pageCount;
-            chunks = processResult.right.chunks;
-          }
+          const { pageCount, chunks } = processResult.right;
 
           if (chunks.length === 0) {
             return yield* Effect.fail(
@@ -344,10 +345,7 @@ export class PDFLibrary extends Effect.Service<PDFLibrary>()("PDFLibrary", {
           const id = existing.id;
 
           // Detect file type and route to appropriate extractor
-          const isMarkdown = isMarkdownFile(resolvedPath);
-          const fileType = isMarkdown
-            ? ("markdown" as const)
-            : ("pdf" as const);
+          const fileType = inferFileTypeFromPath(resolvedPath);
 
           // Preserve existing title/tags/metadata by default
           const title = options.title ?? existing.title;
@@ -355,33 +353,13 @@ export class PDFLibrary extends Effect.Service<PDFLibrary>()("PDFLibrary", {
           const baseMetadata: Record<string, unknown> =
             options.metadata ?? (existing.metadata ?? {});
 
-          // Process file with appropriate extractor
-          let pageCount: number;
-          let chunks: Array<{
-            page: number;
-            chunkIndex: number;
-            content: string;
-          }>;
-
-          if (isMarkdown) {
-            const processResult = yield* Effect.either(
-              markdownExtractor.process(resolvedPath),
-            );
-            if (processResult._tag === "Left") {
-              return yield* Effect.fail(processResult.left);
-            }
-            pageCount = processResult.right.pageCount;
-            chunks = processResult.right.chunks;
-          } else {
-            const processResult = yield* Effect.either(
-              pdfExtractor.process(resolvedPath),
-            );
-            if (processResult._tag === "Left") {
-              return yield* Effect.fail(processResult.left);
-            }
-            pageCount = processResult.right.pageCount;
-            chunks = processResult.right.chunks;
+          const processResult = yield* Effect.either(
+            processDocument(resolvedPath, fileType),
+          );
+          if (processResult._tag === "Left") {
+            return yield* Effect.fail(processResult.left);
           }
+          const { pageCount, chunks } = processResult.right;
 
           if (chunks.length === 0) {
             return yield* Effect.fail(
@@ -774,7 +752,12 @@ export class PDFLibrary extends Effect.Service<PDFLibrary>()("PDFLibrary", {
       checkpoint: () => db.checkpoint(),
     };
   }),
-  dependencies: [EmbeddingProviderFullLive, PDFExtractorLive, MarkdownExtractorLive],
+  dependencies: [
+    EmbeddingProviderFullLive,
+    PDFExtractorLive,
+    MarkdownExtractorLive,
+    OfficeExtractorLive,
+  ],
 }) {}
 
 // ============================================================================

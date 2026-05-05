@@ -11,7 +11,7 @@ export function renderHelp(stats?: {
 
   return `# pdf-brain
 
-Local knowledge base for PDFs and Markdown with vector search, full-text search, enrichment, and MCP access.
+Local knowledge base for PDFs, Markdown, DOCX, and ODT with vector search, full-text search, enrichment, and MCP access.
 ${docCount} documents indexed.
 
 ## Quick Start

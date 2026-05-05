@@ -2,9 +2,9 @@
 
 > This repository is a fork of the original `pdf-brain` package and is being adapted for a custom distribution path.
 
-Local **PDF & Markdown** knowledge base with semantic search and AI-powered enrichment.
+Local **PDF, Markdown, DOCX, and ODT** knowledge base with semantic search and AI-powered enrichment.
 
-> **Works with PDFs AND Markdown files** - Index your research papers, books, notes, docs, and any `.md` files in one unified, searchable knowledge base.
+> **Works with PDFs, Markdown, DOCX, and ODT files** - Index your research papers, books, notes, docs, and office documents in one unified, searchable knowledge base.
 
 ```
 ┌─────────────┐     ┌─────────────┐     ┌─────────────┐     ┌─────────────┐
@@ -18,7 +18,7 @@ Local **PDF & Markdown** knowledge base with semantic search and AI-powered enri
 
 ## Features
 
-- **PDF + Markdown** - Index `.pdf` and `.md` files with the same workflow
+- **PDF + Markdown + Office docs** - Index `.pdf`, `.md`, `.docx`, `.odt`, and `.fodt` files with the same workflow
 - **Local-first** - Everything runs on your machine, no API costs
 - **AI enrichment** - LLM extracts titles, summaries, tags, and concepts
 - **SKOS taxonomy** - Organize documents with hierarchical concepts
@@ -131,7 +131,11 @@ pdf-brain add /path/to/document.pdf
 # Add a Markdown file
 pdf-brain add /path/to/notes.md
 
-# Add from URL (PDF or MD)
+# Add Word or OpenDocument text files
+pdf-brain add /path/to/report.docx
+pdf-brain add /path/to/notes.odt
+
+# Add from URL (supported document formats)
 pdf-brain add https://example.com/paper.pdf
 pdf-brain add https://raw.githubusercontent.com/user/repo/main/README.md
 
@@ -144,6 +148,7 @@ pdf-brain add document.pdf --auto-tag
 # Add with AI enrichment (extracts title, summary, concepts)
 pdf-brain add document.pdf --enrich
 pdf-brain add notes.md --enrich
+pdf-brain add report.docx --enrich
 ```
 
 ### Searching
@@ -213,7 +218,7 @@ pdf-brain taxonomy seed --file data/taxonomy.json
 
 ### Bulk Ingest
 
-Recursively ingest directories containing PDFs and/or Markdown files:
+Recursively ingest directories containing supported document files:
 
 ```bash
 # Ingest a directory with full LLM enrichment
@@ -222,7 +227,7 @@ pdf-brain ingest ~/Documents/papers --enrich
 # Ingest your Obsidian vault or notes folder
 pdf-brain ingest ~/Documents/obsidian --enrich
 
-# Ingest multiple directories (PDFs, Markdown, mixed)
+# Ingest multiple directories (PDFs, Markdown, DOCX/ODT, mixed)
 pdf-brain ingest ~/papers ~/books ~/notes --enrich
 
 # With manual tags
@@ -242,6 +247,10 @@ pdf-brain ingest ~/papers --enrich --no-tui
 
 - `.pdf` - Research papers, books, documents
 - `.md` - Notes, documentation, Obsidian vaults, READMEs
+- `.markdown` - Markdown documents
+- `.docx` - Microsoft Word / OOXML documents
+- `.odt` - OpenDocument text documents
+- `.fodt` - Flat XML OpenDocument text documents
 
 ## Enrichment
 
@@ -487,7 +496,7 @@ SELECT COUNT(chunk_id) FROM embeddings  -- correct
 
 ## How It Works
 
-1. **Extract** - PDF text via `pdf-parse`, Markdown parsed directly
+1. **Extract** - PDF text via `pdf-parse`, Markdown parsed directly, DOCX via `mammoth`, ODT/FODT via OpenDocument XML
 2. **Enrich** (optional) - LLM extracts metadata, matches taxonomy concepts
 3. **Chunk** - Text split into ~512 token chunks with overlap
 4. **Embed** - Each chunk embedded via Ollama (1024 dimensions)
@@ -513,7 +522,7 @@ pdf-brain ships as an MCP server for AI coding assistants:
 
 | Tool                  | Description                                   |
 | --------------------- | --------------------------------------------- |
-| `pdf-brain_add`       | Add PDF/Markdown to library (supports URLs)   |
+| `pdf-brain_add`       | Add supported document files to library (supports URLs) |
 | `pdf-brain_batch_add` | Bulk ingest from directory                    |
 | `pdf-brain_search`    | Unified semantic search (docs + concepts)     |
 | `pdf-brain_list`      | List documents, optionally filter by tag      |

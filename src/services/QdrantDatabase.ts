@@ -11,8 +11,10 @@ import {
   DatabaseError,
   Document,
   PDFChunk,
+  type DocumentFileType,
   type SearchResult,
 } from "../types.js";
+import { inferFileTypeFromPath } from "../chunking.js";
 
 const DEFAULT_EMBEDDING_DIM = 1024;
 const DOCUMENT_VECTOR_DIM = 1;
@@ -838,6 +840,15 @@ function serializeDocument(doc: Document): QdrantPayload {
 }
 
 function payloadToDocument(id: string | number, payload: QdrantPayload): Document {
+  const rawFileType = asString(payload.fileType);
+  const fileType: DocumentFileType =
+    rawFileType === "pdf" ||
+    rawFileType === "markdown" ||
+    rawFileType === "docx" ||
+    rawFileType === "odt"
+      ? rawFileType
+      : inferFileTypeFromPath(asString(payload.path));
+
   return new Document({
     id: uuidToHex(String(id)),
     title: asString(payload.title),
@@ -846,7 +857,7 @@ function payloadToDocument(id: string | number, payload: QdrantPayload): Documen
     pageCount: asNumber(payload.pageCount),
     sizeBytes: asNumber(payload.sizeBytes),
     tags: asStringArray(payload.tags),
-    fileType: asString(payload.fileType) === "markdown" ? "markdown" : "pdf",
+    fileType,
     metadata: asRecord(payload.metadata),
   });
 }

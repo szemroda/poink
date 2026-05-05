@@ -12,8 +12,10 @@ import { dirname, join } from "path";
 // ============================================================================
 
 /**
- * Represents a document in the library (PDF or Markdown)
+ * Represents a document in the library.
  */
+export type DocumentFileType = "pdf" | "markdown" | "docx" | "odt";
+
 export class Document extends Schema.Class<Document>("Document")({
   id: Schema.String,
   title: Schema.String,
@@ -22,9 +24,12 @@ export class Document extends Schema.Class<Document>("Document")({
   pageCount: Schema.Number,
   sizeBytes: Schema.Number,
   tags: Schema.Array(Schema.String),
-  fileType: Schema.optionalWith(Schema.Literal("pdf", "markdown"), {
+  fileType: Schema.optionalWith(
+    Schema.Literal("pdf", "markdown", "docx", "odt"),
+    {
     default: () => "pdf" as const,
-  }),
+    },
+  ),
   metadata: Schema.optional(
     Schema.Record({ key: Schema.String, value: Schema.Unknown })
   ),

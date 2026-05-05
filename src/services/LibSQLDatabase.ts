@@ -8,7 +8,13 @@
 import { Effect, Layer } from "effect";
 import { createClient, type Client } from "@libsql/client";
 import { Database } from "./Database.js";
-import { DatabaseError, Document, PDFChunk } from "../types.js";
+import {
+  DatabaseError,
+  Document,
+  PDFChunk,
+  type DocumentFileType,
+} from "../types.js";
+import { inferFileTypeFromPath } from "../chunking.js";
 
 // Default embedding dimension (mxbai-embed-large)
 // Can be overridden via config for other models:
@@ -63,11 +69,11 @@ export class LibSQLDatabase {
         );
 
         // Helper to parse document row
-        const inferFileType = (path: string): "pdf" | "markdown" => {
-          const lower = path.toLowerCase();
-          if (lower.endsWith(".md") || lower.endsWith(".markdown")) return "markdown";
-          return "pdf";
-        };
+        const isDocumentFileType = (value: unknown): value is DocumentFileType =>
+          value === "pdf" ||
+          value === "markdown" ||
+          value === "docx" ||
+          value === "odt";
 
         const parseDocRow = (row: any): Document =>
           new Document({
@@ -78,10 +84,9 @@ export class LibSQLDatabase {
             pageCount: row.page_count as number,
             sizeBytes: row.size_bytes as number,
             tags: JSON.parse(row.tags as string) as string[],
-            fileType:
-              row.file_type === "markdown" || row.file_type === "pdf"
-                ? (row.file_type as "pdf" | "markdown")
-                : inferFileType(row.path as string),
+            fileType: isDocumentFileType(row.file_type)
+              ? row.file_type
+              : inferFileTypeFromPath(row.path as string),
             metadata: JSON.parse(row.metadata as string) as Record<
               string,
               unknown
@@ -124,9 +129,9 @@ export class LibSQLDatabase {
                     JSON.stringify(doc.tags),
                     JSON.stringify(doc.metadata || {}),
                     // Prefer explicit doc.fileType, but trust the path extension if they diverge.
-                    doc.fileType === inferFileType(doc.path)
+                    doc.fileType === inferFileTypeFromPath(doc.path)
                       ? doc.fileType
-                      : inferFileType(doc.path),
+                      : inferFileTypeFromPath(doc.path),
                   ],
                 });
               },
@@ -296,9 +301,9 @@ export class LibSQLDatabase {
                     doc.sizeBytes,
                     JSON.stringify(doc.tags),
                     JSON.stringify(doc.metadata || {}),
-                    doc.fileType === inferFileType(doc.path)
+                    doc.fileType === inferFileTypeFromPath(doc.path)
                       ? doc.fileType
-                      : inferFileType(doc.path),
+                      : inferFileTypeFromPath(doc.path),
                   ],
                 });
 
@@ -890,6 +895,8 @@ async function initSchema(client: Client, embeddingDim: number): Promise<void> {
         UPDATE documents
         SET file_type = CASE
           WHEN lower(path) LIKE '%.md' OR lower(path) LIKE '%.markdown' THEN 'markdown'
+          WHEN lower(path) LIKE '%.docx' THEN 'docx'
+          WHEN lower(path) LIKE '%.odt' OR lower(path) LIKE '%.fodt' THEN 'odt'
           ELSE 'pdf'
         END
       `);

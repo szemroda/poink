@@ -1,4 +1,4 @@
-import type { Document, LibraryConfig } from "./types.js";
+import type { Document, DocumentFileType, LibraryConfig } from "./types.js";
 
 export type ChunkerMetadata = {
   /** Stable identifier for the chunking algorithm implementation */
@@ -12,23 +12,29 @@ export type ChunkerMetadata = {
 };
 
 export const CURRENT_CHUNKER: Record<
-  "pdf" | "markdown",
+  DocumentFileType,
   { id: string; version: number }
 > = {
   // v2: paragraph-preserving normalization + hyphenation fix
   pdf: { id: "pdf-extractor:paragraphs-v2", version: 2 },
   // v1: section-aware markdown parsing + placeholder-preserving chunking
   markdown: { id: "markdown-extractor:sections+placeholders-v1", version: 1 },
+  // v1: mammoth raw-text extraction + paragraph-preserving chunking
+  docx: { id: "office-extractor:docx-raw-text-v1", version: 1 },
+  // v1: OpenDocument content.xml/fodt XML text extraction + paragraph-preserving chunking
+  odt: { id: "office-extractor:odt-content-xml-v1", version: 1 },
 };
 
-export function inferFileTypeFromPath(path: string): "pdf" | "markdown" {
+export function inferFileTypeFromPath(path: string): DocumentFileType {
   const lower = path.toLowerCase();
   if (lower.endsWith(".md") || lower.endsWith(".markdown")) return "markdown";
+  if (lower.endsWith(".docx")) return "docx";
+  if (lower.endsWith(".odt") || lower.endsWith(".fodt")) return "odt";
   return "pdf";
 }
 
 export function buildChunkerMetadata(
-  fileType: "pdf" | "markdown",
+  fileType: DocumentFileType,
   config: Pick<LibraryConfig, "chunkSize" | "chunkOverlap">,
 ): ChunkerMetadata {
   const base = CURRENT_CHUNKER[fileType];

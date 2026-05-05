@@ -335,7 +335,7 @@ function normalizeTag(tag: string): string {
  */
 export function cleanTitle(filename: string): string {
   // Remove extension
-  let title = filename.replace(/\.(pdf|epub|md|markdown|txt)$/i, "");
+  let title = filename.replace(/\.(pdf|epub|md|markdown|docx|odt|fodt|txt)$/i, "");
 
   // Remove common URL encoding artifacts
   title = decodeURIComponent(title);
@@ -433,7 +433,7 @@ export function extractContentKeywords(
  * Extract tags from filename
  */
 export function extractFilenameTags(filename: string): string[] {
-  const name = filename.replace(/\.(pdf|epub|md|markdown|txt)$/i, "");
+  const name = filename.replace(/\.(pdf|epub|md|markdown|docx|odt|fodt|txt)$/i, "");
 
   const cleaned = name
     .replace(/[-_+]+/g, " ")

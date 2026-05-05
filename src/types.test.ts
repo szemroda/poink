@@ -11,6 +11,7 @@ import {
   SearchResult,
   SearchOptions,
   LibraryConfig,
+  Document,
   expandHomePath,
 } from "./types";
 
@@ -289,5 +290,33 @@ describe("LibraryConfig path resolution", () => {
         process.env.USERPROFILE = originalUserProfile;
       }
     }
+  });
+});
+
+describe("Document file types", () => {
+  test("accepts DOCX and ODT file types", () => {
+    const docx = new Document({
+      id: "docx-1",
+      title: "Word Notes",
+      path: "/tmp/notes.docx",
+      addedAt: new Date("2024-01-01T00:00:00Z"),
+      pageCount: 1,
+      sizeBytes: 123,
+      tags: [],
+      fileType: "docx",
+    });
+    const odt = new Document({
+      id: "odt-1",
+      title: "ODT Notes",
+      path: "/tmp/notes.odt",
+      addedAt: new Date("2024-01-01T00:00:00Z"),
+      pageCount: 1,
+      sizeBytes: 123,
+      tags: [],
+      fileType: "odt",
+    });
+
+    expect(docx.fileType).toBe("docx");
+    expect(odt.fileType).toBe("odt");
   });
 });

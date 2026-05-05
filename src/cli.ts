@@ -30,6 +30,7 @@ import {
   type EnrichmentResult,
 } from "./services/AutoTagger.js";
 import { PDFExtractor, PDFExtractorLive } from "./services/PDFExtractor.js";
+import { OfficeExtractor, OfficeExtractorLive } from "./services/OfficeExtractor.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 let VERSION = "0.0.0";
@@ -53,6 +54,7 @@ import {
 import {
   Config,
   Document,
+  type DocumentFileType,
   PDFChunk,
   SearchResult,
   loadConfig,
@@ -95,6 +97,38 @@ function isURL(str: string): boolean {
   return str.startsWith("http://") || str.startsWith("https://");
 }
 
+const SUPPORTED_DOCUMENT_EXTENSIONS = [
+  ".pdf",
+  ".md",
+  ".markdown",
+  ".docx",
+  ".odt",
+  ".fodt",
+] as const;
+
+const DOCUMENT_TITLE_EXTENSION_RE = /\.(pdf|md|markdown|docx|odt|fodt)$/i;
+
+function fileTypeFromExtension(ext: string): DocumentFileType | null {
+  switch (ext.toLowerCase()) {
+    case ".pdf":
+      return "pdf";
+    case ".md":
+    case ".markdown":
+      return "markdown";
+    case ".docx":
+      return "docx";
+    case ".odt":
+    case ".fodt":
+      return "odt";
+    default:
+      return null;
+  }
+}
+
+function isSupportedDocumentExtension(ext: string): boolean {
+  return fileTypeFromExtension(ext) !== null;
+}
+
 /**
  * Extract filename from URL
  */
@@ -105,7 +139,7 @@ export function filenameFromURL(url: string): string {
   const ext = extname(filename).toLowerCase();
 
   // If already has a recognized extension, keep it
-  if (ext === ".pdf" || ext === ".md" || ext === ".markdown") {
+  if (isSupportedDocumentExtension(ext)) {
     return filename;
   }
 
@@ -114,23 +148,27 @@ export function filenameFromURL(url: string): string {
 }
 
 function stripRecognizedDocumentExtension(filename: string): string {
-  return filename.replace(/\.(pdf|md|markdown)$/i, "");
+  return filename.replace(DOCUMENT_TITLE_EXTENSION_RE, "");
 }
 
 function extensionForDetectedType(
-  fileType: "pdf" | "markdown",
+  fileType: DocumentFileType,
   sourceName: string
 ): string {
   if (fileType === "pdf") return ".pdf";
-  return extname(sourceName).toLowerCase() === ".markdown"
-    ? ".markdown"
-    : ".md";
+  if (fileType === "markdown") {
+    return extname(sourceName).toLowerCase() === ".markdown"
+      ? ".markdown"
+      : ".md";
+  }
+  if (fileType === "docx") return ".docx";
+  return extname(sourceName).toLowerCase() === ".fodt" ? ".fodt" : ".odt";
 }
 
 export function getDownloadTargetPath(
   url: string,
   downloadsDir: string,
-  fileType: "pdf" | "markdown"
+  fileType: DocumentFileType
 ): string {
   const sourceFilename = filenameFromURL(url);
   const basenameWithoutExt =
@@ -180,6 +218,103 @@ function hasPdfExtension(url: string): boolean {
   } catch {
     return url.toLowerCase().endsWith(".pdf");
   }
+}
+
+function fileTypeFromURLExtension(url: string): DocumentFileType | null {
+  try {
+    const pathname = new URL(url).pathname;
+    return fileTypeFromExtension(extname(pathname));
+  } catch {
+    const lower = url.toLowerCase();
+    const match = SUPPORTED_DOCUMENT_EXTENSIONS.find((ext) =>
+      lower.endsWith(ext),
+    );
+    return match ? fileTypeFromExtension(match) : null;
+  }
+}
+
+type PreviewPDFExtractor = {
+  extract: (
+    path: string,
+  ) => Effect.Effect<{ pages: Array<{ text: string }> }, unknown>;
+};
+
+type PreviewOfficeExtractor = {
+  extract: (
+    path: string,
+  ) => Effect.Effect<
+    { sections: Array<{ heading: string; text: string }> },
+    unknown
+  >;
+};
+
+const ENRICHMENT_PREVIEW_MAX_CHARS = 8000;
+const ENRICHMENT_PREVIEW_MAX_UNITS = 10;
+
+function trimPreview(content: string): string {
+  return content.length > ENRICHMENT_PREVIEW_MAX_CHARS
+    ? content.slice(0, ENRICHMENT_PREVIEW_MAX_CHARS)
+    : content;
+}
+
+function sectionsToPreview(
+  sections: Array<{ heading: string; text: string }>,
+): string {
+  return sections
+    .slice(0, ENRICHMENT_PREVIEW_MAX_UNITS)
+    .map((section) =>
+      section.heading ? `${section.heading}\n\n${section.text}` : section.text,
+    )
+    .join("\n\n");
+}
+
+function extractEnrichmentPreview(
+  path: string,
+  options: {
+    enrich: boolean;
+    pdfExtractor: PreviewPDFExtractor;
+    officeExtractor: PreviewOfficeExtractor;
+  },
+): Effect.Effect<string | undefined, never> {
+  const fileType = fileTypeFromExtension(extname(path));
+
+  if (fileType === "markdown") {
+    return Effect.either(Effect.promise(() => Bun.file(path).text())).pipe(
+      Effect.map((result) =>
+        result._tag === "Right" ? trimPreview(result.right) : undefined,
+      ),
+    );
+  }
+
+  if (!options.enrich) {
+    return Effect.succeed(undefined);
+  }
+
+  if (fileType === "pdf") {
+    return Effect.either(options.pdfExtractor.extract(path)).pipe(
+      Effect.map((result) => {
+        if (result._tag === "Left") return undefined;
+        return trimPreview(
+          result.right.pages
+            .slice(0, ENRICHMENT_PREVIEW_MAX_UNITS)
+            .map((page) => page.text)
+            .join("\n\n"),
+        );
+      }),
+    );
+  }
+
+  if (fileType === "docx" || fileType === "odt") {
+    return Effect.either(options.officeExtractor.extract(path)).pipe(
+      Effect.map((result) =>
+        result._tag === "Right"
+          ? trimPreview(sectionsToPreview(result.right.sections))
+          : undefined,
+      ),
+    );
+  }
+
+  return Effect.succeed(undefined);
 }
 
 /**
@@ -433,7 +568,7 @@ export function shouldCheckpoint(
 }
 
 /**
- * Download a file (PDF or Markdown) from URL to local path
+ * Download a supported document file from URL to local path
  */
 function downloadFile(url: string, downloadsDir: string) {
   return Effect.tryPromise({
@@ -444,22 +579,48 @@ function downloadFile(url: string, downloadsDir: string) {
       }
       const contentType = response.headers.get("content-type") || "";
 
-      // Markdown detection: strict MIME types or file extension
+      // Document detection: strict MIME types or file extension
       const hasExplicitMarkdownMime =
         contentType.includes("text/markdown") ||
         contentType.includes("text/x-markdown");
       const hasMarkdownExt = hasMarkdownExtension(url);
       const hasPdfExt = hasPdfExtension(url);
       const hasTextPlainMime = contentType.includes("text/plain");
-      const hasTextualMime = hasExplicitMarkdownMime || hasTextPlainMime;
+      const hasTextXmlMime =
+        contentType.includes("text/xml") ||
+        contentType.includes("application/xml");
+      const hasTextualMime =
+        hasExplicitMarkdownMime || hasTextPlainMime || hasTextXmlMime;
+      const extensionFileType = fileTypeFromURLExtension(url);
 
       let isMarkdown = hasExplicitMarkdownMime || hasMarkdownExt;
       let isPDF = contentType.includes("pdf") || (hasPdfExt && !hasTextualMime);
+      let detectedFileType: DocumentFileType | null = null;
+
+      if (isPDF) {
+        detectedFileType = "pdf";
+      } else if (isMarkdown) {
+        detectedFileType = "markdown";
+      } else if (
+        contentType.includes(
+          "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ) ||
+        (extensionFileType === "docx" && !hasTextualMime)
+      ) {
+        detectedFileType = "docx";
+      } else if (
+        contentType.includes("application/vnd.oasis.opendocument.text") ||
+        (extensionFileType === "odt" &&
+          (!hasTextPlainMime || hasTextXmlMime))
+      ) {
+        detectedFileType = "odt";
+      }
 
       // Heuristic for text/plain: check URL extension first, then peek at content
-      if (!isPDF && !isMarkdown && hasTextPlainMime) {
+      if (!detectedFileType && hasTextPlainMime) {
         if (hasMarkdownExt) {
           isMarkdown = true;
+          detectedFileType = "markdown";
         } else {
           // Peek at content to detect Markdown indicators
           const buffer = await response.arrayBuffer();
@@ -467,14 +628,15 @@ function downloadFile(url: string, downloadsDir: string) {
           const preview = decoder.decode(buffer.slice(0, MARKDOWN_PEEK_SIZE));
           if (looksLikeMarkdown(preview)) {
             isMarkdown = true;
+            detectedFileType = "markdown";
           }
           const finalPath = getDownloadTargetPath(
             url,
             downloadsDir,
-            isMarkdown ? "markdown" : "pdf"
+            detectedFileType ?? "pdf"
           );
           // Write the already-fetched buffer
-          if (isPDF || isMarkdown) {
+          if (detectedFileType) {
             await Bun.write(finalPath, buffer);
             return finalPath;
           }
@@ -482,13 +644,13 @@ function downloadFile(url: string, downloadsDir: string) {
         }
       }
 
-      if (!isPDF && !isMarkdown) {
+      if (!detectedFileType) {
         throw new Error(`Unsupported content type: ${contentType}`);
       }
       const finalPath = getDownloadTargetPath(
         url,
         downloadsDir,
-        isMarkdown ? "markdown" : "pdf"
+        detectedFileType
       );
       const buffer = await response.arrayBuffer();
       await Bun.write(finalPath, buffer);
@@ -1008,8 +1170,8 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
 
         // Default title from URL filename if not provided
         if (!title) {
-          // Strip extension (.pdf, .md, .markdown)
-          title = basename(filename).replace(/\.(pdf|md|markdown)$/, "");
+          // Strip recognized document extension.
+          title = basename(filename).replace(DOCUMENT_TITLE_EXTENSION_RE, "");
         }
 
         yield* Console.log(`Downloading: ${pathOrUrl}`);
@@ -1035,30 +1197,12 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
       if (autoTag || enrich) {
         const tagger = yield* AutoTagger;
         const pdfExtractor = yield* PDFExtractor;
-        const ext = extname(localPath).toLowerCase();
-        let content: string | undefined;
-
-        if (ext === ".pdf") {
-          if (enrich) {
-            const extractResult = yield* Effect.either(
-              pdfExtractor.extract(localPath)
-            );
-            if (extractResult._tag === "Right") {
-              const pages = extractResult.right.pages.slice(0, 10);
-              content = pages.map((p) => p.text).join("\n\n");
-              if (content.length > 8000) {
-                content = content.slice(0, 8000);
-              }
-            }
-          }
-        } else if (ext === ".md" || ext === ".markdown") {
-          const readResult = yield* Effect.either(
-            Effect.promise(() => Bun.file(localPath).text())
-          );
-          if (readResult._tag === "Right") {
-            content = readResult.right;
-          }
-        }
+        const officeExtractor = yield* OfficeExtractor;
+        const content = yield* extractEnrichmentPreview(localPath, {
+          enrich,
+          pdfExtractor,
+          officeExtractor,
+        });
 
         if (enrich && content) {
           const providerLabel = forceProvider || "auto";
@@ -2434,7 +2578,7 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
       yield* Console.log(`   Embeddings: ${stats.embeddings}`);
 
 	      yield* Console.log(`\n✨ Ready! Add documents with:`);
-	      yield* Console.log(`   pdf-brain add <file.pdf> --enrich`);
+	      yield* Console.log(`   pdf-brain add <file.pdf|file.docx|file.odt> --enrich`);
 	      yield* Console.log(`   pdf-brain ingest <directory> --enrich`);
 
 	      resultPayload = {
@@ -2596,7 +2740,7 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
                 files.push(...discoverFiles(fullPath));
               } else if (stat.isFile()) {
                 const ext = extname(entry).toLowerCase();
-                if (ext === ".pdf" || ext === ".md" || ext === ".markdown") {
+                if (isSupportedDocumentExtension(ext)) {
                   files.push(fullPath);
                 }
               }
@@ -2619,7 +2763,7 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
       yield* Console.log(`Total: ${files.length} files`);
 
       if (files.length === 0) {
-        yield* Console.log("No PDF or Markdown files found");
+        yield* Console.log("No supported document files found");
         resultPayload = {
           foundFiles: 0,
           skippedExisting: 0,
@@ -2704,33 +2848,12 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
               if (autoTag || enrich) {
                 const tagger = yield* AutoTagger;
                 const pdfExtractor = yield* PDFExtractor;
-                const ext = extname(filePath).toLowerCase();
-                let content: string | undefined;
-
-                if (ext === ".pdf") {
-                  // Extract PDF text for enrichment
-                  if (enrich) {
-                    currentFile.status = "chunking";
-                    tui.update({ currentFile });
-                    const extractResult = yield* Effect.either(
-                      pdfExtractor.extract(filePath)
-                    );
-                    if (extractResult._tag === "Right") {
-                      const pages = extractResult.right.pages.slice(0, 10);
-                      content = pages.map((p) => p.text).join("\n\n");
-                      if (content.length > 8000) {
-                        content = content.slice(0, 8000);
-                      }
-                    }
-                  }
-                } else if (ext === ".md" || ext === ".markdown") {
-                  const readResult = yield* Effect.either(
-                    Effect.promise(() => Bun.file(filePath).text())
-                  );
-                  if (readResult._tag === "Right") {
-                    content = readResult.right;
-                  }
-                }
+                const officeExtractor = yield* OfficeExtractor;
+                const content = yield* extractEnrichmentPreview(filePath, {
+                  enrich,
+                  pdfExtractor,
+                  officeExtractor,
+                });
 
                 currentFile.status = "embedding";
                 tui.update({ currentFile });
@@ -2880,36 +3003,12 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
             if (autoTag || enrich) {
               const tagger = yield* AutoTagger;
               const pdfExtractor = yield* PDFExtractor;
-
-              // Read file content for LLM analysis
-              const ext = extname(filePath).toLowerCase();
-              let content: string | undefined;
-
-              if (ext === ".pdf") {
-                // Extract PDF text for enrichment
-                if (enrich) {
-                  yield* Console.log(`    Extracting PDF text...`);
-                  const extractResult = yield* Effect.either(
-                    pdfExtractor.extract(filePath)
-                  );
-                  if (extractResult._tag === "Right") {
-                    // Use first 10 pages, max 8k chars
-                    const pages = extractResult.right.pages.slice(0, 10);
-                    content = pages.map((p) => p.text).join("\n\n");
-                    if (content.length > 8000) {
-                      content = content.slice(0, 8000);
-                    }
-                  }
-                }
-              } else {
-                // For markdown, read directly
-                const readResult = yield* Effect.either(
-                  Effect.promise(() => Bun.file(filePath).text())
-                );
-                if (readResult._tag === "Right") {
-                  content = readResult.right;
-                }
-              }
+              const officeExtractor = yield* OfficeExtractor;
+              const content = yield* extractEnrichmentPreview(filePath, {
+                enrich,
+                pdfExtractor,
+                officeExtractor,
+              });
 
               if (enrich && content) {
                 // Full enrichment with LLM
@@ -3988,7 +4087,13 @@ function buildCliAppLayer() {
 
   const pdfLibraryLive = makePDFLibraryLive();
   return Layer.merge(
-    Layer.merge(Layer.merge(pdfLibraryLive, AutoTaggerLive), PDFExtractorLive),
+    Layer.merge(
+      Layer.merge(
+        Layer.merge(pdfLibraryLive, AutoTaggerLive),
+        PDFExtractorLive,
+      ),
+      OfficeExtractorLive,
+    ),
     Layer.merge(taxonomyServiceLive, EmbeddingProviderFullLive)
   );
 }

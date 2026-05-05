@@ -1,5 +1,5 @@
 /**
- * IngestProgress - TUI component for batch PDF/Markdown ingestion
+ * IngestProgress - TUI component for batch document ingestion
  *
  * Displays real-time progress for:
  * - File discovery
