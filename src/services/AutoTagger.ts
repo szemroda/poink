@@ -12,6 +12,7 @@
  */
 
 import { generateText, Output } from "ai";
+import dedent from "dedent";
 import { Context, Effect, Layer } from "effect";
 import { z } from "zod";
 import { logDebug, logInfo } from "../logger.js";
@@ -548,22 +549,24 @@ async function llmJudgeDuplicate(
   const config = loadConfig();
   const resolved = getConfiguredLanguageModel(config, "judge");
 
-  const prompt = `You are a taxonomy curator. Determine if these two concepts are essentially the SAME concept (duplicates that should be merged) or DISTINCT concepts that both belong in a knowledge taxonomy.
+  const prompt = dedent`
+    You are a taxonomy curator. Determine if these two concepts are essentially the SAME concept (duplicates that should be merged) or DISTINCT concepts that both belong in a knowledge taxonomy.
 
-PROPOSED CONCEPT:
-Name: ${proposed.prefLabel}
-Definition: ${proposed.definition || "(no definition)"}
+    PROPOSED CONCEPT:
+    Name: ${proposed.prefLabel}
+    Definition: ${proposed.definition || "(no definition)"}
 
-EXISTING CONCEPT:
-Name: ${existing.prefLabel}
-Definition: ${existing.definition || "(no definition)"}
+    EXISTING CONCEPT:
+    Name: ${existing.prefLabel}
+    Definition: ${existing.definition || "(no definition)"}
 
-Consider:
-- Are they synonyms or alternate names for the same thing? → DUPLICATE
-- Are they related but represent different ideas, theories, or domains? → DISTINCT
-- Would a subject matter expert consider them separate entries? → DISTINCT
+    Consider:
+    - Are they synonyms or alternate names for the same thing? -> DUPLICATE
+    - Are they related but represent different ideas, theories, or domains? -> DISTINCT
+    - Would a subject matter expert consider them separate entries? -> DISTINCT
 
-Reply with ONLY one word: DUPLICATE or DISTINCT`;
+    Reply with ONLY one word: DUPLICATE or DISTINCT
+  `;
 
   const result = await generateText({
     model: resolved.model,
@@ -718,30 +721,32 @@ async function enrichWithLLM(
     const { output } = await generateText({
       model: resolvedModel.model,
       output: Output.object({ schema: EnrichmentSchema }),
-      prompt: `Analyze this document and extract metadata for a personal knowledge library.
+      prompt: dedent`
+        Analyze this document and extract metadata for a personal knowledge library.
 
-Filename: ${filename}
+        Filename: ${filename}
 
-Content (excerpt):
-${truncatedContent}
+        Content (excerpt):
+        ${truncatedContent}
 
-${conceptsList}
+        ${conceptsList}
 
-Extract:
-- title: Clean, properly formatted title
-- author: Author name(s) if identifiable
-- summary: 2-3 sentences
-- documentType: book/paper/tutorial/reference/guide/article/report/presentation/notes/other
-- category: Primary category (lowercase-hyphenated)
-- tags: 5-10 specific tags (lowercase-hyphenated)
-- concepts: Match IDs from the available concepts list above
-- proposedConcepts: ONLY if document covers topics truly missing from taxonomy
+        Extract:
+        - title: Clean, properly formatted title
+        - author: Author name(s) if identifiable
+        - summary: 2-3 sentences
+        - documentType: book/paper/tutorial/reference/guide/article/report/presentation/notes/other
+        - category: Primary category (lowercase-hyphenated)
+        - tags: 5-10 specific tags (lowercase-hyphenated)
+        - concepts: Match IDs from the available concepts list above
+        - proposedConcepts: ONLY if document covers topics truly missing from taxonomy
 
-For proposedConcepts, use SKOS-style short IDs:
-- id: "parent/child" format, 2-3 words max (e.g., "education/spaced-repetition", "programming/error-handling")
-- prefLabel: 1-3 words (e.g., "Spaced Repetition", "Error Handling")
-- definition: One sentence max
-Do NOT propose concepts that are variations of existing ones.`,
+        For proposedConcepts, use SKOS-style short IDs:
+        - id: "parent/child" format, 2-3 words max (e.g., "education/spaced-repetition", "programming/error-handling")
+        - prefLabel: 1-3 words (e.g., "Spaced Repetition", "Error Handling")
+        - definition: One sentence max
+        Do NOT propose concepts that are variations of existing ones.
+      `,
     });
 
     return {
@@ -759,78 +764,80 @@ Do NOT propose concepts that are variations of existing ones.`,
   // Ollama remains on prompted JSON because local structured output is less reliable.
   const { text } = await generateText({
     model: resolvedModel.model,
-    prompt: `<role>You are a librarian cataloging documents for a personal knowledge library.</role>
+    prompt: dedent`
+      <role>You are a librarian cataloging documents for a personal knowledge library.</role>
 
-<taxonomy>
-${conceptsList}
-</taxonomy>
+      <taxonomy>
+      ${conceptsList}
+      </taxonomy>
 
-<instructions>
-Analyze the document and return a JSON object with:
-- title: Clean, properly formatted title
-- author: Author name if identifiable, null otherwise
-- summary: 2-3 sentences describing the document's content and significance
-- documentType: book|paper|tutorial|reference|guide|article|report|presentation|notes|other
-- category: Primary category (lowercase-hyphenated)
-- tags: 5-10 specific tags (lowercase-hyphenated, no generic terms like "document" or "pdf")
-- concepts: IDs from the taxonomy above that apply to this document
-- proposedConcepts: New concepts ONLY if the document covers topics not in the taxonomy
-</instructions>
+      <instructions>
+      Analyze the document and return a JSON object with:
+      - title: Clean, properly formatted title
+      - author: Author name if identifiable, null otherwise
+      - summary: 2-3 sentences describing the document's content and significance
+      - documentType: book|paper|tutorial|reference|guide|article|report|presentation|notes|other
+      - category: Primary category (lowercase-hyphenated)
+      - tags: 5-10 specific tags (lowercase-hyphenated, no generic terms like "document" or "pdf")
+      - concepts: IDs from the taxonomy above that apply to this document
+      - proposedConcepts: New concepts ONLY if the document covers topics not in the taxonomy
+      </instructions>
 
-<rules>
-- concepts: Use ONLY IDs from the taxonomy list
-- proposedConcepts: Use "parent/short-name" format (2-3 words max). Valid parents: programming, education, design, business, meta, psychology, research, writing
-- If taxonomy covers the topics, leave proposedConcepts as empty array []
-</rules>
+      <rules>
+      - concepts: Use ONLY IDs from the taxonomy list
+      - proposedConcepts: Use "parent/short-name" format (2-3 words max). Valid parents: programming, education, design, business, meta, psychology, research, writing
+      - If taxonomy covers the topics, leave proposedConcepts as empty array []
+      </rules>
 
-<examples>
-<example>
-<input>
-Filename: cognitive_load_theory_sweller.pdf
-Content: This paper reviews cognitive load theory, which describes how working memory limitations affect learning...
-</input>
-<output>{"title":"Cognitive Load Theory","author":"John Sweller","summary":"Reviews cognitive load theory and its implications for instructional design. A foundational paper in educational psychology.","documentType":"paper","category":"education","tags":["cognitive-load","working-memory","instructional-design","learning-theory"],"concepts":["education/cognitive-load","education/learning-science"],"proposedConcepts":[]}</output>
-</example>
+      <examples>
+      <example>
+      <input>
+      Filename: cognitive_load_theory_sweller.pdf
+      Content: This paper reviews cognitive load theory, which describes how working memory limitations affect learning...
+      </input>
+      <output>{"title":"Cognitive Load Theory","author":"John Sweller","summary":"Reviews cognitive load theory and its implications for instructional design. A foundational paper in educational psychology.","documentType":"paper","category":"education","tags":["cognitive-load","working-memory","instructional-design","learning-theory"],"concepts":["education/cognitive-load","education/learning-science"],"proposedConcepts":[]}</output>
+      </example>
 
-<example>
-<input>
-Filename: react_server_components.pdf
-Content: React Server Components allow rendering on the server, reducing client bundle size...
-</input>
-<output>{"title":"React Server Components","author":null,"summary":"Technical guide to React Server Components architecture and implementation patterns. Covers streaming, data fetching, and bundle optimization.","documentType":"tutorial","category":"programming","tags":["react","server-components","performance","streaming","bundle-size"],"concepts":["programming/react"],"proposedConcepts":[{"id":"programming/server-components","prefLabel":"Server Components","definition":"UI components rendered on the server to reduce client bundle size."}]}</output>
-</example>
+      <example>
+      <input>
+      Filename: react_server_components.pdf
+      Content: React Server Components allow rendering on the server, reducing client bundle size...
+      </input>
+      <output>{"title":"React Server Components","author":null,"summary":"Technical guide to React Server Components architecture and implementation patterns. Covers streaming, data fetching, and bundle optimization.","documentType":"tutorial","category":"programming","tags":["react","server-components","performance","streaming","bundle-size"],"concepts":["programming/react"],"proposedConcepts":[{"id":"programming/server-components","prefLabel":"Server Components","definition":"UI components rendered on the server to reduce client bundle size."}]}</output>
+      </example>
 
-<example>
-<input>
-Filename: bootstrapping_saas_patio11.pdf
-Content: Patrick McKenzie discusses strategies for bootstrapping software businesses without venture capital...
-</input>
-<output>{"title":"Bootstrapping SaaS Businesses","author":"Patrick McKenzie","summary":"Strategies for building profitable software businesses without external funding. Covers pricing, marketing, and sustainable growth.","documentType":"article","category":"business","tags":["bootstrapping","saas","pricing","indie-hacking","profitability"],"concepts":["business/bootstrapping","business/marketing"],"proposedConcepts":[]}</output>
-</example>
+      <example>
+      <input>
+      Filename: bootstrapping_saas_patio11.pdf
+      Content: Patrick McKenzie discusses strategies for bootstrapping software businesses without venture capital...
+      </input>
+      <output>{"title":"Bootstrapping SaaS Businesses","author":"Patrick McKenzie","summary":"Strategies for building profitable software businesses without external funding. Covers pricing, marketing, and sustainable growth.","documentType":"article","category":"business","tags":["bootstrapping","saas","pricing","indie-hacking","profitability"],"concepts":["business/bootstrapping","business/marketing"],"proposedConcepts":[]}</output>
+      </example>
 
-<example>
-<input>
-Filename: information_architecture_rosenfeld.pdf
-Content: This book covers the principles of organizing information for websites and digital products...
-</input>
-<output>{"title":"Information Architecture for the Web","author":"Louis Rosenfeld","summary":"Comprehensive guide to organizing and structuring information in digital products. Covers navigation, labeling, and search systems.","documentType":"book","category":"design","tags":["information-architecture","ux","navigation","taxonomy","findability"],"concepts":["design/information-architecture"],"proposedConcepts":[]}</output>
-</example>
+      <example>
+      <input>
+      Filename: information_architecture_rosenfeld.pdf
+      Content: This book covers the principles of organizing information for websites and digital products...
+      </input>
+      <output>{"title":"Information Architecture for the Web","author":"Louis Rosenfeld","summary":"Comprehensive guide to organizing and structuring information in digital products. Covers navigation, labeling, and search systems.","documentType":"book","category":"design","tags":["information-architecture","ux","navigation","taxonomy","findability"],"concepts":["design/information-architecture"],"proposedConcepts":[]}</output>
+      </example>
 
-<example>
-<input>
-Filename: spaced_repetition_memory.pdf
-Content: This research examines how spaced repetition systems improve long-term retention compared to massed practice...
-</input>
-<output>{"title":"Spaced Repetition and Memory","author":null,"summary":"Research on spaced repetition learning techniques and their effectiveness for long-term retention. Compares to traditional study methods.","documentType":"paper","category":"education","tags":["spaced-repetition","memory","retention","learning-techniques","flashcards"],"concepts":["education/learning-science"],"proposedConcepts":[{"id":"education/spaced-repetition","prefLabel":"Spaced Repetition","definition":"Learning technique using increasing intervals between reviews to optimize retention."}]}</output>
-</example>
-</examples>
+      <example>
+      <input>
+      Filename: spaced_repetition_memory.pdf
+      Content: This research examines how spaced repetition systems improve long-term retention compared to massed practice...
+      </input>
+      <output>{"title":"Spaced Repetition and Memory","author":null,"summary":"Research on spaced repetition learning techniques and their effectiveness for long-term retention. Compares to traditional study methods.","documentType":"paper","category":"education","tags":["spaced-repetition","memory","retention","learning-techniques","flashcards"],"concepts":["education/learning-science"],"proposedConcepts":[{"id":"education/spaced-repetition","prefLabel":"Spaced Repetition","definition":"Learning technique using increasing intervals between reviews to optimize retention."}]}</output>
+      </example>
+      </examples>
 
-<document>
-Filename: ${filename}
-Content: ${truncatedContent}
-</document>
+      <document>
+      Filename: ${filename}
+      Content: ${truncatedContent}
+      </document>
 
-Return ONLY the JSON object:`,
+      Return ONLY the JSON object:
+    `,
   });
 
   const parsed = parseJSONFromText(text) as {
@@ -950,7 +957,14 @@ async function tagWithLLM(
     const { output } = await generateText({
       model: resolvedModel.model,
       output: Output.object({ schema: TagSchema }),
-      prompt: `Generate tags for this document. Filename: ${filename}\n\nContent:\n${truncatedContent}`,
+      prompt: dedent`
+        Generate tags for this document.
+
+        Filename: ${filename}
+
+        Content:
+        ${truncatedContent}
+      `,
     });
 
     return {
@@ -963,24 +977,26 @@ async function tagWithLLM(
   // Ollama remains on prompted JSON because local structured output is less reliable.
   const { text } = await generateText({
     model: resolvedModel.model,
-    prompt: `Generate tags for this document. Return ONLY a JSON object.
+    prompt: dedent`
+      Generate tags for this document. Return ONLY a JSON object.
 
-Filename: ${filename}
+      Filename: ${filename}
 
-Content (excerpt):
-${truncatedContent}
+      Content (excerpt):
+      ${truncatedContent}
 
-Return JSON:
-{
-  "tags": ["tag1", "tag2", "tag3", "tag4", "tag5"],
-  "category": "primary-category",
-  "author": "Author Name or null"
-}
+      Return JSON:
+      {
+        "tags": ["tag1", "tag2", "tag3", "tag4", "tag5"],
+        "category": "primary-category",
+        "author": "Author Name or null"
+      }
 
-Rules:
-- 3-7 specific tags, lowercase, hyphenated (e.g., "machine-learning")
-- Focus on topics, technologies, domain
-- Avoid generic tags like "book", "document"`,
+      Rules:
+      - 3-7 specific tags, lowercase, hyphenated (e.g., "machine-learning")
+      - Focus on topics, technologies, domain
+      - Avoid generic tags like "book", "document"
+    `,
   });
 
   const parsed = parseJSONFromText(text) as {

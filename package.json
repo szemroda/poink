@@ -26,6 +26,7 @@
     "@qdrant/js-client-rest": "^1.16.2",
     "@xmldom/xmldom": "^0.9.10",
     "ai": "^6.0.175",
+    "dedent": "1.7.0",
     "dotenv": "^17.2.3",
     "effect": "^3.12.0",
     "gray-matter": "^4.0.3",

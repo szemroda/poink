@@ -1,5 +1,6 @@
 import { Context, Effect, Layer } from "effect";
 import { generateText, Output } from "ai";
+import dedent from "dedent";
 import { z } from "zod";
 import { describeLanguageModelError, getConfiguredLanguageModel } from "./AIProvider.js";
 import { loadConfig } from "../types.js";
@@ -73,16 +74,18 @@ async function generateSummary(
   const { output } = await generateText({
     model: resolvedModel.model,
     output: Output.object({ schema: SummarySchema }),
-    prompt: `Analyze these document chunks from a knowledge library cluster and create an abstractive summary.
+    prompt: dedent`
+      Analyze these document chunks from a knowledge library cluster and create an abstractive summary.
 
-${combinedContent.slice(0, 6000)}
+      ${combinedContent.slice(0, 6000)}
 
-Generate:
-- summary: A cohesive 2-4 sentence summary that captures the main themes and insights
-- keyTopics: 3-6 key topics or concepts covered across these chunks
-- representativeQuote: (optional) The most representative or impactful quote from the chunks
+      Generate:
+      - summary: A cohesive 2-4 sentence summary that captures the main themes and insights
+      - keyTopics: 3-6 key topics or concepts covered across these chunks
+      - representativeQuote: (optional) The most representative or impactful quote from the chunks
 
-Focus on synthesizing ideas across chunks, not just listing them.`,
+      Focus on synthesizing ideas across chunks, not just listing them.
+    `,
   });
 
   return {
