@@ -4,8 +4,8 @@
 
 import { Context, Effect, Layer } from "effect";
 import { getData } from "pdf-parse/worker";
+import { resolveUserPath } from "../pathUtils.js";
 import {
-  expandHomePath,
   LibraryConfig,
   PDFExtractionError,
   PDFNotFoundError,
@@ -51,7 +51,7 @@ export class PDFExtractor extends Context.Tag("PDFExtractor")<
 // ============================================================================
 
 function resolvePath(path: string): string {
-  return expandHomePath(path);
+  return resolveUserPath(path);
 }
 
 const pdfParseModulePromise = (async () => {

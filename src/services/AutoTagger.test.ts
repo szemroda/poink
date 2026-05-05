@@ -50,3 +50,32 @@ describe("AutoTagger - Concept validation", () => {
     expect(typeof module.validateProposedConcepts).toBe("function");
   });
 });
+
+describe("AutoTagger path handling", () => {
+  it("extracts path tags from Windows-style paths", async () => {
+    const { extractPathTags } = await import("./AutoTagger.js");
+
+    expect(
+      extractPathTags(
+        "C:\\Users\\tester\\Documents\\ML\\Deep Learning\\paper.pdf",
+        "C:\\Users\\tester\\Documents"
+      )
+    ).toEqual(["ml", "deep-learning"]);
+  });
+
+  it("extracts filename-based metadata from Windows-style paths", async () => {
+    const { cleanTitle, extractAuthor, extractFilenameTags } = await import(
+      "./AutoTagger.js"
+    );
+    const { getPathFilename } = await import("../pathUtils.js");
+
+    const filename = getPathFilename(
+      "C:\\Users\\tester\\Documents\\Deep Learning - Smith.pdf"
+    );
+
+    expect(filename).toBe("Deep Learning - Smith.pdf");
+    expect(cleanTitle(filename)).toBe("Deep Learning Smith");
+    expect(extractAuthor(filename)).toBe("Smith");
+    expect(extractFilenameTags(filename)).toEqual(["deep", "learning", "smith"]);
+  });
+});

@@ -17,6 +17,7 @@ import { generateObject, generateText } from "ai";
 import { Context, Effect, Layer } from "effect";
 import { z } from "zod";
 import { logDebug, logInfo } from "../logger.js";
+import { getPathFilename, getPathSegments } from "../pathUtils.js";
 import {
   TaxonomyService,
   generateConceptEmbedding,
@@ -441,14 +442,7 @@ export function extractAuthor(filename: string): string | undefined {
  * Extract tags from file path
  */
 export function extractPathTags(filePath: string, basePath?: string): string[] {
-  let path = filePath;
-
-  if (basePath && path.startsWith(basePath)) {
-    path = path.slice(basePath.length);
-  }
-
-  const segments = path
-    .split("/")
+  const segments = getPathSegments(filePath, basePath)
     .filter((s) => s && !s.includes("."))
     .filter((s) => s.length >= 2)
     .filter((s) => !IGNORE_PATH_PATTERNS.some((p) => p.test(s)))
@@ -1156,7 +1150,7 @@ export const AutoTaggerLive = Layer.effect(
         options?: EnrichmentOptions
       ) =>
         Effect.gen(function* () {
-          const filename = filePath.split("/").pop() || "";
+          const filename = getPathFilename(filePath);
           const opts = options || {};
           let availableConcepts = opts.availableConcepts || [];
 
@@ -1319,7 +1313,7 @@ export const AutoTaggerLive = Layer.effect(
         options?: EnrichmentOptions
       ) =>
         Effect.gen(function* () {
-          const filename = filePath.split("/").pop() || "";
+          const filename = getPathFilename(filePath);
           const opts = options || {};
 
           // Always extract heuristic tags

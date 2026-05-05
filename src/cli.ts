@@ -59,6 +59,7 @@ import {
   resolveConfigPath,
   saveConfig,
 } from "./types.js";
+import { resolveUserPath } from "./pathUtils.js";
 import { assessDocChunker } from "./chunking.js";
 import {
   TaxonomyService,
@@ -2369,7 +2370,7 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
       // Resolve and validate directories
       const targetDirs: string[] = [];
 	      for (const dir of directories) {
-	        const targetDir = dir.startsWith("/") ? dir : join(process.cwd(), dir);
+	        const targetDir = resolveUserPath(dir);
 	        if (!existsSync(targetDir)) {
 	          yield* Console.error(`Error: Directory not found: ${targetDir}`);
 	          return yield* Effect.fail(
