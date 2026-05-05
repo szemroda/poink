@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { createServer } from "net";
 import { tmpdir } from "os";
 import { join } from "path";
 import { Client } from "@modelcontextprotocol/sdk/client";
@@ -84,6 +85,26 @@ async function withTempLibraryPathAsync<T>(
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+}
+
+async function getAvailablePort(): Promise<number> {
+  return await new Promise((resolve, reject) => {
+    const server = createServer();
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        server.close();
+        reject(new Error("Failed to determine ephemeral port"));
+        return;
+      }
+      const { port } = address;
+      server.close((err) => {
+        if (err) reject(err);
+        else resolve(port);
+      });
+    });
+  });
 }
 
 describe("CLI JSON Envelope Contract", () => {
@@ -386,6 +407,68 @@ describe("MCP Tool Output Contract", () => {
           } catch {
             // ignore
           }
+        }
+      }),
+    { timeout: 20000 },
+  );
+});
+
+describe("HTTP MCP Server", () => {
+  test(
+    "serve starts the HTTP MCP server and exposes /health",
+    async () =>
+      withTempLibraryPathAsync(async (libraryPath) => {
+        const port = await getAvailablePort();
+        const proc = Bun.spawn(
+          [
+            process.execPath,
+            "run",
+            "src/cli.ts",
+            "serve",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            String(port),
+            "--quiet",
+          ],
+          {
+            cwd: process.cwd(),
+            stdout: "pipe",
+            stderr: "pipe",
+            env: {
+              ...process.env,
+              PDF_LIBRARY_PATH: libraryPath,
+              OLLAMA_HOST: "http://127.0.0.1:1",
+              PDF_BRAIN_LOG_LEVEL: "silent",
+            } as any,
+          },
+        );
+
+        try {
+          let health: Response | undefined;
+          for (let i = 0; i < 40; i++) {
+            try {
+              health = await fetch(`http://127.0.0.1:${port}/health`);
+              if (health.ok) break;
+            } catch {
+              // server not ready yet
+            }
+            await Bun.sleep(100);
+          }
+
+          expect(health).toBeDefined();
+          expect(health?.ok).toBe(true);
+
+          const body = await health!.json();
+          expect(body).toEqual({
+            ok: true,
+            host: "127.0.0.1",
+            port,
+            auth: { enabled: false },
+          });
+        } finally {
+          proc.kill();
+          await proc.exited;
         }
       }),
     { timeout: 20000 },

@@ -122,6 +122,24 @@ pdf-brain stats
 pdf-brain init
 ```
 
+### MCP Access
+
+```bash
+# Start MCP over stdio (for local tool runners)
+pdf-brain mcp
+
+# Start MCP over HTTP
+pdf-brain serve
+
+# Bind to a custom interface/port
+pdf-brain serve --host 127.0.0.1 --port 3838
+
+# Require a bearer token for /mcp
+pdf-brain serve --auth-token your-token
+```
+
+`pdf-brain serve` exposes `/health` for readiness checks and `/mcp` for the HTTP MCP endpoint. The default bind is `127.0.0.1:3838`.
+
 ### Adding Documents
 
 ```bash
@@ -399,6 +417,13 @@ pdf-brain config set enrichment.model anthropic/claude-haiku-4-5
     "provider": "gateway",
     "model": "anthropic/claude-haiku-4-5"
   },
+  "server": {
+    "host": "127.0.0.1",
+    "port": 3838,
+    "auth": {
+      "enabled": false
+    }
+  },
   "openrouter": {
     "apiKey": "..."
   }
@@ -416,6 +441,9 @@ pdf-brain config set enrichment.model anthropic/claude-haiku-4-5
 | `judge.model`         | `llama3.2:3b`            | Model for judging duplicate concepts |
 | `openrouter.apiKey`   | -                        | OpenRouter API key                   |
 | `openrouter.baseUrl`  | `https://openrouter.ai/api/v1` | Optional OpenRouter API base URL |
+| `server.host`         | `127.0.0.1`              | Host/interface for `pdf-brain serve` |
+| `server.port`         | `3838`                   | HTTP port for `pdf-brain serve`      |
+| `server.auth.enabled` | `false`                  | Require bearer auth on `/mcp`        |
 
 ### Environment Variables
 

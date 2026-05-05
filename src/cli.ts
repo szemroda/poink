@@ -4156,6 +4156,18 @@ if (import.meta.main) {
       return;
     }
 
+    if (command === "serve") {
+      try {
+        await runServeCommand(buildCliAppLayer(), globals, args.slice(1));
+      } catch (err) {
+        const cliErr =
+          err instanceof CLIError ? err : new CLIError("SERVE_FAILED", String(err), err);
+        console.error(`${cliErr.code}: ${cliErr.message}`);
+        process.exit(1);
+      }
+      return;
+    }
+
     const toCLIError = (e: unknown): CLIError => {
       if (e instanceof CLIError) return e;
       const tag =
