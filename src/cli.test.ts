@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
+import { join } from "node:path";
 import {
   filenameFromURL,
+  getDownloadTargetPath,
   looksLikeMarkdown,
   hasMarkdownExtension,
   assessWALHealth,
@@ -54,6 +56,50 @@ describe("filenameFromURL", () => {
         "https://raw.githubusercontent.com/user/repo/main/README.md"
       )
     ).toBe("README.md");
+  });
+});
+
+describe("getDownloadTargetPath", () => {
+  const downloadsDir = join("tmp", "downloads");
+
+  test("keeps .pdf when the fetched content is PDF", () => {
+    expect(
+      getDownloadTargetPath(
+        "https://example.com/paper.pdf",
+        downloadsDir,
+        "pdf"
+      )
+    ).toBe(join("tmp", "downloads", "paper.pdf"));
+  });
+
+  test("rewrites .pdf URL to .md when the fetched content is Markdown", () => {
+    expect(
+      getDownloadTargetPath(
+        "https://example.com/paper.pdf",
+        downloadsDir,
+        "markdown"
+      )
+    ).toBe(join("tmp", "downloads", "paper.md"));
+  });
+
+  test("adds .md for extensionless markdown URLs", () => {
+    expect(
+      getDownloadTargetPath(
+        "https://example.com/docs/readme",
+        downloadsDir,
+        "markdown"
+      )
+    ).toBe(join("tmp", "downloads", "readme.md"));
+  });
+
+  test("preserves .markdown when the source URL already uses it", () => {
+    expect(
+      getDownloadTargetPath(
+        "https://example.com/guide.markdown",
+        downloadsDir,
+        "markdown"
+      )
+    ).toBe(join("tmp", "downloads", "guide.markdown"));
   });
 });
 
@@ -187,6 +233,15 @@ describe("Markdown MIME type detection (conceptual)", () => {
     contentType.includes("text/markdown") ||
     contentType.includes("text/x-markdown");
 
+  const shouldTreatAsPdf = (url: string, contentType: string) => {
+    const hasExplicitMarkdownMime = isExplicitMarkdownMime(contentType);
+    const hasTextPlainMime = contentType.includes("text/plain");
+    const hasTextualMime = hasExplicitMarkdownMime || hasTextPlainMime;
+    const pathname = new URL(url).pathname.toLowerCase();
+    const hasPdfExt = pathname.endsWith(".pdf");
+    return contentType.includes("pdf") || (hasPdfExt && !hasTextualMime);
+  };
+
   test("text/markdown is explicit markdown MIME", () => {
     expect(isExplicitMarkdownMime("text/markdown")).toBe(true);
     expect(isExplicitMarkdownMime("text/markdown; charset=utf-8")).toBe(true);
@@ -203,6 +258,18 @@ describe("Markdown MIME type detection (conceptual)", () => {
 
   test("text/html is NOT explicit markdown MIME", () => {
     expect(isExplicitMarkdownMime("text/html")).toBe(false);
+  });
+
+  test("text/markdown overrides a misleading .pdf URL suffix", () => {
+    expect(
+      shouldTreatAsPdf("https://example.com/readme.pdf", "text/markdown")
+    ).toBe(false);
+  });
+
+  test("text/plain from a .pdf URL is not forced to PDF before markdown heuristics", () => {
+    expect(
+      shouldTreatAsPdf("https://example.com/readme.pdf", "text/plain")
+    ).toBe(false);
   });
 });
 

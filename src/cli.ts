@@ -112,6 +112,32 @@ export function filenameFromURL(url: string): string {
   return `${filename}.pdf`;
 }
 
+function stripRecognizedDocumentExtension(filename: string): string {
+  return filename.replace(/\.(pdf|md|markdown)$/i, "");
+}
+
+function extensionForDetectedType(
+  fileType: "pdf" | "markdown",
+  sourceName: string
+): string {
+  if (fileType === "pdf") return ".pdf";
+  return extname(sourceName).toLowerCase() === ".markdown"
+    ? ".markdown"
+    : ".md";
+}
+
+export function getDownloadTargetPath(
+  url: string,
+  downloadsDir: string,
+  fileType: "pdf" | "markdown"
+): string {
+  const sourceFilename = filenameFromURL(url);
+  const basenameWithoutExt =
+    stripRecognizedDocumentExtension(sourceFilename) || "download";
+  const finalExtension = extensionForDetectedType(fileType, sourceFilename);
+  return join(downloadsDir, `${basenameWithoutExt}${finalExtension}`);
+}
+
 /** Size in bytes to peek for Markdown heuristics when content-type is text/plain */
 const MARKDOWN_PEEK_SIZE = 4096;
 
@@ -143,6 +169,15 @@ export function hasMarkdownExtension(url: string): boolean {
   } catch {
     // Fallback for malformed URLs
     return url.endsWith(".md") || url.endsWith(".markdown");
+  }
+}
+
+function hasPdfExtension(url: string): boolean {
+  try {
+    const pathname = new URL(url).pathname;
+    return extname(pathname).toLowerCase() === ".pdf";
+  } catch {
+    return url.toLowerCase().endsWith(".pdf");
   }
 }
 
@@ -393,7 +428,7 @@ export function shouldCheckpoint(
 /**
  * Download a file (PDF or Markdown) from URL to local path
  */
-function downloadFile(url: string, destPath: string) {
+function downloadFile(url: string, downloadsDir: string) {
   return Effect.tryPromise({
     try: async () => {
       const response = await fetch(url);
@@ -402,19 +437,20 @@ function downloadFile(url: string, destPath: string) {
       }
       const contentType = response.headers.get("content-type") || "";
 
-      // PDF detection: explicit MIME type or .pdf extension
-      const isPDF = contentType.includes("pdf") || url.endsWith(".pdf");
-
       // Markdown detection: strict MIME types or file extension
       const hasExplicitMarkdownMime =
         contentType.includes("text/markdown") ||
         contentType.includes("text/x-markdown");
       const hasMarkdownExt = hasMarkdownExtension(url);
+      const hasPdfExt = hasPdfExtension(url);
+      const hasTextPlainMime = contentType.includes("text/plain");
+      const hasTextualMime = hasExplicitMarkdownMime || hasTextPlainMime;
 
       let isMarkdown = hasExplicitMarkdownMime || hasMarkdownExt;
+      let isPDF = contentType.includes("pdf") || (hasPdfExt && !hasTextualMime);
 
       // Heuristic for text/plain: check URL extension first, then peek at content
-      if (!isPDF && !isMarkdown && contentType.includes("text/plain")) {
+      if (!isPDF && !isMarkdown && hasTextPlainMime) {
         if (hasMarkdownExt) {
           isMarkdown = true;
         } else {
@@ -425,10 +461,15 @@ function downloadFile(url: string, destPath: string) {
           if (looksLikeMarkdown(preview)) {
             isMarkdown = true;
           }
+          const finalPath = getDownloadTargetPath(
+            url,
+            downloadsDir,
+            isMarkdown ? "markdown" : "pdf"
+          );
           // Write the already-fetched buffer
           if (isPDF || isMarkdown) {
-            await Bun.write(destPath, buffer);
-            return destPath;
+            await Bun.write(finalPath, buffer);
+            return finalPath;
           }
           throw new Error(`Unsupported content type: ${contentType}`);
         }
@@ -437,9 +478,14 @@ function downloadFile(url: string, destPath: string) {
       if (!isPDF && !isMarkdown) {
         throw new Error(`Unsupported content type: ${contentType}`);
       }
+      const finalPath = getDownloadTargetPath(
+        url,
+        downloadsDir,
+        isMarkdown ? "markdown" : "pdf"
+      );
       const buffer = await response.arrayBuffer();
-      await Bun.write(destPath, buffer);
-      return destPath;
+      await Bun.write(finalPath, buffer);
+      return finalPath;
     },
     catch: (e) => new URLFetchError({ url, reason: String(e) }),
   });
@@ -860,7 +906,7 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
         }
 
         yield* Console.log(`Downloading: ${pathOrUrl}`);
-        yield* downloadFile(pathOrUrl, localPath);
+        localPath = yield* downloadFile(pathOrUrl, downloadsDir);
         yield* Console.log(`  Saved to: ${localPath}`);
       } else {
         localPath = pathOrUrl;
