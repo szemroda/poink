@@ -56,6 +56,7 @@ import {
   PDFChunk,
   SearchResult,
   loadConfig,
+  normalizeConfig,
   resolveConfigPath,
   saveConfig,
 } from "./types.js";
@@ -567,6 +568,73 @@ class CLIError extends Error {
   }
 }
 
+type JsonSchemaNode = {
+  type?: string | string[];
+  properties?: Record<string, JsonSchemaNode>;
+};
+
+const CONFIG_JSON_SCHEMA = JSONSchema.make(Config as any) as JsonSchemaNode;
+
+function invalidConfigPathError(path: string): CLIError {
+  return new CLIError("INVALID_ARGS", `Invalid config path: ${path}`, { path });
+}
+
+function getConfigSchemaNode(path: string): JsonSchemaNode | undefined {
+  if (!path) return undefined;
+
+  let node: JsonSchemaNode | undefined = CONFIG_JSON_SCHEMA;
+  for (const part of path.split(".")) {
+    if (!part || !node?.properties || !(part in node.properties)) {
+      return undefined;
+    }
+    node = node.properties[part];
+  }
+
+  return node;
+}
+
+function parseConfigValue(path: string, rawValue: string, schemaNode: JsonSchemaNode): unknown {
+  const types =
+    typeof schemaNode.type === "string"
+      ? [schemaNode.type]
+      : Array.isArray(schemaNode.type)
+        ? schemaNode.type
+        : [];
+
+  if (types.includes("object") || schemaNode.properties) {
+    throw new CLIError(
+      "INVALID_ARGS",
+      `Config path must point to a scalar value: ${path}`,
+      { path }
+    );
+  }
+
+  if (types.includes("boolean")) {
+    const normalized = rawValue.trim().toLowerCase();
+    if (normalized === "true" || normalized === "1") return true;
+    if (normalized === "false" || normalized === "0") return false;
+    throw new CLIError(
+      "INVALID_ARGS",
+      `Invalid boolean value for config path: ${path}`,
+      { path, value: rawValue }
+    );
+  }
+
+  if (types.includes("number") || types.includes("integer")) {
+    const parsed = Number(rawValue);
+    if (Number.isNaN(parsed)) {
+      throw new CLIError(
+        "INVALID_ARGS",
+        `Invalid numeric value for config path: ${path}`,
+        { path, value: rawValue }
+      );
+    }
+    return parsed;
+  }
+
+  return rawValue;
+}
+
 function describeCliFailure(error: unknown): string {
   if (error instanceof Error && typeof error.message === "string") {
     return error.message;
@@ -895,7 +963,7 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
           Document: JSONSchema.make(Document as any),
           PDFChunk: JSONSchema.make(PDFChunk as any),
           SearchResult: JSONSchema.make(SearchResult as any),
-          Config: JSONSchema.make(Config as any),
+          Config: CONFIG_JSON_SCHEMA,
         },
       };
 
@@ -2013,47 +2081,52 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
 	          );
 	        }
 
-        // Navigate and update config
+        const schemaNode = getConfigSchemaNode(path);
+        if (!schemaNode) {
+          yield* Console.error(`Invalid config path: ${path}`);
+          return yield* Effect.fail(invalidConfigPathError(path));
+        }
+
         const parts = path.split(".");
-        let target: any = config;
+        const updatedConfig = JSON.parse(JSON.stringify(config)) as Record<string, unknown>;
+        let target: Record<string, unknown> | undefined = updatedConfig;
+
 	        for (let i = 0; i < parts.length - 1; i++) {
 	          const part = parts[i];
-	          if (target && typeof target === "object" && part in target) {
-	            target = (target as any)[part];
+	          const next = target?.[part];
+	          if (next && typeof next === "object" && !Array.isArray(next)) {
+	            target = next as Record<string, unknown>;
 	          } else {
-	            yield* Console.error(`Config path not found: ${path}`);
-	            return yield* Effect.fail(
-	              new CLIError("NOT_FOUND", `Config path not found: ${path}`, {
-	                path,
-	              })
-	            );
+	            yield* Console.error(`Invalid config path: ${path}`);
+	            return yield* Effect.fail(invalidConfigPathError(path));
 	          }
 	        }
 
+        if (!target) {
+          yield* Console.error(`Invalid config path: ${path}`);
+          return yield* Effect.fail(invalidConfigPathError(path));
+        }
+
         const lastPart = parts[parts.length - 1];
-        if (target && typeof target === "object") {
-          // Type coercion based on existing value type
-          const oldValue = (target as any)[lastPart];
-          let parsedValue: any = newValue;
+        const parsedValue = parseConfigValue(path, newValue, schemaNode);
+        target[lastPart] = parsedValue;
 
-          if (typeof oldValue === "boolean") {
-            parsedValue = newValue === "true" || newValue === "1";
-          } else if (typeof oldValue === "number") {
-            parsedValue = parseFloat(newValue);
-          }
+        let validatedConfig: Config;
+        try {
+          validatedConfig = normalizeConfig(updatedConfig);
+        } catch {
+          yield* Console.error(`Invalid value for config path: ${path}`);
+          return yield* Effect.fail(
+            new CLIError("INVALID_ARGS", `Invalid value for config path: ${path}`, {
+              path,
+              value: newValue,
+            })
+          );
+        }
 
-	          (target as any)[lastPart] = parsedValue;
-	          saveConfig(config);
-	          yield* Console.log(`Updated ${path}: ${parsedValue}`);
-	          resultPayload = { path, value: parsedValue };
-	        } else {
-	          yield* Console.error(`Config path not found: ${path}`);
-	          return yield* Effect.fail(
-	            new CLIError("NOT_FOUND", `Config path not found: ${path}`, {
-	              path,
-	            })
-	          );
-	        }
+        saveConfig(validatedConfig);
+        yield* Console.log(`Updated ${path}: ${parsedValue}`);
+        resultPayload = { path, value: parsedValue };
 	      } else {
 	        yield* Console.error(`Unknown config subcommand: ${subcommand}`);
 	        yield* Console.error("Available: show, get, set");

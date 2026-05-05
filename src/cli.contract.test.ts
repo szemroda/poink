@@ -283,6 +283,32 @@ describe("CLI JSON Envelope Contract", () => {
       expect(saved.openrouter.apiKey).toBe("test-openrouter-key");
     }));
 
+  test("config set rejects invalid config keys and does not persist them", () =>
+    withTempLibraryPath((libraryRoot) => {
+      const libraryPath = join(libraryRoot, "library");
+      const configPath = join(libraryRoot, "config.json");
+
+      const res = runCli(
+        ["config", "set", "openrouter.apiKeyyyyy", "123"],
+        {
+          env: {
+            PDF_LIBRARY_PATH: libraryPath,
+            PDF_BRAIN_CONFIG: configPath,
+            OLLAMA_HOST: "http://127.0.0.1:1",
+          },
+        },
+      );
+
+      expect(res.exitCode).not.toBe(0);
+      const obj = JSON.parse(res.stdout);
+      expect(obj.ok).toBe(false);
+      expect(obj.error.code).toBe("INVALID_ARGS");
+      expect(String(obj.error.message)).toContain("openrouter.apiKeyyyyy");
+
+      const saved = JSON.parse(readFileSync(configPath, "utf-8"));
+      expect(saved.openrouter.apiKeyyyyy).toBeUndefined();
+    }));
+
   test("init creates a missing library directory before opening the database", () =>
     withTempLibraryPath((libraryRoot) => {
       const libraryPath = join(libraryRoot, "missing-library");
