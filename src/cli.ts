@@ -3,7 +3,7 @@
  * PDF Brain CLI
  */
 
-import { Effect, Console as EffectConsole, Exit, Layer, Runtime, Scope } from "effect";
+import { Effect, Console as EffectConsole, Exit, Layer, Runtime, Scope, Logger } from "effect";
 import { JSONSchema } from "@effect/schema";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -88,7 +88,7 @@ import {
   resolveServerConfig,
   toJsonLine,
 } from "./agent/protocol.js";
-import { getLogLevel, setLogLevel, logInfo } from "./logger.js";
+import { getLogLevel, setLogLevel, toEffectLogLevel } from "./logger.js";
 
 /**
  * Check if a string is a URL
@@ -2918,7 +2918,7 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
                 );
 
                 if (checkpointResult._tag === "Left") {
-                  yield* Effect.log(
+                  yield* Effect.logError(
                     `Warning: Checkpoint failed at ${i + 1} docs: ${
                       checkpointResult.left
                     }`
@@ -3388,7 +3388,9 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
         if (!dryRun && effectiveMaxDocs !== undefined && planned.length > effectiveMaxDocs) {
           if (parsedMaxDocs !== undefined) {
             // Explicit --max-docs: truncate and proceed
-            logInfo(`Truncating ${planned.length} candidates to --max-docs ${effectiveMaxDocs}`);
+            yield* Effect.logInfo(
+              `Truncating ${planned.length} candidates to --max-docs ${effectiveMaxDocs}`,
+            );
             planned = planned.slice(0, effectiveMaxDocs);
           } else {
             // Implicit default: refuse (safety guard)
@@ -3509,7 +3511,9 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
               ),
             );
             if (replaceResult._tag === "Left") {
-              logInfo(`⚠ Rechunk failed for "${doc.title}": ${String(replaceResult.left)}`);
+              yield* Effect.logInfo(
+                `⚠ Rechunk failed for "${doc.title}": ${String(replaceResult.left)}`,
+              );
               errors++;
               continue;
             }
@@ -3635,8 +3639,12 @@ async function connectMcpServer<ROut, E>(
   });
 
   const scope = await Effect.runPromise(Scope.make());
+  const runtimeLayer = Layer.merge(
+    appLayer,
+    Logger.minimumLogLevel(toEffectLogLevel(globals.logLevel))
+  );
   const runtime = await Effect.runPromise(
-    Layer.toRuntime(appLayer).pipe(Effect.provideService(Scope.Scope, scope)),
+    Layer.toRuntime(runtimeLayer).pipe(Effect.provideService(Scope.Scope, scope)),
   );
 
   const coerceCliError = (e: unknown): CLIError => {
@@ -3663,7 +3671,10 @@ async function connectMcpServer<ROut, E>(
 
     const outEither: any = await Runtime.runPromise(
       runtime as any,
-      makeProgram(argv, cmdGlobals).pipe(Effect.either) as any,
+      withConfiguredLogging(
+        makeProgram(argv, cmdGlobals).pipe(Effect.either),
+        cmdGlobals.logLevel,
+      ) as any,
     );
 
     if (outEither._tag === "Right") {
@@ -4051,13 +4062,20 @@ async function runServeCommand<ROut, E>(
     },
   });
 
-  console.error(
-    `[pdf-brain:serve] listening on http://${serverConfig.host}:${serverConfig.port}/mcp`,
-  );
-  console.error(
-    `[pdf-brain:serve] auth ${
-      serverConfig.auth.enabled ? "enabled (bearer token)" : "disabled"
-    }`,
+  await Effect.runPromise(
+    withConfiguredLogging(
+      Effect.gen(function* () {
+        yield* Effect.logInfo(
+          `[pdf-brain:serve] listening on http://${serverConfig.host}:${serverConfig.port}/mcp`,
+        );
+        yield* Effect.logInfo(
+          `[pdf-brain:serve] auth ${
+            serverConfig.auth.enabled ? "enabled (bearer token)" : "disabled"
+          }`,
+        );
+      }),
+      globals.logLevel,
+    ),
   );
 
   const shutdown = async () => {
@@ -4075,6 +4093,13 @@ async function runServeCommand<ROut, E>(
 
   // Keep process alive until shutdown signal.
   await new Promise(() => {});
+}
+
+function withConfiguredLogging<A, E, R>(
+  effect: Effect.Effect<A, E, R>,
+  logLevel: LogLevel,
+): Effect.Effect<A, E, R> {
+  return effect.pipe(Logger.withMinimumLogLevel(toEffectLogLevel(logLevel)));
 }
 
 function buildCliAppLayer() {
@@ -4187,14 +4212,20 @@ if (import.meta.main) {
         outEither = await Effect.runPromise(
           // `makeProgram` is typed with the union of all command requirements.
           // Pure commands like `config` do not need runtime services.
-          (program as Effect.Effect<any, any, never>).pipe(Effect.either)
+          withConfiguredLogging(
+            (program as Effect.Effect<any, any, never>).pipe(Effect.either),
+            globals.logLevel,
+          )
         );
       } else {
         outEither = await Effect.runPromise(
-          program.pipe(
-            Effect.provide(buildCliAppLayer()),
-            Effect.scoped,
-            Effect.either
+          withConfiguredLogging(
+            program.pipe(
+              Effect.provide(buildCliAppLayer()),
+              Effect.scoped,
+              Effect.either
+            ),
+            globals.logLevel,
           )
         );
       }

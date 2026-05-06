@@ -15,7 +15,6 @@ import { generateText, Output } from "ai";
 import dedent from "dedent";
 import { Context, Effect, Layer } from "effect";
 import { z } from "zod";
-import { logDebug, logInfo } from "../logger.js";
 import { getPathFilename, getPathSegments } from "../pathUtils.js";
 import {
   TaxonomyService,
@@ -633,7 +632,7 @@ function autoAcceptProposals(
         });
 
         if (isDuplicate) {
-          logDebug(
+          yield* Effect.logDebug(
             `AutoTagger: rejected duplicate "${proposal.prefLabel}" ~= "${similar[0].prefLabel}"`
           );
           rejected++;
@@ -650,7 +649,7 @@ function autoAcceptProposals(
       });
       yield* taxonomy.storeConceptEmbedding(proposal.id, embedding);
 
-      logInfo(
+      yield* Effect.logInfo(
         `AutoTagger: accepted novel concept ${proposal.id} ("${proposal.prefLabel}")`
       );
       accepted++;
@@ -866,13 +865,6 @@ async function enrichWithLLM(
     proposedConcepts?: ProposedConcept[];
   };
 
-  // Debug: log raw proposed concepts before validation
-  if (parsed.proposedConcepts && parsed.proposedConcepts.length > 0) {
-    logDebug(
-      `AutoTagger: raw proposedConcepts: ${JSON.stringify(parsed.proposedConcepts)}`
-    );
-  }
-
   const validatedConcepts = validateProposedConcepts(parsed.proposedConcepts);
 
   return {
@@ -938,16 +930,10 @@ export function validateProposedConcepts(
   return concepts
     .filter((c) => {
       if (!c.id || !c.prefLabel) return false;
-      if (!isValidConceptId(c.id)) {
-        logDebug(`AutoTagger: rejected invalid concept ID: "${c.id}"`);
-        return false;
-      }
+      if (!isValidConceptId(c.id)) return false;
       // prefLabel should be short (1-4 words)
       const labelWords = c.prefLabel.trim().split(/\s+/).length;
-      if (labelWords > 5) {
-        logDebug(`AutoTagger: rejected verbose prefLabel: "${c.prefLabel}"`);
-        return false;
-      }
+      if (labelWords > 5) return false;
       return true;
     })
     .map((c) => ({
@@ -1129,7 +1115,7 @@ export const AutoTaggerLive = Layer.effect(
             ragContextResult._tag === "Right" ? ragContextResult.right : [];
 
           if (ragContextResult._tag === "Left") {
-            logDebug(
+            yield* Effect.logDebug(
               `AutoTagger: continuing without RAG context (${ragContextResult.left.message})`
             );
           }
@@ -1142,7 +1128,7 @@ export const AutoTaggerLive = Layer.effect(
             ),
           ];
 
-          logDebug(
+          yield* Effect.logDebug(
             `AutoTagger: RAG context found ${ragConcepts.length} relevant concept(s)`
           );
 
@@ -1167,7 +1153,7 @@ export const AutoTaggerLive = Layer.effect(
 
           const validatedProposals = result.proposedConcepts || [];
           if (validatedProposals.length > 0) {
-            logDebug(
+            yield* Effect.logDebug(
               `AutoTagger: processing ${validatedProposals.length} proposed concept(s)...`
             );
 
@@ -1177,11 +1163,11 @@ export const AutoTaggerLive = Layer.effect(
 
             if (autoAcceptResult._tag === "Right") {
               const { accepted, rejected } = autoAcceptResult.right;
-              logDebug(
+              yield* Effect.logDebug(
                 `AutoTagger: auto-accept results: ${accepted} accepted, ${rejected} rejected`
               );
             } else {
-              logDebug(
+              yield* Effect.logDebug(
                 `AutoTagger: skipped auto-accept (${autoAcceptResult.left.message})`
               );
             }

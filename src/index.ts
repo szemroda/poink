@@ -40,7 +40,6 @@ import {
 import { Database } from "./services/Database.js";
 import { LibSQLDatabase } from "./services/LibSQLDatabase.js";
 import { DatabaseRegistry } from "./services/DatabaseRegistry.js";
-import { logDebug } from "./logger.js";
 import { buildChunkerMetadata, inferFileTypeFromPath } from "./chunking.js";
 
 // Re-export types and services
@@ -196,7 +195,7 @@ export class PDFLibrary extends Effect.Service<PDFLibrary>()("PDFLibrary", {
             processDocument(resolvedPath, fileType),
           );
           if (processResult._tag === "Left") {
-            yield* Effect.log(
+            yield* Effect.logDebug(
               `${fileType} extraction failed for ${resolvedPath}: ${processResult.left}`,
             );
             return yield* Effect.fail(processResult.left);
@@ -248,7 +247,7 @@ export class PDFLibrary extends Effect.Service<PDFLibrary>()("PDFLibrary", {
           // This processes in batches of 50, checkpointing after each batch
           // to keep WAL size bounded and prevent daemon crashes
           const batchSize = DEFAULT_QUEUE_CONFIG.batchSize;
-          yield* Effect.log(
+          yield* Effect.logDebug(
             `Generating embeddings for ${chunks.length} chunks (batch size: ${batchSize})...`,
           );
 
@@ -265,7 +264,7 @@ export class PDFLibrary extends Effect.Service<PDFLibrary>()("PDFLibrary", {
             const batchEnd = Math.min(batchStart + batchSize, contents.length);
             const batchContents = contents.slice(batchStart, batchEnd);
 
-            yield* Effect.log(
+            yield* Effect.logDebug(
               `  Batch ${batchIdx}: generating embeddings for indices ${batchStart}-${batchEnd - 1}`,
             );
 
@@ -275,7 +274,7 @@ export class PDFLibrary extends Effect.Service<PDFLibrary>()("PDFLibrary", {
               DEFAULT_QUEUE_CONFIG.concurrency,
             );
 
-            yield* Effect.log(
+            yield* Effect.logDebug(
               `  Batch ${batchIdx}: got ${batchEmbeddings.length} embeddings`,
             );
 
@@ -294,7 +293,7 @@ export class PDFLibrary extends Effect.Service<PDFLibrary>()("PDFLibrary", {
               });
             }
 
-            yield* Effect.log(
+            yield* Effect.logDebug(
               `  Batch ${batchIdx}: inserting ${embeddingRecords[0]?.chunkId} to ${embeddingRecords[embeddingRecords.length - 1]?.chunkId}`,
             );
             yield* db.addEmbeddings(embeddingRecords);
@@ -303,7 +302,7 @@ export class PDFLibrary extends Effect.Service<PDFLibrary>()("PDFLibrary", {
             // This prevents WASM OOM from unbounded WAL growth
             yield* db.checkpoint();
 
-            yield* Effect.log(
+            yield* Effect.logDebug(
               `  Processed ${batchEnd}/${contents.length} embeddings`,
             );
 
@@ -770,7 +769,6 @@ export class PDFLibrary extends Effect.Service<PDFLibrary>()("PDFLibrary", {
  */
 export const makePDFLibraryLive = () => {
   const dbLayer = DatabaseRegistry.make();
-  logDebug("Using database layer from DatabaseRegistry");
 
   // Provide all dependencies internally: the configured embedding provider and database.
   // This makes PDFLibraryLive a complete, self-contained layer

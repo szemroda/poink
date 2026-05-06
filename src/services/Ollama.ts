@@ -13,7 +13,7 @@ import {
 } from "effect";
 import { OllamaError, loadConfig } from "../types.js";
 import { spawn } from "child_process";
-import { getLogLevel, logDebug, logInfo } from "../logger.js";
+import { getLogLevel } from "../logger.js";
 
 // ============================================================================
 // Service Definition
@@ -71,37 +71,41 @@ export function getEmbeddingDimension(): number | null {
 function validateEmbedding(
   embedding: number[],
 ): Effect.Effect<number[], OllamaError> {
-  if (embedding.length === 0) {
-    return Effect.fail(
-      new OllamaError({
-        reason: "Invalid embedding: dimension 0 (empty vector)",
-      }),
-    );
-  }
+  return Effect.gen(function* () {
+    if (embedding.length === 0) {
+      return yield* Effect.fail(
+        new OllamaError({
+          reason: "Invalid embedding: dimension 0 (empty vector)",
+        }),
+      );
+    }
 
-  // First embedding sets the expected dimension
-  if (detectedEmbeddingDimension === null) {
-    detectedEmbeddingDimension = embedding.length;
-    logDebug(`Ollama embedding dimension detected: ${detectedEmbeddingDimension}`);
-  } else if (embedding.length !== detectedEmbeddingDimension) {
-    // Subsequent embeddings must match
-    return Effect.fail(
-      new OllamaError({
-        reason: `Invalid embedding: dimension ${embedding.length} (expected ${detectedEmbeddingDimension})`,
-      }),
-    );
-  }
+    // First embedding sets the expected dimension
+    if (detectedEmbeddingDimension === null) {
+      detectedEmbeddingDimension = embedding.length;
+      yield* Effect.logDebug(
+        `Ollama embedding dimension detected: ${detectedEmbeddingDimension}`,
+      );
+    } else if (embedding.length !== detectedEmbeddingDimension) {
+      // Subsequent embeddings must match
+      return yield* Effect.fail(
+        new OllamaError({
+          reason: `Invalid embedding: dimension ${embedding.length} (expected ${detectedEmbeddingDimension})`,
+        }),
+      );
+    }
 
-  if (embedding.some((v) => !Number.isFinite(v))) {
-    return Effect.fail(
-      new OllamaError({
-        reason:
-          "Invalid embedding: contains non-finite values (NaN or Infinity)",
-      }),
-    );
-  }
+    if (embedding.some((v) => !Number.isFinite(v))) {
+      return yield* Effect.fail(
+        new OllamaError({
+          reason:
+            "Invalid embedding: contains non-finite values (NaN or Infinity)",
+        }),
+      );
+    }
 
-  return Effect.succeed(embedding);
+    return embedding;
+  });
 }
 
 /**
@@ -113,58 +117,61 @@ function autoInstallModel(
   model: string,
   host: string,
 ): Effect.Effect<void, OllamaError> {
-  logInfo(`Ollama: installing model ${model}...`);
+  return Effect.gen(function* () {
+    yield* Effect.logInfo(`Ollama: installing model ${model}...`);
 
-  return Effect.tryPromise({
-    try: () =>
-      new Promise<void>((resolve, reject) => {
-        const proc = spawn("ollama", ["pull", model], {
-          // Never pollute stdout (agent protocol). Forward to stderr if enabled.
-          stdio: ["ignore", "pipe", "pipe"],
-        });
-
-        // Forward streaming output to stderr only when debugging.
-        const debug = getLogLevel() === "debug";
-        if (debug) {
-          proc.stdout?.on("data", (chunk) => {
-            try {
-              process.stderr.write(`[ollama:pull] ${chunk.toString()}`);
-            } catch {}
+    yield* Effect.tryPromise({
+      try: () =>
+        new Promise<void>((resolve, reject) => {
+          const proc = spawn("ollama", ["pull", model], {
+            // Never pollute stdout (agent protocol). Forward to stderr if enabled.
+            stdio: ["ignore", "pipe", "pipe"],
           });
-          proc.stderr?.on("data", (chunk) => {
-            try {
-              process.stderr.write(`[ollama:pull] ${chunk.toString()}`);
-            } catch {}
-          });
-        }
 
-        proc.on("close", (code) => {
-          if (code === 0) {
-            logInfo("Ollama: model installed successfully");
-            resolve();
-          } else {
+          // Forward streaming output to stderr only when debugging.
+          const debug = getLogLevel() === "debug";
+          if (debug) {
+            proc.stdout?.on("data", (chunk) => {
+              try {
+                process.stderr.write(`[ollama:pull] ${chunk.toString()}`);
+              } catch {}
+            });
+            proc.stderr?.on("data", (chunk) => {
+              try {
+                process.stderr.write(`[ollama:pull] ${chunk.toString()}`);
+              } catch {}
+            });
+          }
+
+          proc.on("close", (code) => {
+            if (code === 0) {
+              resolve();
+            } else {
+              reject(
+                new Error(
+                  `ollama pull exited with code ${code}. Ensure Ollama is running and the model name is valid.`,
+                ),
+              );
+            }
+          });
+
+          proc.on("error", (err) => {
             reject(
               new Error(
-                `ollama pull exited with code ${code}. Ensure Ollama is running and the model name is valid.`,
+                `Failed to spawn ollama pull: ${err.message}. Ensure Ollama CLI is installed.`,
               ),
             );
-          }
-        });
+          });
+        }),
+      catch: (e) =>
+        new OllamaError({
+          reason: `Auto-install failed: ${
+            e instanceof Error ? e.message : String(e)
+          }`,
+        }),
+    });
 
-        proc.on("error", (err) => {
-          reject(
-            new Error(
-              `Failed to spawn ollama pull: ${err.message}. Ensure Ollama CLI is installed.`,
-            ),
-          );
-        });
-      }),
-    catch: (e) =>
-      new OllamaError({
-        reason: `Auto-install failed: ${
-          e instanceof Error ? e.message : String(e)
-        }`,
-      }),
+    yield* Effect.logInfo("Ollama: model installed successfully");
   });
 }
 
@@ -213,7 +220,7 @@ export function probeEmbeddingDimension(
 
     // Cache the detected dimension
     detectedEmbeddingDimension = dimension;
-    logDebug(`Ollama embedding dimension probed: ${dimension}`);
+    yield* Effect.logDebug(`Ollama embedding dimension probed: ${dimension}`);
     return dimension;
   });
 }
