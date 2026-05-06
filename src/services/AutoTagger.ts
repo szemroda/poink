@@ -64,6 +64,13 @@ export interface ProposedConcept {
   definition?: string;
 }
 
+type ProposedConceptOutput = {
+  id: string;
+  prefLabel: string;
+  altLabels?: string[] | null;
+  definition?: string | null;
+};
+
 /** Full enrichment result */
 export interface EnrichmentResult {
   /** Clean, properly formatted title */
@@ -270,15 +277,20 @@ const ProposedConceptSchema = z.object({
   prefLabel: z.string().describe("Preferred label"),
   altLabels: z
     .array(z.string())
-    .optional()
-    .describe("Alternative labels/aliases"),
-  definition: z.string().optional().describe("Definition/description"),
+    .describe("Alternative labels/aliases, or an empty array if none"),
+  definition: z
+    .string()
+    .nullable()
+    .describe("Definition/description, or null if unavailable"),
 });
 
 /** Schema for full enrichment */
 const EnrichmentSchema = z.object({
   title: z.string().describe("Clean, properly formatted document title"),
-  author: z.string().optional().describe("Author name(s) if identifiable"),
+  author: z
+    .string()
+    .nullable()
+    .describe("Author name(s) if identifiable, otherwise null"),
   summary: z.string().describe("2-3 sentence summary of the document"),
   documentType: z
     .enum([
@@ -305,15 +317,17 @@ const EnrichmentSchema = z.object({
   concepts: z.array(z.string()).describe("Matched concept IDs from taxonomy"),
   proposedConcepts: z
     .array(ProposedConceptSchema)
-    .optional()
-    .describe("New concepts to add to taxonomy"),
+    .describe("New concepts to add to taxonomy, or an empty array if none"),
 });
 
 /** Schema for lightweight tagging */
 const TagSchema = z.object({
   tags: z.array(z.string()).min(3).max(7).describe("3-7 descriptive tags"),
-  category: z.string().optional().describe("Primary category"),
-  author: z.string().optional().describe("Author if identifiable"),
+  category: z
+    .string()
+    .nullable()
+    .describe("Primary category, or null if unavailable"),
+  author: z.string().nullable().describe("Author if identifiable, otherwise null"),
 });
 
 // ============================================================================
@@ -733,17 +747,18 @@ async function enrichWithLLM(
 
         Extract:
         - title: Clean, properly formatted title
-        - author: Author name(s) if identifiable
+        - author: Author name(s) if identifiable, otherwise null
         - summary: 2-3 sentences
         - documentType: book/paper/tutorial/reference/guide/article/report/presentation/notes/other
         - category: Primary category (lowercase-hyphenated)
         - tags: 5-10 specific tags (lowercase-hyphenated)
         - concepts: Match IDs from the available concepts list above
-        - proposedConcepts: ONLY if document covers topics truly missing from taxonomy
+        - proposedConcepts: ONLY if document covers topics truly missing from taxonomy, otherwise []
 
         For proposedConcepts, use SKOS-style short IDs:
         - id: "parent/child" format, 2-3 words max (e.g., "education/spaced-repetition", "programming/error-handling")
         - prefLabel: 1-3 words (e.g., "Spaced Repetition", "Error Handling")
+        - altLabels: Alternative labels/aliases, otherwise []
         - definition: One sentence max
         Do NOT propose concepts that are variations of existing ones.
       `,
@@ -751,7 +766,7 @@ async function enrichWithLLM(
 
     return {
       title: output.title,
-      author: output.author,
+      author: output.author ?? undefined,
       summary: output.summary,
       documentType: output.documentType,
       category: normalizeTag(output.category),
@@ -916,24 +931,31 @@ function isValidConceptId(id: string): boolean {
  * EXPORTED for testing
  */
 export function validateProposedConcepts(
-  concepts: ProposedConcept[] | undefined
+  concepts: ProposedConceptOutput[] | undefined
 ): ProposedConcept[] {
   if (!concepts || !Array.isArray(concepts)) return [];
 
-  return concepts.filter((c) => {
-    if (!c.id || !c.prefLabel) return false;
-    if (!isValidConceptId(c.id)) {
-      logDebug(`AutoTagger: rejected invalid concept ID: "${c.id}"`);
-      return false;
-    }
-    // prefLabel should be short (1-4 words)
-    const labelWords = c.prefLabel.trim().split(/\s+/).length;
-    if (labelWords > 5) {
-      logDebug(`AutoTagger: rejected verbose prefLabel: "${c.prefLabel}"`);
-      return false;
-    }
-    return true;
-  });
+  return concepts
+    .filter((c) => {
+      if (!c.id || !c.prefLabel) return false;
+      if (!isValidConceptId(c.id)) {
+        logDebug(`AutoTagger: rejected invalid concept ID: "${c.id}"`);
+        return false;
+      }
+      // prefLabel should be short (1-4 words)
+      const labelWords = c.prefLabel.trim().split(/\s+/).length;
+      if (labelWords > 5) {
+        logDebug(`AutoTagger: rejected verbose prefLabel: "${c.prefLabel}"`);
+        return false;
+      }
+      return true;
+    })
+    .map((c) => ({
+      id: c.id,
+      prefLabel: c.prefLabel,
+      altLabels: c.altLabels ?? [],
+      definition: c.definition ?? undefined,
+    }));
 }
 
 /**
@@ -970,7 +992,7 @@ async function tagWithLLM(
     return {
       tags: output.tags.map(normalizeTag).filter((t) => t.length >= 2),
       category: output.category ? normalizeTag(output.category) : undefined,
-      author: output.author,
+      author: output.author ?? undefined,
     };
   }
 

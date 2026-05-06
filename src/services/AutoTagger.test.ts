@@ -49,6 +49,28 @@ describe("AutoTagger - Concept validation", () => {
     // Function should be exported for testing
     expect(typeof module.validateProposedConcepts).toBe("function");
   });
+
+  it("normalizes strict structured-output concept fields", async () => {
+    const { validateProposedConcepts } = await import("./AutoTagger.js");
+
+    expect(
+      validateProposedConcepts([
+        {
+          id: "education/spaced-repetition",
+          prefLabel: "Spaced Repetition",
+          altLabels: null,
+          definition: null,
+        },
+      ])
+    ).toEqual([
+      {
+        id: "education/spaced-repetition",
+        prefLabel: "Spaced Repetition",
+        altLabels: [],
+        definition: undefined,
+      },
+    ]);
+  });
 });
 
 describe("AutoTagger errors", () => {
