@@ -766,16 +766,22 @@ export class LibSQLDatabase {
                 // Delete orphaned embeddings first
                 if (orphanedEmbeddings > 0) {
                   await client.execute(`
-                    DELETE FROM embeddings e
-                    WHERE NOT EXISTS (SELECT 1 FROM chunks c WHERE c.id = e.chunk_id)
+                    DELETE FROM embeddings
+                    WHERE NOT EXISTS (
+                      SELECT 1 FROM chunks
+                      WHERE chunks.id = embeddings.chunk_id
+                    )
                   `);
                 }
 
                 // Delete orphaned chunks
                 if (orphanedChunks > 0) {
                   await client.execute(`
-                    DELETE FROM chunks c
-                    WHERE NOT EXISTS (SELECT 1 FROM documents d WHERE d.id = c.doc_id)
+                    DELETE FROM chunks
+                    WHERE NOT EXISTS (
+                      SELECT 1 FROM documents
+                      WHERE documents.id = chunks.doc_id
+                    )
                   `);
                 }
 

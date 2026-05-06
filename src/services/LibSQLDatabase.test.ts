@@ -434,6 +434,87 @@ describe("LibSQLDatabase", () => {
 
       expect(result.chunks.map((c) => c.content)).toEqual(["new-0", "new-1", "new-2"]);
     });
+
+    test("repair removes orphaned chunks and embeddings", async () => {
+      const dbPath = `${process.env.TEMP ?? "."}/pdf-brain-repair-${crypto.randomUUID()}.db`.replaceAll("\\", "/");
+      const url = `file:${dbPath}`;
+      const layer = LibSQLDatabase.make({ url });
+      const validEmbedding = new Array(1024).fill(0.1);
+      const orphanChunkEmbedding = new Array(1024).fill(0.2);
+      const missingChunkEmbedding = new Array(1024).fill(0.3);
+
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          const db = yield* Database;
+
+          yield* db.addDocument(
+            new Document({
+              id: "doc-ok",
+              title: "Kept",
+              path: "/tmp/ok.pdf",
+              addedAt: new Date("2025-01-01T00:00:00Z"),
+              pageCount: 1,
+              sizeBytes: 100,
+              tags: [],
+            }),
+          );
+          yield* db.addChunks([
+            {
+              id: "chunk-ok",
+              docId: "doc-ok",
+              page: 1,
+              chunkIndex: 0,
+              content: "ok",
+            },
+          ]);
+          yield* db.addEmbeddings([
+            { chunkId: "chunk-ok", embedding: validEmbedding },
+          ]);
+        }).pipe(Effect.provide(layer)),
+      );
+
+      const client = createClient({ url });
+      await client.execute("PRAGMA foreign_keys = OFF");
+      await client.execute({
+        sql: "INSERT INTO chunks (id, doc_id, page, chunk_index, content) VALUES (?, ?, ?, ?, ?)",
+        args: ["chunk-orphan", "missing-doc", 1, 0, "orphan"],
+      });
+      await client.execute({
+        sql: "INSERT INTO embeddings (chunk_id, embedding) VALUES (?, vector32(?))",
+        args: ["chunk-orphan", JSON.stringify(orphanChunkEmbedding)],
+      });
+      await client.execute({
+        sql: "INSERT INTO embeddings (chunk_id, embedding) VALUES (?, vector32(?))",
+        args: ["missing-chunk", JSON.stringify(missingChunkEmbedding)],
+      });
+      await client.execute("PRAGMA foreign_keys = ON");
+      await client.close();
+
+      const result = await Effect.runPromise(
+        Effect.gen(function* () {
+          const db = yield* Database;
+          const repair = yield* db.repair();
+          const orphanChunk = yield* db.getChunk("chunk-orphan");
+          const streamed = yield* Effect.promise(() =>
+            collectGenerator(db.streamEmbeddings(10)),
+          );
+
+          return {
+            repair,
+            orphanChunk,
+            embeddingIds: streamed.flat().map((item) => item.chunkId),
+          };
+        }).pipe(Effect.provide(layer)),
+      );
+
+      expect(result.repair).toEqual({
+        orphanedChunks: 1,
+        orphanedEmbeddings: 1,
+        zeroVectorEmbeddings: 0,
+      });
+      expect(result.orphanChunk).toBeNull();
+      expect(result.embeddingIds).toEqual(["chunk-ok"]);
+    });
   });
 
   describe("taxonomy schema (SKOS)", () => {
