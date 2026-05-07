@@ -230,10 +230,6 @@ export class PDFLibrary extends Effect.Service<PDFLibrary>()("PDFLibrary", {
             metadata: mergedMetadata,
           });
 
-          // Add document to DB
-          yield* db.addDocument(doc);
-
-          // Add chunks
           const chunkRecords = chunks.map((chunk, i) => ({
             id: `${id}-${i}`,
             docId: id,
@@ -241,20 +237,23 @@ export class PDFLibrary extends Effect.Service<PDFLibrary>()("PDFLibrary", {
             chunkIndex: chunk.chunkIndex,
             content: chunk.content,
           }));
-          yield* db.addChunks(chunkRecords);
 
-          // Generate embeddings with gated batching to prevent WASM OOM
-          // This processes in batches of 50, checkpointing after each batch
-          // to keep WAL size bounded and prevent daemon crashes
+          // Generate embeddings with gated batching to prevent WASM OOM.
+          // Generate every embedding before touching the DB. Otherwise a
+          // mid-file embedding failure can leave a document/chunks row that
+          // causes later ingest runs to skip an incomplete vector index.
           const batchSize = DEFAULT_QUEUE_CONFIG.batchSize;
           yield* Effect.logDebug(
             `Generating embeddings for ${chunks.length} chunks (batch size: ${batchSize})...`,
           );
 
           const contents = chunks.map((c) => c.content);
+          const embeddingRecords: Array<{
+            chunkId: string;
+            embedding: number[];
+          }> = [];
 
-          // Process embeddings in gated batches
-          // Each batch: generate embeddings → write to DB → checkpoint
+          // Process embeddings in gated batches, then commit once below.
           for (
             let batchIdx = 0;
             batchIdx * batchSize < contents.length;
@@ -278,13 +277,8 @@ export class PDFLibrary extends Effect.Service<PDFLibrary>()("PDFLibrary", {
               `  Batch ${batchIdx}: got ${batchEmbeddings.length} embeddings`,
             );
 
-            // Store this batch's embeddings
             // NOTE: Use explicit for-loop to avoid Effect generator closure issues
             // The .map() closure was capturing stale batchStart values
-            const embeddingRecords: Array<{
-              chunkId: string;
-              embedding: number[];
-            }> = [];
             for (let i = 0; i < batchEmbeddings.length; i++) {
               const chunkIndex = batchIdx * batchSize + i;
               embeddingRecords.push({
@@ -294,13 +288,8 @@ export class PDFLibrary extends Effect.Service<PDFLibrary>()("PDFLibrary", {
             }
 
             yield* Effect.logDebug(
-              `  Batch ${batchIdx}: inserting ${embeddingRecords[0]?.chunkId} to ${embeddingRecords[embeddingRecords.length - 1]?.chunkId}`,
+              `  Batch ${batchIdx}: prepared embeddings for ${id}-${batchStart} to ${id}-${batchEnd - 1}`,
             );
-            yield* db.addEmbeddings(embeddingRecords);
-
-            // CRITICAL: Checkpoint after each batch to flush WAL
-            // This prevents WASM OOM from unbounded WAL growth
-            yield* db.checkpoint();
 
             yield* Effect.logDebug(
               `  Processed ${batchEnd}/${contents.length} embeddings`,
@@ -313,6 +302,11 @@ export class PDFLibrary extends Effect.Service<PDFLibrary>()("PDFLibrary", {
               );
             }
           }
+
+          // Commit document + chunks + embeddings atomically only after all
+          // embeddings have been generated.
+          yield* db.replaceDocument(doc, chunkRecords, embeddingRecords);
+          yield* db.checkpoint();
 
           return doc;
         }),
