@@ -6,6 +6,7 @@ import { Context, Effect, Layer } from "effect";
 import { getData } from "pdf-parse/worker";
 import { assertValidChunking } from "../chunking.js";
 import { resolveUserPath } from "../pathUtils.js";
+import { fileExists, readFileBytes } from "../runtime.js";
 import {
   LibraryConfig,
   PDFExtractionError,
@@ -62,8 +63,8 @@ const pdfParseModulePromise = (async () => {
 })();
 
 async function extractFromResolvedPath(path: string): Promise<ExtractedPDF> {
-  // Bun is reliable here when parsing local buffers. URL loading was less stable.
-  const data = await Bun.file(path).bytes();
+  // Local buffers are more reliable than URL loading for pdf-parse.
+  const data = await readFileBytes(path);
   const PDFParse = await pdfParseModulePromise;
   const parser = new PDFParse({ data });
 
@@ -211,7 +212,7 @@ export const PDFExtractorLive = Layer.effect(
           // Resolve path
           const resolvedPath = resolvePath(path);
 
-          if (!Bun.file(resolvedPath).exists()) {
+          if (!fileExists(resolvedPath)) {
             return yield* Effect.fail(
               new PDFNotFoundError({ path: resolvedPath }),
             );
@@ -230,7 +231,7 @@ export const PDFExtractorLive = Layer.effect(
         Effect.gen(function* () {
           const resolvedPath = resolvePath(path);
 
-          if (!Bun.file(resolvedPath).exists()) {
+          if (!fileExists(resolvedPath)) {
             return yield* Effect.fail(
               new PDFNotFoundError({ path: resolvedPath }),
             );

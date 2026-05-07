@@ -168,7 +168,7 @@ export function processInBatches<T, R, E>(
  * - > 85%: 25% batch size (emergency mode)
  */
 export function getAdaptiveBatchSize(baseBatchSize: number): number {
-  // Only works in Node.js/Bun with v8 heap stats
+  // Only works in runtimes that expose v8-style heap stats.
   if (typeof process !== "undefined" && process.memoryUsage) {
     const mem = process.memoryUsage();
     const heapUsedRatio = mem.heapUsed / mem.heapTotal;

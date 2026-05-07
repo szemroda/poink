@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env node
 /**
  * PDF Brain CLI
  */
@@ -16,7 +16,7 @@ import {
   readdirSync,
   statSync,
 } from "fs";
-import { basename, extname, join, dirname } from "path";
+import { basename, extname, join, dirname, resolve } from "path";
 import { fileURLToPath } from "url";
 import {
   renderIngestProgress,
@@ -89,6 +89,7 @@ import {
   toJsonLine,
 } from "./agent/protocol.js";
 import { getLogLevel, setLogLevel, toEffectLogLevel } from "./logger.js";
+import { readFileText, serveFetch, writeFileData } from "./runtime.js";
 
 /**
  * Check if a string is a URL
@@ -279,7 +280,7 @@ function extractEnrichmentPreview(
   const fileType = fileTypeFromExtension(extname(path));
 
   if (fileType === "markdown") {
-    return Effect.either(Effect.promise(() => Bun.file(path).text())).pipe(
+    return Effect.either(Effect.promise(() => readFileText(path))).pipe(
       Effect.map((result) =>
         result._tag === "Right" ? trimPreview(result.right) : undefined,
       ),
@@ -637,7 +638,7 @@ function downloadFile(url: string, downloadsDir: string) {
           );
           // Write the already-fetched buffer
           if (detectedFileType) {
-            await Bun.write(finalPath, buffer);
+            await writeFileData(finalPath, buffer);
             return finalPath;
           }
           throw new Error(`Unsupported content type: ${contentType}`);
@@ -653,7 +654,7 @@ function downloadFile(url: string, downloadsDir: string) {
         detectedFileType
       );
       const buffer = await response.arrayBuffer();
-      await Bun.write(finalPath, buffer);
+      await writeFileData(finalPath, buffer);
       return finalPath;
     },
     catch: (e) => new URLFetchError({ url, reason: String(e) }),
@@ -4022,7 +4023,7 @@ async function runServeCommand<ROut, E>(
   });
   const closeMcp = await connectMcpServer(appLayer, globals, transport);
 
-  const listener = Bun.serve({
+  const listener = await serveFetch({
     hostname: serverConfig.host,
     port: serverConfig.port,
     fetch: async (request: Request): Promise<Response> => {
@@ -4133,7 +4134,14 @@ function isServiceFreeCommand(command: string | undefined): boolean {
 // MCP tool invocations are separate processes that may not cleanly close the
 // database. Register handlers early to ensure CHECKPOINT runs before exit.
 
-if (import.meta.main) {
+function isMainModule(): boolean {
+  return (
+    Boolean(process.argv[1]) &&
+    fileURLToPath(import.meta.url) === resolve(process.argv[1]!)
+  );
+}
+
+if (isMainModule()) {
   (async () => {
     const rawArgs = process.argv.slice(2);
 

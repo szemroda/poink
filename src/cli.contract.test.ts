@@ -107,6 +107,42 @@ async function getAvailablePort(): Promise<number> {
   });
 }
 
+describe("Node Build Smoke", () => {
+  test(
+    "dist CLI runs with node",
+    () =>
+      withTempLibraryPath((libraryPath) => {
+        const build = Bun.spawnSync([process.execPath, "run", "build"], {
+          stdout: "pipe",
+          stderr: "pipe",
+        });
+        if ((build.exitCode ?? 0) !== 0) {
+          throw new Error(
+            new TextDecoder().decode(build.stderr || build.stdout),
+          );
+        }
+
+        const proc = Bun.spawnSync(["node", "dist/cli.js", "--help"], {
+          env: {
+            ...process.env,
+            PDF_LIBRARY_PATH: libraryPath,
+            OLLAMA_HOST: "http://127.0.0.1:1",
+            PDF_BRAIN_LOG_LEVEL: "silent",
+          } as any,
+          stdout: "pipe",
+          stderr: "pipe",
+        });
+
+        expect(proc.exitCode ?? 0).toBe(0);
+        const stdout = new TextDecoder().decode(proc.stdout);
+        const envelope = JSON.parse(stdout);
+        expect(envelope.ok).toBe(true);
+        expect(envelope.command).toBe("help");
+      }),
+    { timeout: 30000 },
+  );
+});
+
 describe("CLI JSON Envelope Contract", () => {
   test("stats emits a single JSON envelope with nextActions when not --quiet", () =>
     withTempLibraryPath((libraryPath) => {

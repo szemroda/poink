@@ -11,6 +11,7 @@ import mammoth from "mammoth";
 import JSZip from "jszip";
 import { DOMParser } from "@xmldom/xmldom";
 import { resolveUserPath } from "../pathUtils.js";
+import { readFileBytes } from "../runtime.js";
 import { LibraryConfig, type DocumentFileType } from "../types.js";
 import { chunkText, sanitizeText } from "./PDFExtractor.js";
 
@@ -221,7 +222,7 @@ async function extractOdt(path: string): Promise<ExtractedOfficeDocument> {
     ext === ".fodt"
       ? readFileSync(path, "utf-8")
       : await (async () => {
-          const zip = await JSZip.loadAsync(await Bun.file(path).bytes());
+          const zip = await JSZip.loadAsync(await readFileBytes(path));
           const contentXml = zip.file("content.xml");
           if (!contentXml) {
             throw new Error("ODF package does not contain content.xml");

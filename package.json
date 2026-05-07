@@ -5,11 +5,12 @@
   "description": "Local document knowledge base with semantic search, enrichment, and MCP support.",
   "license": "MIT",
   "type": "module",
-  "main": "src/index.ts",
+  "main": "./dist/index.js",
   "bin": {
-    "pdf-brain": "./src/cli.ts"
+    "pdf-brain": "./dist/cli.js"
   },
   "scripts": {
+    "build": "tsc -p tsconfig.build.json",
     "dev": "bun run src/cli.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
@@ -18,7 +19,6 @@
   "dependencies": {
     "@ai-sdk/openai": "^3.0.60",
     "@effect/platform": "^0.72.0",
-    "@effect/platform-bun": "^0.52.0",
     "@effect/schema": "^0.75.0",
     "@libsql/client": "^0.15.15",
     "@modelcontextprotocol/sdk": "1.26.0",
@@ -47,6 +47,7 @@
   "devDependencies": {
     "@secretlint/secretlint-rule-preset-recommend": "^11.2.5",
     "@types/bun": "latest",
+    "@types/node": "^24.10.1",
     "@types/mdast": "^4.0.4",
     "@types/react": "^19.2.7",
     "husky": "^9.1.7",
@@ -55,7 +56,7 @@
     "typescript": "^5.7.2"
   },
   "engines": {
-    "bun": ">=1.0.0"
+    "node": ">=20"
   },
   "lint-staged": {
     "*": "secretlint"
