@@ -230,7 +230,7 @@ describe("Unified Search Types", () => {
 });
 
 describe("LibraryConfig path resolution", () => {
-  test("defaults to .pdf-brain when PDF_LIBRARY_PATH is unset", () => {
+  test("defaults to .poink when PDF_LIBRARY_PATH is unset", () => {
     const originalPdfLibraryPath = process.env.PDF_LIBRARY_PATH;
     const originalHome = process.env.HOME;
     const originalUserProfile = process.env.USERPROFILE;
@@ -242,8 +242,8 @@ describe("LibraryConfig path resolution", () => {
     try {
       const config = LibraryConfig.fromEnv();
 
-      expect(config.libraryPath).toBe("C:\\Users\\tester\\.pdf-brain");
-      expect(config.dbPath).toBe("C:\\Users\\tester\\.pdf-brain\\library.db");
+      expect(config.libraryPath).toBe("C:\\Users\\tester\\.poink");
+      expect(config.dbPath).toBe("C:\\Users\\tester\\.poink\\library.db");
     } finally {
       if (originalPdfLibraryPath === undefined) {
         delete process.env.PDF_LIBRARY_PATH;

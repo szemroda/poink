@@ -13,7 +13,7 @@ import { TaxonomyService, TaxonomyServiceImpl } from "./TaxonomyService.js";
 import { LibSQLDatabase } from "./LibSQLDatabase.js";
 import { removeDirWithRetries } from "../testUtils.js";
 
-const tempDir = mkdtempSync(join(tmpdir(), "pdf-brain-taxonomy-"));
+const tempDir = mkdtempSync(join(tmpdir(), "poink-taxonomy-"));
 let testDbCounter = 0;
 
 afterAll(async () => {

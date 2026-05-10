@@ -358,7 +358,7 @@ function cosineSimilarity(a: number[], b: number[]): number {
 function makeLayer(embeddingDimension = 3) {
   return QdrantDatabase.make({
     url: "http://localhost:6333",
-    collection: "pdf-brain",
+    collection: "poink",
     embeddingDimension,
   });
 }
@@ -386,8 +386,8 @@ describe("QdrantDatabase", () => {
     expect(stats).toEqual({ documents: 0, chunks: 0, embeddings: 0 });
 
     const client = fakeClients[0]!;
-    const docs = client.collections.get("pdf-brain-documents");
-    const chunks = client.collections.get("pdf-brain-chunks");
+    const docs = client.collections.get("poink-documents");
+    const chunks = client.collections.get("poink-chunks");
 
     expect(docs?.vectors).toEqual({ size: 1, distance: "Cosine" });
     expect(chunks?.vectors).toEqual({ size: 384, distance: "Cosine" });

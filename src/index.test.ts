@@ -22,7 +22,7 @@ describe("PDFLibrary.add", () => {
   });
 
   test("does not persist a new document when embedding fails after an earlier batch", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "pdf-brain-add-"));
+    const dir = mkdtempSync(join(tmpdir(), "poink-add-"));
     tempDirs.push(dir);
     const docPath = join(dir, "doc.md");
     writeFileSync(docPath, "# Doc\n\ncontent\n");
@@ -150,7 +150,7 @@ describe("PDFLibrary.add", () => {
   });
 
   test("embeds enriched chunk text while preserving display content", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "pdf-brain-embed-content-"));
+    const dir = mkdtempSync(join(tmpdir(), "poink-embed-content-"));
     tempDirs.push(dir);
     const docPath = join(dir, "doc.md");
     writeFileSync(docPath, "# Doc\n\ncontent\n");

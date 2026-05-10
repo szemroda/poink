@@ -1,39 +1,30 @@
-# pdf-brain
+# poink
 
-> This repository is a fork of the original `pdf-brain` package and is being adapted for a custom distribution path.
-
-Local **PDF, Markdown, DOCX, and ODT** knowledge base with semantic search and AI-powered enrichment.
-
-> **Works with PDFs, Markdown, DOCX, and ODT files** - Index your research papers, books, notes, docs, and office documents in one unified, searchable knowledge base.
-
-```
-┌─────────────┐     ┌─────────────┐     ┌─────────────┐     ┌─────────────┐
-│  PDF / MD   │────▶│   Ollama    │────▶│   Ollama    │────▶│   libSQL    │
-│  (extract)  │     │    (LLM)    │     │ (embeddings)│     │  (vectors)  │
-└─────────────┘     └─────────────┘     └─────────────┘     └─────────────┘
-      │                   │                   │                   │
-   pdf-parse         llama3.2:3b        mxbai-embed          HNSW index
-   + markdown        enrichment          1024 dims           cosine sim
-```
+Local-first **PDF, Markdown, DOCX, and ODT** knowledge base with semantic search and AI-powered enrichment.
 
 ## Features
 
 - **PDF + Markdown + Office docs** - Index `.pdf`, `.md`, `.docx`, `.odt`, and `.fodt` files with the same workflow
-- **Local-first** - Everything runs on your machine, no API costs
+- **Local-first by default** - Run with Ollama on your machine when you want no API costs
+- **External provider support** - Use AI Gateway, OpenAI, or OpenRouter for cloud embeddings or enrichment
 - **AI enrichment** - LLM extracts titles, summaries, tags, and concepts
 - **SKOS taxonomy** - Organize documents with hierarchical concepts
-- **Vector search** - Semantic search via Ollama embeddings
+- **Vector search** - Semantic search via embeddings
 - **Hybrid search** - Combine vector similarity with full-text search
 - **MCP server** - Use with Claude, Cursor, and other AI assistants
 
+## Credits
+
+poink started as a fork of the original [pdf-brain](https://github.com/joelhooks/pdf-brain) package. This project builds on that work while continuing under a new package name and CLI.
+
 ## Quick Start
 
-> Note: `pdf-brain` is agent-first and emits a single JSON envelope to stdout by default.  
-> Use `--format text` for human-readable output (and TUI/progress rendering), or inspect the machine contract via `pdf-brain capabilities`.
+> Note: `poink` is agent-first and emits a single JSON envelope to stdout by default.  
+> Use `--format text` for human-readable output (and TUI/progress rendering), or inspect the machine contract via `poink capabilities`.
 
 ```bash
-# 1. Install (standalone binary, no runtime needed)
-curl -fsSL https://raw.githubusercontent.com/joelhooks/pdf-brain/main/scripts/install.sh | bash
+# 1. Install from npm
+npm install -g poink
 
 # 2. Install Ollama (macOS)
 brew install ollama
@@ -46,17 +37,19 @@ ollama pull llama3.2:3b         # enrichment (optional but recommended)
 ollama serve
 
 # 5. Initialize (creates DB + seeds starter taxonomy)
-pdf-brain init
+poink init
 
 # 6. Add your first document
-pdf-brain add ~/Documents/paper.pdf --enrich
+poink add ~/Documents/paper.pdf --enrich
 ```
 
 ## Installation
 
 ### Prerequisites
 
-**Ollama** is required for embeddings. The LLM model is optional but recommended for enrichment.
+The default local setup uses **Ollama** for embeddings and optional enrichment. You can also configure AI Gateway, OpenAI, or OpenRouter instead.
+
+poink requires Node.js 20 or newer.
 
 ```bash
 # macOS
@@ -72,31 +65,27 @@ curl -fsSL https://ollama.com/install.sh | sh
 ### Models
 
 ```bash
-# Required: Embedding model (1024 dimensions)
+# Required for the default local embedding setup (1024 dimensions)
 ollama pull mxbai-embed-large
 
-# Recommended: Local LLM for enrichment
+# Recommended for local enrichment
 ollama pull llama3.2:3b
 
 # Start Ollama server
 ollama serve
 ```
 
-### Install pdf-brain
+### Install poink
 
 ```bash
-# Standalone binary (no runtime needed)
-curl -fsSL https://raw.githubusercontent.com/joelhooks/pdf-brain/main/scripts/install.sh | bash
-
-# or via npm
-npm install -g pdf-brain
+npm install -g poink
 ```
 
 ## CLI Reference
 
 ### Agent Output (Default)
 
-`pdf-brain` is optimized for agentic workflows: stdout is machine-readable by default.
+`poink` is optimized for agentic workflows: stdout is machine-readable by default.
 
 - `--format json|ndjson|text` (default: `json`)
 - `--pretty` pretty-print JSON
@@ -106,105 +95,109 @@ npm install -g pdf-brain
 Discover the full command/tool contract (including JSON Schemas) at runtime:
 
 ```bash
-pdf-brain capabilities
+poink capabilities
 ```
 
 ### Basic Commands
 
 ```bash
-# Check Ollama status
-pdf-brain check
+# Check the configured embedding provider
+poink check
 
 # Show library stats
-pdf-brain stats
+poink stats
 
 # Initialize library (creates DB, seeds taxonomy)
-pdf-brain init
+poink init
 ```
 
 ### MCP Access
 
 ```bash
 # Start MCP over stdio (for local tool runners)
-pdf-brain mcp
+poink mcp
 
 # Start MCP over HTTP
-pdf-brain serve
+poink serve
 
 # Bind to a custom interface/port
-pdf-brain serve --host 127.0.0.1 --port 3838
+poink serve --host 127.0.0.1 --port 3838
 
 # Require a bearer token for /mcp
-pdf-brain serve --auth-token your-token
+poink serve --auth-token your-token
 ```
 
-`pdf-brain serve` exposes `/health` for readiness checks and `/mcp` for the HTTP MCP endpoint. The default bind is `127.0.0.1:3838`.
+`poink serve` exposes `/health` for readiness checks and `/mcp` for the HTTP MCP endpoint. The default bind is `127.0.0.1:3838`.
 
 ### Adding Documents
 
 ```bash
 # Add a PDF
-pdf-brain add /path/to/document.pdf
+poink add /path/to/document.pdf
 
 # Add a Markdown file
-pdf-brain add /path/to/notes.md
+poink add /path/to/notes.md
 
 # Add Word or OpenDocument text files
-pdf-brain add /path/to/report.docx
-pdf-brain add /path/to/notes.odt
+poink add /path/to/report.docx
+poink add /path/to/notes.odt
 
 # Add from URL (supported document formats)
-pdf-brain add https://example.com/paper.pdf
-pdf-brain add https://raw.githubusercontent.com/user/repo/main/README.md
+poink add https://example.com/paper.pdf
+poink add https://raw.githubusercontent.com/user/repo/main/README.md
 
 # Add with manual tags
-pdf-brain add document.pdf --tags "ai,agents,research"
+poink add document.pdf --tags "ai,agents,research"
 
 # Add with auto-tagging only (faster)
-pdf-brain add document.pdf --auto-tag
+poink add document.pdf --auto-tag
 
 # Add with AI enrichment (extracts title, summary, concepts)
-pdf-brain add document.pdf --enrich
-pdf-brain add notes.md --enrich
-pdf-brain add report.docx --enrich
+poink add document.pdf --enrich
+poink add notes.md --enrich
+poink add report.docx --enrich
 ```
 
 ### Searching
 
 ```bash
 # Semantic search (uses embeddings)
-pdf-brain search "context engineering patterns"
+poink search "context engineering patterns"
 
 # Full-text search only (faster, no embeddings)
-pdf-brain search "context engineering" --fts
+poink search "context engineering" --fts
 
-# Hybrid search (combines both)
-pdf-brain search "machine learning" --hybrid
+# Search only documents or only taxonomy concepts
+poink search "machine learning" --docs-only
+poink search "machine learning" --concepts-only
 
 # Limit results
-pdf-brain search "query" --limit 5
+poink search "query" --limit 5
 
 # Expand context around matches
-pdf-brain search "query" --expand 500
+poink search "query" --expand 500
+
+# Include cluster summaries when available
+poink search "query" --include-clusters
 ```
 
 ### Managing Documents
 
 ```bash
 # List all documents
-pdf-brain list
+poink list
 
 # List by tag
-pdf-brain list --tag ai
+poink list --tag ai
 
 # Get document details
-pdf-brain read "document-title"
+poink read "document-title"
 
 # Remove a document
-pdf-brain remove "document-title"
+poink remove "document-title"
 
 # Update tags
-pdf-brain tag "document-title" "new,tags,here"
+poink tag "document-title" "new,tags,here"
 ```
 
 ### Taxonomy Commands
@@ -213,25 +206,22 @@ The taxonomy system uses SKOS (Simple Knowledge Organization System) for hierarc
 
 ```bash
 # List all concepts
-pdf-brain taxonomy list
+poink taxonomy list
 
 # Show concept tree
-pdf-brain taxonomy tree
+poink taxonomy tree
 
 # Show subtree from a concept
-pdf-brain taxonomy tree programming
+poink taxonomy tree programming
 
 # Search concepts
-pdf-brain taxonomy search "machine learning"
+poink taxonomy search "machine learning"
 
 # Add a new concept
-pdf-brain taxonomy add ai/transformers --label "Transformers" --broader ai-ml
+poink taxonomy add programming/transformers --label "Transformers" --broader programming/ai-ml
 
-# Assign concept to document
-pdf-brain taxonomy assign "doc-id" "programming/typescript"
-
-# Seed taxonomy from JSON file
-pdf-brain taxonomy seed --file data/taxonomy.json
+# Add alternate labels and a definition
+poink taxonomy add ai/rag --label "RAG" --broader programming/ai-ml --definition "Retrieval-augmented generation" --alt-labels "retrieval augmented generation"
 ```
 
 ### Bulk Ingest
@@ -240,25 +230,25 @@ Recursively ingest directories containing supported document files:
 
 ```bash
 # Ingest a directory with full LLM enrichment
-pdf-brain ingest ~/Documents/papers --enrich
+poink ingest ~/Documents/papers --enrich
 
 # Ingest your Obsidian vault or notes folder
-pdf-brain ingest ~/Documents/obsidian --enrich
+poink ingest ~/Documents/obsidian --enrich
 
 # Ingest multiple directories (PDFs, Markdown, DOCX/ODT, mixed)
-pdf-brain ingest ~/papers ~/books ~/notes --enrich
+poink ingest ~/papers ~/books ~/notes --enrich
 
 # With manual tags
-pdf-brain ingest ~/books --tags "books,reference"
+poink ingest ~/books --tags "books,reference"
 
 # Auto-tag only (faster, heuristics + light LLM)
-pdf-brain ingest ~/docs --auto-tag
+poink ingest ~/docs --auto-tag
 
 # Process only first N files (for testing)
-pdf-brain ingest ~/papers --enrich --sample 10
+poink ingest ~/papers --enrich --sample 10
 
 # Disable TUI for simple output
-pdf-brain ingest ~/papers --enrich --no-tui
+poink ingest ~/papers --enrich --no-tui
 ```
 
 **Supported formats:**
@@ -289,32 +279,42 @@ When you add documents with `--enrich`, the LLM extracts:
 
 Enrichment supports multiple providers via the config system:
 
+Provider API keys can be set either with `poink config set ...apiKey ...` or with the matching environment variable. Both approaches are supported; use whichever fits your workflow, but you only need to set one.
+
 ```bash
 # Check current config
-pdf-brain config show
+poink config show
 
 # Use local Ollama (default)
-pdf-brain config set enrichment.provider ollama
-pdf-brain config set enrichment.model llama3.2:3b
+poink config set enrichment.provider ollama
+poink config set enrichment.model llama3.2:3b
 
 # Use AI Gateway (Anthropic, OpenAI, etc.)
-pdf-brain config set enrichment.provider gateway
-pdf-brain config set enrichment.model anthropic/claude-haiku-4-5
+poink config set enrichment.provider gateway
+poink config set enrichment.model anthropic/claude-haiku-4-5
+poink config set gateway.apiKey your-key
 export AI_GATEWAY_API_KEY=your-key
 
+# Use OpenAI directly
+poink config set enrichment.provider openai
+poink config set enrichment.model gpt-4o-mini
+poink config set openai.apiKey your-key
+export OPENAI_API_KEY=your-key
+
 # Use OpenRouter
-pdf-brain config set enrichment.provider openrouter
-pdf-brain config set enrichment.model anthropic/claude-3.5-haiku
+poink config set enrichment.provider openrouter
+poink config set enrichment.model anthropic/claude-3.5-haiku
+poink config set openrouter.apiKey your-key
 export OPENROUTER_API_KEY=your-key
 
-# Provider priority: config > CLI flag > auto-detect
-pdf-brain add paper.pdf --enrich              # uses config
-pdf-brain add paper.pdf --enrich --provider ollama  # override
+# Provider priority: CLI flag > config
+poink add paper.pdf --enrich              # uses config
+poink add paper.pdf --enrich --provider ollama  # override
 ```
 
 ### Enrichment Fallback
 
-If LLM enrichment fails (API error, rate limit, malformed response), pdf-brain automatically falls back to heuristic-based enrichment:
+If LLM enrichment fails (API error, rate limit, malformed response), poink automatically falls back to heuristic-based enrichment:
 
 - **Title**: Cleaned from filename
 - **Tags**: Extracted from path, filename, and content keywords
@@ -334,29 +334,11 @@ The taxonomy is a hierarchical concept system for organizing documents. It ships
 
 ### Growing Your Taxonomy
 
-When enriching documents, the LLM may propose new concepts. These are saved for review:
+When enriching documents, the LLM may propose new concepts. poink checks for similar existing concepts and auto-accepts novel proposals into the taxonomy.
 
 ```bash
-# See proposed concepts from enrichment
-pdf-brain taxonomy proposed
-
-# Accept a specific concept
-pdf-brain taxonomy accept ai/rag --broader ai-ml
-
-# Accept all proposed concepts
-pdf-brain taxonomy accept --all
-
-# Reject a concept
-pdf-brain taxonomy reject ai/rag
-
-# Clear all proposals
-pdf-brain taxonomy clear-proposed
-
 # Manually add a concept
-pdf-brain taxonomy add ai/rag --label "RAG" --broader ai-ml
-
-# Or edit data/taxonomy.json and re-seed
-pdf-brain taxonomy seed --file data/taxonomy.json
+poink taxonomy add ai/rag --label "RAG" --broader programming/ai-ml
 ```
 
 ### Custom Taxonomy
@@ -377,25 +359,23 @@ Create your own `taxonomy.json`:
 }
 ```
 
-```bash
-pdf-brain taxonomy seed --file my-taxonomy.json
-```
+Custom taxonomy JSON files can be loaded programmatically through the library API. The CLI currently seeds the bundled starter taxonomy during `poink init`.
 
 ## Configuration
 
 ### Config File
 
-pdf-brain stores configuration in `$PDF_LIBRARY_PATH/config.json`:
+poink stores configuration in `~/.config/poink/config.json` unless `POINK_CONFIG` is set.
 
 ```bash
 # Show all config
-pdf-brain config show
+poink config show
 
 # Get a specific value
-pdf-brain config get enrichment.provider
+poink config get enrichment.provider
 
 # Set a value
-pdf-brain config set enrichment.model anthropic/claude-haiku-4-5
+poink config set enrichment.model anthropic/claude-haiku-4-5
 ```
 
 ### Config Options
@@ -403,11 +383,15 @@ pdf-brain config set enrichment.model anthropic/claude-haiku-4-5
 ```json
 {
   "ollama": {
-    "host": "http://localhost:11434"
+    "host": "http://localhost:11434",
+    "autoInstall": true
   },
   "embedding": {
     "provider": "ollama",
-    "model": "mxbai-embed-large"
+    "model": "mxbai-embed-large",
+    "openai": {
+      "model": "text-embedding-3-small"
+    }
   },
   "enrichment": {
     "provider": "gateway",
@@ -417,15 +401,30 @@ pdf-brain config set enrichment.model anthropic/claude-haiku-4-5
     "provider": "gateway",
     "model": "anthropic/claude-haiku-4-5"
   },
+  "gateway": {
+    "apiKey": "..."
+  },
+  "openai": {
+    "apiKey": "...",
+    "baseUrl": "https://api.openai.com/v1"
+  },
+  "openrouter": {
+    "apiKey": "...",
+    "baseUrl": "https://openrouter.ai/api/v1"
+  },
+  "database": {
+    "backend": "libsql",
+    "qdrant": {
+      "url": "http://localhost:6333",
+      "collection": "poink"
+    }
+  },
   "server": {
     "host": "127.0.0.1",
     "port": 3838,
     "auth": {
       "enabled": false
     }
-  },
-  "openrouter": {
-    "apiKey": "..."
   }
 }
 ```
@@ -433,41 +432,50 @@ pdf-brain config set enrichment.model anthropic/claude-haiku-4-5
 | Setting               | Default                  | Description                          |
 | --------------------- | ------------------------ | ------------------------------------ |
 | `ollama.host`         | `http://localhost:11434` | Ollama API endpoint                  |
+| `ollama.autoInstall`  | `true`                   | Auto-install missing Ollama models when supported |
 | `embedding.provider`  | `ollama`                 | Embedding provider: `ollama`, `gateway`, `openai`, or `openrouter` |
 | `embedding.model`     | `mxbai-embed-large`      | Embedding model (1024 dims)          |
 | `enrichment.provider` | `ollama`                 | LLM provider: `ollama`, `gateway`, `openai`, or `openrouter` |
 | `enrichment.model`    | `llama3.2:3b`            | Model for document enrichment        |
 | `judge.provider`      | `ollama`                 | Provider for concept deduplication   |
 | `judge.model`         | `llama3.2:3b`            | Model for judging duplicate concepts |
+| `gateway.apiKey`      | -                        | AI Gateway API key                   |
+| `openai.apiKey`       | -                        | OpenAI API key                       |
+| `openai.baseUrl`      | `https://api.openai.com/v1` | Optional OpenAI-compatible base URL |
 | `openrouter.apiKey`   | -                        | OpenRouter API key                   |
 | `openrouter.baseUrl`  | `https://openrouter.ai/api/v1` | Optional OpenRouter API base URL |
-| `server.host`         | `127.0.0.1`              | Host/interface for `pdf-brain serve` |
-| `server.port`         | `3838`                   | HTTP port for `pdf-brain serve`      |
+| `database.backend`    | `libsql`                 | Storage backend: `libsql` or `qdrant` |
+| `database.qdrant.url` | `http://localhost:6333`  | Qdrant endpoint when using Qdrant    |
+| `database.qdrant.collection` | `poink`           | Qdrant collection prefix             |
+| `server.host`         | `127.0.0.1`              | Host/interface for `poink serve` |
+| `server.port`         | `3838`                   | HTTP port for `poink serve`      |
 | `server.auth.enabled` | `false`                  | Require bearer auth on `/mcp`        |
 
 ### Environment Variables
 
 | Variable             | Default                    | Description              |
 | -------------------- | -------------------------- | ------------------------ |
-| `PDF_LIBRARY_PATH`   | `~/Documents/.pdf-library` | Library storage location |
-| `OLLAMA_HOST`        | `http://localhost:11434`   | Ollama API endpoint      |
+| `PDF_LIBRARY_PATH`   | `~/.poink`                 | Library storage location |
+| `POINK_CONFIG`       | `~/.config/poink/config.json` | Config file path      |
 | `AI_GATEWAY_API_KEY` | -                          | API key for AI Gateway   |
+| `OPENAI_API_KEY`     | -                          | API key for OpenAI       |
 | `OPENROUTER_API_KEY` | -                          | API key for OpenRouter   |
 | `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | Optional OpenRouter base URL |
-| `PDF_BRAIN_LOG_LEVEL` | `silent`                  | stderr logging verbosity |
-| `PDF_BRAIN_QUERY_EMBED_CACHE_SIZE` | `256`        | Query embedding LRU cache size (0 disables) |
+| `POINK_LOG_LEVEL` | `silent`                  | stderr logging verbosity |
+| `POINK_QUERY_EMBED_CACHE_SIZE` | `256`        | Query embedding LRU cache size (0 disables) |
 
 ### AI Gateway
 
 For cloud LLM providers (Anthropic, OpenAI, etc.), use the AI Gateway:
 
 ```bash
-# Set your API key
+# Set your API key in poink config or via environment
+poink config set gateway.apiKey your-key
 export AI_GATEWAY_API_KEY=your-key
 
 # Configure to use gateway
-pdf-brain config set enrichment.provider gateway
-pdf-brain config set enrichment.model anthropic/claude-haiku-4-5
+poink config set enrichment.provider gateway
+poink config set enrichment.model anthropic/claude-haiku-4-5
 
 # Other supported models:
 # - anthropic/claude-sonnet-4-20250514
@@ -477,40 +485,51 @@ pdf-brain config set enrichment.model anthropic/claude-haiku-4-5
 
 ### OpenRouter
 
-For OpenRouter, switch the provider and use an OpenRouter model ID. `pdf-brain` uses the official `@openrouter/ai-sdk-provider` integration for AI SDK v6.
+For OpenRouter, switch the provider and use an OpenRouter model ID. `poink` uses the official `@openrouter/ai-sdk-provider` integration for AI SDK v6.
 
 ```bash
+poink config set openrouter.apiKey your-key
 export OPENROUTER_API_KEY=your-key
 
-pdf-brain config set enrichment.provider openrouter
-pdf-brain config set enrichment.model anthropic/claude-3.5-haiku
+poink config set enrichment.provider openrouter
+poink config set enrichment.model anthropic/claude-3.5-haiku
 ```
 
 OpenRouter embeddings also work through the same provider abstraction:
 
 ```bash
-pdf-brain config set embedding.provider openrouter
-pdf-brain config set embedding.model openai/text-embedding-3-small
+poink config set embedding.provider openrouter
+poink config set embedding.model openai/text-embedding-3-small
+```
+
+OpenAI embeddings can be configured directly:
+
+```bash
+poink config set openai.apiKey your-key
+export OPENAI_API_KEY=your-key
+
+poink config set embedding.provider openai
+poink config set embedding.model text-embedding-3-small
 ```
 
 ## Storage
 
 ```
-~/Documents/.pdf-library/
-├── library.db          # libSQL database (vectors, FTS, metadata, taxonomy)
-├── library.db-shm      # Shared memory (WAL mode)
-├── library.db-wal      # Write-ahead log
-└── downloads/          # PDFs downloaded from URLs
+~/.poink/
++-- library.db          # libSQL database (vectors, FTS, metadata, taxonomy)
++-- library.db-shm      # Shared memory (WAL mode)
++-- library.db-wal      # Write-ahead log
++-- downloads/          # Documents downloaded from URLs
 ```
 
 ### Database Size
 
-The database can get **large** due to vector index overhead. For ~500k chunks:
+With the default libSQL backend, the database can get **large** due to vector index overhead. For ~500k chunks:
 
 | Component    | Size   | Notes                             |
 | ------------ | ------ | --------------------------------- |
 | Text content | ~180MB | Actual chunk text                 |
-| Embeddings   | ~1.9GB | 500k × 1024 dims × 4 bytes        |
+| Embeddings   | ~1.9GB | 500k x 1024 dims x 4 bytes        |
 | Vector index | ~48GB  | HNSW neighbor graphs (~100KB/row) |
 | FTS index    | ~200MB | Full-text search                  |
 
@@ -527,20 +546,20 @@ SELECT COUNT(chunk_id) FROM embeddings  -- correct
 1. **Extract** - PDF text via `pdf-parse`, Markdown parsed directly, DOCX via `mammoth`, ODT/FODT via OpenDocument XML
 2. **Enrich** (optional) - LLM extracts metadata, matches taxonomy concepts
 3. **Chunk** - Text split into ~512 token chunks with overlap
-4. **Embed** - Each chunk embedded via Ollama (1024 dimensions)
-5. **Store** - libSQL with vector index (HNSW) + FTS5
+4. **Embed** - Each chunk embedded via the configured embedding provider
+5. **Store** - libSQL by default, or Qdrant when configured
 6. **Search** - Query embedded, compared via cosine similarity
 
 ## MCP Integration
 
-pdf-brain ships as an MCP server for AI coding assistants:
+poink ships as an MCP server for AI coding assistants:
 
 ```json
 {
   "mcpServers": {
-    "pdf-brain": {
+    "poink": {
       "command": "npx",
-      "args": ["pdf-brain", "mcp"]
+      "args": ["-y", "poink", "mcp"]
     }
   }
 }
@@ -550,40 +569,35 @@ pdf-brain ships as an MCP server for AI coding assistants:
 
 | Tool                  | Description                                   |
 | --------------------- | --------------------------------------------- |
-| `pdf-brain_add`       | Add supported document files to library (supports URLs) |
-| `pdf-brain_batch_add` | Bulk ingest from directory                    |
-| `pdf-brain_search`    | Unified semantic search (docs + concepts)     |
-| `pdf-brain_list`      | List documents, optionally filter by tag      |
-| `pdf-brain_read`      | Get document details and metadata             |
-| `pdf-brain_remove`    | Remove document from library                  |
-| `pdf-brain_tag`       | Set tags on a document                        |
-| `pdf-brain_stats`     | Library statistics (docs, chunks, embeddings) |
+| `search`        | Unified semantic search (docs + concepts)     |
+| `search_pack`   | Run multiple searches and aggregate results   |
+| `list`          | List documents, optionally filter by tag      |
+| `read`          | Get document details and metadata             |
+| `chunk_get`     | Fetch one chunk by chunk ID                   |
+| `doc_chunks`    | List chunk IDs for a document                 |
+| `page_get`      | Reconstruct page text from chunks             |
+| `stats`         | Library statistics (docs, chunks, embeddings) |
 
 ### Taxonomy Tools
 
 | Tool                        | Description                              |
 | --------------------------- | ---------------------------------------- |
-| `pdf-brain_taxonomy_list`   | List all concepts (optional tree format) |
-| `pdf-brain_taxonomy_tree`   | Visual concept tree with box-drawing     |
-| `pdf-brain_taxonomy_add`    | Add new concept to taxonomy              |
-| `pdf-brain_taxonomy_assign` | Assign concept to document               |
-| `pdf-brain_taxonomy_search` | Search concepts by label                 |
-| `pdf-brain_taxonomy_seed`   | Load taxonomy from JSON file             |
+| `taxonomy_list`   | List all concepts (optional tree format) |
+| `taxonomy_tree`   | Render the full taxonomy tree or a subtree |
+| `taxonomy_search` | Search concepts by label or embedding similarity |
 
-### Config Tools
+### Discovery Tools
 
 | Tool                    | Description               |
 | ----------------------- | ------------------------- |
-| `pdf-brain_config_show` | Display all config        |
-| `pdf-brain_config_get`  | Get specific config value |
-| `pdf-brain_config_set`  | Set config value          |
+| `capabilities` | Describe commands, flags, and schemas |
 
 ### Utility Tools
 
 | Tool               | Description                   |
 | ------------------ | ----------------------------- |
-| `pdf-brain_check`  | Check if Ollama is ready      |
-| `pdf-brain_repair` | Fix database integrity issues |
+| `doctor`  | Run health checks and optional fixes |
+| `rechunk` | Rebuild chunks and embeddings        |
 
 ## Troubleshooting
 
@@ -614,10 +628,10 @@ The database uses WAL mode. If you see lock errors:
 
 ```bash
 # Check for zombie processes
-lsof ~/Documents/.pdf-library/library.db*
+lsof ~/.poink/library.db*
 
 # Force checkpoint
-sqlite3 ~/Documents/.pdf-library/library.db "PRAGMA wal_checkpoint(TRUNCATE);"
+sqlite3 ~/.poink/library.db "PRAGMA wal_checkpoint(TRUNCATE);"
 ```
 
 ### Slow enrichment
@@ -632,8 +646,8 @@ Enrichment is CPU-intensive. For large batches:
 
 ```bash
 # Clone
-git clone https://github.com/joelhooks/pdf-brain
-cd pdf-brain
+git clone <repository-url>
+cd poink
 
 # Install
 bun install

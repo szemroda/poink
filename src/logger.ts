@@ -2,7 +2,7 @@ import type { LogLevel } from "./agent/protocol.js";
 import { LogLevel as EffectLogLevel } from "effect";
 
 let currentLevel: LogLevel = (() => {
-  const raw = process.env.PDF_BRAIN_LOG_LEVEL;
+  const raw = process.env.POINK_LOG_LEVEL;
   if (
     raw === "silent" ||
     raw === "error" ||
@@ -16,7 +16,7 @@ let currentLevel: LogLevel = (() => {
 
 export function setLogLevel(level: LogLevel): void {
   currentLevel = level;
-  process.env.PDF_BRAIN_LOG_LEVEL = level;
+  process.env.POINK_LOG_LEVEL = level;
 }
 
 export function getLogLevel(): LogLevel {

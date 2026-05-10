@@ -1,20 +1,29 @@
 {
-  "name": "pdf-brain",
+  "name": "poink",
   "version": "0.1.0",
-  "private": true,
   "description": "Local document knowledge base with semantic search, enrichment, and MCP support.",
   "license": "MIT",
   "type": "module",
   "main": "./dist/index.js",
-  "bin": {
-    "pdf-brain": "./dist/cli.js"
+  "exports": {
+    ".": "./dist/index.js"
   },
+  "bin": {
+    "poink": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "data",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "dev": "bun run src/cli.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
-    "prepare": "husky"
+    "prepare": "husky || true",
+    "prepack": "npm run build"
   },
   "dependencies": {
     "@ai-sdk/openai": "^3.0.60",

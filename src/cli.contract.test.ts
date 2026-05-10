@@ -33,7 +33,7 @@ const OPENROUTER_CONFIG_WITHOUT_KEY = {
     backend: "libsql",
     qdrant: {
       url: "http://localhost:6333",
-      collection: "pdf-brain",
+      collection: "poink",
     },
   },
   server: {
@@ -68,7 +68,7 @@ function runCli(
 }
 
 function withTempLibraryPath<T>(fn: (libraryPath: string) => T): T {
-  const dir = mkdtempSync(join(tmpdir(), "pdf-brain-cli-contract-"));
+  const dir = mkdtempSync(join(tmpdir(), "poink-cli-contract-"));
   try {
     return fn(dir);
   } finally {
@@ -79,7 +79,7 @@ function withTempLibraryPath<T>(fn: (libraryPath: string) => T): T {
 async function withTempLibraryPathAsync<T>(
   fn: (libraryPath: string) => Promise<T>,
 ): Promise<T> {
-  const dir = mkdtempSync(join(tmpdir(), "pdf-brain-cli-contract-"));
+  const dir = mkdtempSync(join(tmpdir(), "poink-cli-contract-"));
   try {
     return await fn(dir);
   } finally {
@@ -127,7 +127,7 @@ describe("Node Build Smoke", () => {
             ...process.env,
             PDF_LIBRARY_PATH: libraryPath,
             OLLAMA_HOST: "http://127.0.0.1:1",
-            PDF_BRAIN_LOG_LEVEL: "silent",
+            POINK_LOG_LEVEL: "silent",
           } as any,
           stdout: "pipe",
           stderr: "pipe",
@@ -239,7 +239,7 @@ describe("CLI JSON Envelope Contract", () => {
       const result = obj.result;
       expect(result).toBeDefined();
       expect(result.protocolVersion).toBe(1);
-      expect(typeof result.pdfBrainVersion).toBe("string");
+      expect(typeof result.poinkVersion).toBe("string");
 
       // Command list invariants (agent discovery depends on these names)
       const commandNames = new Set(
@@ -279,7 +279,7 @@ describe("CLI JSON Envelope Contract", () => {
       const res = runCli(["config", "show", "--format", "text"], {
         env: {
           PDF_LIBRARY_PATH: libraryPath,
-          PDF_BRAIN_CONFIG: configPath,
+          POINK_CONFIG: configPath,
           OLLAMA_HOST: "http://127.0.0.1:1",
         },
       });
@@ -297,7 +297,7 @@ describe("CLI JSON Envelope Contract", () => {
       const res = runCli(["config", "show", "--format", "text"], {
         env: {
           PDF_LIBRARY_PATH: libraryPath,
-          PDF_BRAIN_CONFIG: configPath,
+          POINK_CONFIG: configPath,
           OLLAMA_HOST: "http://127.0.0.1:1",
         },
       });
@@ -323,7 +323,7 @@ describe("CLI JSON Envelope Contract", () => {
         {
           env: {
             PDF_LIBRARY_PATH: libraryPath,
-            PDF_BRAIN_CONFIG: configPath,
+            POINK_CONFIG: configPath,
             OLLAMA_HOST: "http://127.0.0.1:1",
           },
         },
@@ -350,7 +350,7 @@ describe("CLI JSON Envelope Contract", () => {
         {
           env: {
             PDF_LIBRARY_PATH: libraryPath,
-            PDF_BRAIN_CONFIG: configPath,
+            POINK_CONFIG: configPath,
             OLLAMA_HOST: "http://127.0.0.1:1",
           },
         },
@@ -373,7 +373,7 @@ describe("CLI JSON Envelope Contract", () => {
       const res = runCli(["init", "--format", "json", "--quiet"], {
         env: {
           PDF_LIBRARY_PATH: libraryPath,
-          PDF_BRAIN_CONFIG: configPath,
+          POINK_CONFIG: configPath,
           OLLAMA_HOST: "http://127.0.0.1:1",
         },
       });
@@ -404,12 +404,12 @@ describe("MCP Tool Output Contract", () => {
             // Avoid hitting any real local Ollama instance during tests.
             OLLAMA_HOST: "http://127.0.0.1:1",
             // Keep noise down if something logs unexpectedly.
-            PDF_BRAIN_LOG_LEVEL: "silent",
+            POINK_LOG_LEVEL: "silent",
           } as any,
         });
 
         const client = new Client({
-          name: "pdf-brain-contract-test",
+          name: "poink-contract-test",
           version: "0.0.0",
         });
 
@@ -475,7 +475,7 @@ describe("HTTP MCP Server", () => {
               ...process.env,
               PDF_LIBRARY_PATH: libraryPath,
               OLLAMA_HOST: "http://127.0.0.1:1",
-              PDF_BRAIN_LOG_LEVEL: "silent",
+              POINK_LOG_LEVEL: "silent",
             } as any,
           },
         );

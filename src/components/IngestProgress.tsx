@@ -151,7 +151,7 @@ export function IngestProgress({ state, onCancel }: IngestProgressProps) {
       </Box>
       <Box marginBottom={1}>
         <Text bold color="cyan">
-          ┃ PDF Brain - Batch Ingest ┃
+          ┃ Poink - Batch Ingest ┃
         </Text>
       </Box>
       <Box marginBottom={1}>

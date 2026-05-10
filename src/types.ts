@@ -188,7 +188,7 @@ function resolveHomeDir(): string {
 }
 
 export function getDefaultLibraryPath(): string {
-  return join(resolveHomeDir(), ".pdf-brain");
+  return join(resolveHomeDir(), ".poink");
 }
 
 export function expandHomePath(path: string): string {
@@ -290,7 +290,7 @@ export class Config extends Schema.Class<Config>("Config")({
         {
           default: () => ({
             url: "http://localhost:6333",
-            collection: "pdf-brain",
+            collection: "poink",
           }),
         }
       ),
@@ -300,7 +300,7 @@ export class Config extends Schema.Class<Config>("Config")({
         backend: "libsql" as const,
         qdrant: {
           url: "http://localhost:6333",
-          collection: "pdf-brain",
+          collection: "poink",
         },
       }),
     }
@@ -368,7 +368,7 @@ export class Config extends Schema.Class<Config>("Config")({
       backend: "libsql",
       qdrant: {
         url: "http://localhost:6333",
-        collection: "pdf-brain",
+        collection: "poink",
       },
     },
     server: {
@@ -421,10 +421,10 @@ export class Config extends Schema.Class<Config>("Config")({
 // ============================================================================
 
 /**
- * Preferred config path (~/.config/pdf-brain/config.json unless overridden).
+ * Preferred config path (~/.config/poink/config.json unless overridden).
  */
 export function getDefaultConfigPath(): string {
-  return join(resolveHomeDir(), ".config", "pdf-brain", "config.json");
+  return join(resolveHomeDir(), ".config", "poink", "config.json");
 }
 
 /**
@@ -440,11 +440,11 @@ export function getLegacyConfigPath(): string {
 /**
  * Resolve the active config path.
  * Priority:
- * 1) $PDF_BRAIN_CONFIG
- * 2) ~/.config/pdf-brain/config.json
+ * 1) $POINK_CONFIG
+ * 2) ~/.config/poink/config.json
  */
 export function resolveConfigPath(): string {
-  return process.env.PDF_BRAIN_CONFIG || getDefaultConfigPath();
+  return process.env.POINK_CONFIG || getDefaultConfigPath();
 }
 
 /**
@@ -461,7 +461,7 @@ export function normalizeConfig(configData: unknown): Config {
 export function loadConfig(): Config {
   const configPath = resolveConfigPath();
   const legacyConfigPath = getLegacyConfigPath();
-  const explicitPath = Boolean(process.env.PDF_BRAIN_CONFIG);
+  const explicitPath = Boolean(process.env.POINK_CONFIG);
 
   // Create config file with defaults if missing (or read legacy config for compatibility)
   if (!existsSync(configPath)) {

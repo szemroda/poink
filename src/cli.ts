@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * PDF Brain CLI
+ * Poink CLI
  */
 
 import { Effect, Console as EffectConsole, Exit, Layer, Runtime, Scope, Logger } from "effect";
@@ -14,6 +14,7 @@ import {
   existsSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   statSync,
 } from "fs";
 import { basename, extname, join, dirname, resolve } from "path";
@@ -79,7 +80,7 @@ import { formatHintBlock } from "./agent/format.js";
 import { renderHelp } from "./agent/manifest.js";
 import {
   DEFAULT_SERVER_CONFIG,
-  PDF_BRAIN_PROTOCOL_VERSION,
+  POINK_PROTOCOL_VERSION,
   type AgentEnvelope,
   type LogLevel,
   type NextAction,
@@ -1014,13 +1015,13 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
       command: "help",
       result: resultPayload,
       agentResult: null,
-      meta: { pdfBrainVersion: VERSION, timingMs: Date.now() - startedAt },
+      meta: { poinkVersion: VERSION, timingMs: Date.now() - startedAt },
     };
   }
 
   if (args.includes("--version") || args.includes("-v")) {
     if (format === "text") {
-      yield* Console.log(`pdf-brain v${VERSION}`);
+      yield* Console.log(`poink v${VERSION}`);
       return { command: "version", result: null, agentResult: null, meta: null };
     }
 
@@ -1029,7 +1030,7 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
       command: "version",
       result: resultPayload,
       agentResult: null,
-      meta: { pdfBrainVersion: VERSION, timingMs: Date.now() - startedAt },
+      meta: { poinkVersion: VERSION, timingMs: Date.now() - startedAt },
     };
   }
 
@@ -1038,8 +1039,8 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
   switch (command) {
     case "capabilities": {
       const result = {
-        protocolVersion: PDF_BRAIN_PROTOCOL_VERSION,
-        pdfBrainVersion: VERSION,
+        protocolVersion: POINK_PROTOCOL_VERSION,
+        poinkVersion: VERSION,
         defaultFormat: "json" as const,
         outputFormats: ["json", "ndjson", "text"] as const,
         globalFlags: {
@@ -1465,7 +1466,7 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
                   "search-pack requires queries as args or via stdin",
                   {
                     command: "search-pack",
-                    hint: 'pdf-brain search-pack "query one" "query two"',
+                    hint: 'poink search-pack "query one" "query two"',
                   }
                 )
               );
@@ -1622,7 +1623,7 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
       if (!subcommand) {
         yield* Console.error("Error: taxonomy subcommand required");
         yield* Console.error(
-          "Usage: pdf-brain taxonomy <list|tree|search|add> [args]"
+          "Usage: poink taxonomy <list|tree|search|add> [args]"
         );
         return yield* Effect.fail(
           new CLIError("INVALID_ARGS", "taxonomy subcommand required", {
@@ -1699,7 +1700,7 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
         const query = args[2];
         if (!query) {
           yield* Console.error("Error: query required");
-          yield* Console.error("Usage: pdf-brain taxonomy search <query>");
+          yield* Console.error("Usage: poink taxonomy search <query>");
           return yield* Effect.fail(
             new CLIError("INVALID_ARGS", "query required", {
               command: "taxonomy search",
@@ -1770,7 +1771,7 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
         if (!id) {
           yield* Console.error("Error: concept id required");
           yield* Console.error(
-            "Usage: pdf-brain taxonomy add <id> --label \"<name>\" [--broader <parent>]"
+            "Usage: poink taxonomy add <id> --label \"<name>\" [--broader <parent>]"
           );
           return yield* Effect.fail(
             new CLIError("INVALID_ARGS", "concept id required", {
@@ -1798,7 +1799,7 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
           return yield* Effect.fail(
             new CLIError("INVALID_ARGS", "--label required", {
               command: "taxonomy add",
-              hint: "pdf-brain taxonomy add my/concept --label \"My Concept\"",
+              hint: "poink taxonomy add my/concept --label \"My Concept\"",
             })
           );
         }
@@ -1852,11 +1853,11 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
 		    case "chunk": {
 		      const subcommand = args[1];
 		      if (subcommand !== "get") {
-		        yield* Console.error("Usage: pdf-brain chunk get <chunkId>");
+		        yield* Console.error("Usage: poink chunk get <chunkId>");
 		        return yield* Effect.fail(
 	          new CLIError("INVALID_ARGS", "Unknown chunk subcommand", {
 	            subcommand,
-	            hint: "pdf-brain chunk get <chunkId>",
+	            hint: "poink chunk get <chunkId>",
 	          })
 	        );
 	      }
@@ -1891,12 +1892,12 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
 	      const subcommand = args[1];
 	      if (subcommand !== "chunks") {
 	        yield* Console.error(
-	          "Usage: pdf-brain doc chunks <docId> [--page N]"
+	          "Usage: poink doc chunks <docId> [--page N]"
 	        );
 	        return yield* Effect.fail(
 	          new CLIError("INVALID_ARGS", "Unknown doc subcommand", {
 	            subcommand,
-	            hint: "pdf-brain doc chunks <docId> [--page N]",
+	            hint: "poink doc chunks <docId> [--page N]",
 	          })
 	        );
 	      }
@@ -1950,11 +1951,11 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
 	    case "page": {
 	      const subcommand = args[1];
 	      if (subcommand !== "get") {
-	        yield* Console.error("Usage: pdf-brain page get <docId> <page>");
+	        yield* Console.error("Usage: poink page get <docId> <page>");
 	        return yield* Effect.fail(
 	          new CLIError("INVALID_ARGS", "Unknown page subcommand", {
 	            subcommand,
-	            hint: "pdf-brain page get <docId> <page>",
+	            hint: "poink page get <docId> <page>",
 	          })
 	        );
 	      }
@@ -2161,12 +2162,12 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
 	        yield* Console.log(
 	          hasGatewayKey
 	            ? `Gateway:     API key configured`
-	            : `Gateway:     No API key (set via: pdf-brain config set gateway.apiKey <key>)`
+	            : `Gateway:     No API key (set via: poink config set gateway.apiKey <key>)`
 	        );
         yield* Console.log(
           hasOpenRouterKey
             ? `OpenRouter:  API key configured`
-            : `OpenRouter:  No API key (set via: pdf-brain config set openrouter.apiKey <key>)`
+            : `OpenRouter:  No API key (set via: poink config set openrouter.apiKey <key>)`
         );
 	        resultPayload = {
 	          configPath,
@@ -2178,12 +2179,12 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
 	        const path = args[2];
 	        if (!path) {
 	          yield* Console.error("Error: Path required");
-	          yield* Console.error("Usage: pdf-brain config get <path>");
-	          yield* Console.error("Example: pdf-brain config get embedding.model");
+	          yield* Console.error("Usage: poink config get <path>");
+	          yield* Console.error("Example: poink config get embedding.model");
 	          return yield* Effect.fail(
 	            new CLIError("INVALID_ARGS", "Path required", {
 	              command: "config get",
-	              hint: "pdf-brain config get embedding.model",
+	              hint: "poink config get embedding.model",
 	            })
 	          );
 	        }
@@ -2214,14 +2215,14 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
 
 	        if (!path || newValue === undefined) {
           yield* Console.error("Error: Path and value required");
-          yield* Console.error("Usage: pdf-brain config set <path> <value>");
+          yield* Console.error("Usage: poink config set <path> <value>");
 	          yield* Console.error(
-	            "Example: pdf-brain config set embedding.model nomic-embed-text"
+	            "Example: poink config set embedding.model nomic-embed-text"
 	          );
 	          return yield* Effect.fail(
 	            new CLIError("INVALID_ARGS", "Path and value required", {
 	              command: "config set",
-	              hint: "pdf-brain config set embedding.model nomic-embed-text",
+	              hint: "poink config set embedding.model nomic-embed-text",
 	            })
 	          );
 	        }
@@ -2444,7 +2445,7 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
 	          }
 
 	          yield* Console.log(
-	            "\n✅ Repair complete. Run 'pdf-brain doctor' again to verify."
+	            "\n✅ Repair complete. Run 'poink doctor' again to verify."
 	          );
 	        } else {
 	          // Show recommendations
@@ -2473,15 +2474,15 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
 	              `  Chunker: ${chunkerOutdated} docs missing/outdated chunker metadata`
 	            );
 	            yield* Console.log(
-	              "          Preview: pdf-brain rechunk --dry-run"
+	              "          Preview: poink rechunk --dry-run"
 	            );
 	            yield* Console.log(
-	              "          Apply:   pdf-brain rechunk"
+	              "          Apply:   poink rechunk"
 	            );
 	          }
 
 	          yield* Console.log(
-	            "\n  Run 'pdf-brain doctor --fix' to auto-repair issues."
+	            "\n  Run 'poink doctor --fix' to auto-repair issues."
 	          );
 	        }
 	      }
@@ -2505,7 +2506,7 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
 
     case "init": {
       const config = LibraryConfig.fromEnv();
-      yield* Console.log("Initializing pdf-brain...\n");
+      yield* Console.log("Initializing poink...\n");
 
       // 1. Check/create library directory
       if (!existsSync(config.libraryPath)) {
@@ -2567,7 +2568,7 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
 
       if (seedResult._tag === "Left") {
         yield* Console.log(
-          "⚠ Taxonomy seed failed - you can seed manually with 'pdf-brain taxonomy seed'"
+          "⚠ Taxonomy seed failed - you can seed manually with 'poink taxonomy seed'"
         );
       }
 
@@ -2579,8 +2580,8 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
       yield* Console.log(`   Embeddings: ${stats.embeddings}`);
 
 	      yield* Console.log(`\n✨ Ready! Add documents with:`);
-	      yield* Console.log(`   pdf-brain add <file.pdf|file.docx|file.odt> --enrich`);
-	      yield* Console.log(`   pdf-brain ingest <directory> --enrich`);
+	      yield* Console.log(`   poink add <file.pdf|file.docx|file.odt> --enrich`);
+	      yield* Console.log(`   poink ingest <directory> --enrich`);
 
 	      resultPayload = {
 	        libraryPath: config.libraryPath,
@@ -2650,7 +2651,7 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
       );
 
     case "ingest": {
-      // Support multiple directories: pdf-brain ingest dir1 dir2 dir3 --enrich
+      // Support multiple directories: poink ingest dir1 dir2 dir3 --enrich
       const directories: string[] = [];
       let i = 1;
       while (i < args.length && !args[i].startsWith("--")) {
@@ -2661,7 +2662,7 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
 	      if (directories.length === 0) {
 	        yield* Console.error("Error: At least one directory required");
         yield* Console.error(
-          "Usage: pdf-brain ingest <dir1> [dir2] [dir3] [options]"
+          "Usage: poink ingest <dir1> [dir2] [dir3] [options]"
         );
         yield* Console.error("");
         yield* Console.error("Options:");
@@ -2677,7 +2678,7 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
 	        return yield* Effect.fail(
 	          new CLIError("INVALID_ARGS", "At least one directory required", {
 	            command: "ingest",
-	            hint: "pdf-brain ingest ./docs --enrich",
+	            hint: "poink ingest ./docs --enrich",
 	          })
 	        );
 	      }
@@ -3404,7 +3405,7 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
                   maxDocs: effectiveMaxDocs,
                   hint:
                     includeMissing
-                      ? `Re-run with --max-docs ${planned.length} if you really want the full upgrade, or start with: pdf-brain rechunk --include-missing --max-docs 25`
+                      ? `Re-run with --max-docs ${planned.length} if you really want the full upgrade, or start with: poink rechunk --include-missing --max-docs 25`
                       : `Re-run with --max-docs ${planned.length} if you really want to process all planned docs.`,
                 },
               ),
@@ -3563,7 +3564,7 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
       );
   }
 
-  const meta = { pdfBrainVersion: VERSION, timingMs: Date.now() - startedAt };
+  const meta = { poinkVersion: VERSION, timingMs: Date.now() - startedAt };
 
   // Render HATEOAS hints after command output (text) or return structured actions (json)
   let nextActions: NextAction[] | undefined = undefined;
@@ -3683,10 +3684,10 @@ async function connectMcpServer<ROut, E>(
       return {
         ok: true,
         command: out.command,
-        protocolVersion: PDF_BRAIN_PROTOCOL_VERSION,
+        protocolVersion: POINK_PROTOCOL_VERSION,
         result: out.result,
         nextActions: out.nextActions,
-        meta: out.meta ?? { pdfBrainVersion: VERSION },
+        meta: out.meta ?? { poinkVersion: VERSION },
       };
     }
 
@@ -3694,13 +3695,13 @@ async function connectMcpServer<ROut, E>(
     return {
       ok: false,
       command: argv[0] ?? "cli",
-      protocolVersion: PDF_BRAIN_PROTOCOL_VERSION,
+      protocolVersion: POINK_PROTOCOL_VERSION,
       error: { code: err.code, message: err.message, details: err.details },
-      meta: { pdfBrainVersion: VERSION },
+      meta: { poinkVersion: VERSION },
     };
   };
 
-  const server = new McpServer({ name: "pdf-brain", version: VERSION });
+  const server = new McpServer({ name: "poink", version: VERSION });
 
   const tool = <TInput extends z.ZodTypeAny>(
     name: string,
@@ -3740,7 +3741,7 @@ async function connectMcpServer<ROut, E>(
     "capabilities",
     {
       description:
-        "Describe pdf-brain commands, flags, and schemas (agent discovery entrypoint).",
+        "Describe poink commands, flags, and schemas (agent discovery entrypoint).",
       inputSchema: z.object({}).optional(),
     },
     () => ["capabilities"],
@@ -4067,10 +4068,10 @@ async function runServeCommand<ROut, E>(
     withConfiguredLogging(
       Effect.gen(function* () {
         yield* Effect.logInfo(
-          `[pdf-brain:serve] listening on http://${serverConfig.host}:${serverConfig.port}/mcp`,
+          `[poink:serve] listening on http://${serverConfig.host}:${serverConfig.port}/mcp`,
         );
         yield* Effect.logInfo(
-          `[pdf-brain:serve] auth ${
+          `[poink:serve] auth ${
             serverConfig.auth.enabled ? "enabled (bearer token)" : "disabled"
           }`,
         );
@@ -4135,10 +4136,16 @@ function isServiceFreeCommand(command: string | undefined): boolean {
 // database. Register handlers early to ensure CHECKPOINT runs before exit.
 
 function isMainModule(): boolean {
-  return (
-    Boolean(process.argv[1]) &&
-    fileURLToPath(import.meta.url) === resolve(process.argv[1]!)
-  );
+  if (!process.argv[1]) return false;
+
+  const modulePath = fileURLToPath(import.meta.url);
+  const argvPath = resolve(process.argv[1]);
+
+  try {
+    return realpathSync(modulePath) === realpathSync(argvPath);
+  } catch {
+    return modulePath === argvPath;
+  }
 }
 
 if (isMainModule()) {
@@ -4162,9 +4169,9 @@ if (isMainModule()) {
         {
           ok: false,
           command: "cli",
-          protocolVersion: PDF_BRAIN_PROTOCOL_VERSION,
+          protocolVersion: POINK_PROTOCOL_VERSION,
           error: { code: err.code, message: err.message, details: err.details },
-          meta: { pdfBrainVersion: VERSION },
+          meta: { poinkVersion: VERSION },
         },
         false
       );
@@ -4177,7 +4184,7 @@ if (isMainModule()) {
 
     const command = args[0];
 
-    // MCP server mode: exposes pdf-brain as an agent tool server (stdio).
+    // MCP server mode: exposes poink as an agent tool server (stdio).
     // IMPORTANT: MCP uses stdout for protocol messages. Do not write envelopes.
     if (command === "mcp") {
       try {
@@ -4255,9 +4262,9 @@ if (isMainModule()) {
         {
           ok: false,
           command: command || "cli",
-          protocolVersion: PDF_BRAIN_PROTOCOL_VERSION,
+          protocolVersion: POINK_PROTOCOL_VERSION,
           error: { code: err.code, message: err.message, details: err.details },
-          meta: { pdfBrainVersion: VERSION },
+          meta: { poinkVersion: VERSION },
         },
         globals.pretty
       );
@@ -4273,10 +4280,10 @@ if (isMainModule()) {
           {
             ok: true,
             command: out.command,
-            protocolVersion: PDF_BRAIN_PROTOCOL_VERSION,
+            protocolVersion: POINK_PROTOCOL_VERSION,
             result: out.result,
             nextActions: out.nextActions,
-            meta: out.meta ?? { pdfBrainVersion: VERSION },
+            meta: out.meta ?? { poinkVersion: VERSION },
           },
           globals.pretty
         );
@@ -4300,9 +4307,9 @@ if (isMainModule()) {
       {
         ok: false,
         command: command || "cli",
-        protocolVersion: PDF_BRAIN_PROTOCOL_VERSION,
+        protocolVersion: POINK_PROTOCOL_VERSION,
         error: { code: err.code, message: err.message, details: err.details },
-        meta: { pdfBrainVersion: VERSION },
+        meta: { poinkVersion: VERSION },
       },
       globals.pretty
     );

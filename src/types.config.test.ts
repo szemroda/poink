@@ -4,7 +4,7 @@ import { join } from "path";
 import { tmpdir } from "os";
 import { loadConfig } from "./types.js";
 
-const ORIGINAL_PDF_BRAIN_CONFIG = process.env.PDF_BRAIN_CONFIG;
+const ORIGINAL_POINK_CONFIG = process.env.POINK_CONFIG;
 const ORIGINAL_OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
 const ORIGINAL_OPENROUTER_BASE_URL = process.env.OPENROUTER_BASE_URL;
 
@@ -29,14 +29,14 @@ const LEGACY_CONFIG_SHAPE = {
 };
 
 function makeTempDir(): string {
-  return mkdtempSync(join(tmpdir(), "pdf-brain-config-"));
+  return mkdtempSync(join(tmpdir(), "poink-config-"));
 }
 
 afterEach(() => {
-  if (ORIGINAL_PDF_BRAIN_CONFIG === undefined) {
-    delete process.env.PDF_BRAIN_CONFIG;
+  if (ORIGINAL_POINK_CONFIG === undefined) {
+    delete process.env.POINK_CONFIG;
   } else {
-    process.env.PDF_BRAIN_CONFIG = ORIGINAL_PDF_BRAIN_CONFIG;
+    process.env.POINK_CONFIG = ORIGINAL_POINK_CONFIG;
   }
 
   if (ORIGINAL_OPENROUTER_API_KEY === undefined) {
@@ -53,19 +53,19 @@ afterEach(() => {
 });
 
 describe("loadConfig path and database defaults", () => {
-  test("uses PDF_BRAIN_CONFIG path and creates defaults including database backend", () => {
+  test("uses POINK_CONFIG path and creates defaults including database backend", () => {
     const tempDir = makeTempDir();
 
     try {
       const configPath = join(tempDir, "custom-config.json");
-      process.env.PDF_BRAIN_CONFIG = configPath;
+      process.env.POINK_CONFIG = configPath;
 
       const config = loadConfig();
 
       expect(existsSync(configPath)).toBe(true);
       expect(config.database.backend).toBe("libsql");
       expect(config.database.qdrant.url).toBe("http://localhost:6333");
-      expect(config.database.qdrant.collection).toBe("pdf-brain");
+      expect(config.database.qdrant.collection).toBe("poink");
       expect(config.server.host).toBe("127.0.0.1");
       expect(config.server.port).toBe(3838);
       expect(config.server.auth.enabled).toBe(false);
@@ -84,13 +84,13 @@ describe("loadConfig path and database defaults", () => {
 
     try {
       const configPath = join(tempDir, "legacy-config.json");
-      process.env.PDF_BRAIN_CONFIG = configPath;
+      process.env.POINK_CONFIG = configPath;
       writeFileSync(configPath, JSON.stringify(LEGACY_CONFIG_SHAPE), "utf-8");
 
       const config = loadConfig();
       expect(config.database.backend).toBe("libsql");
       expect(config.database.qdrant.url).toBe("http://localhost:6333");
-      expect(config.database.qdrant.collection).toBe("pdf-brain");
+      expect(config.database.qdrant.collection).toBe("poink");
       expect(config.server.host).toBe("127.0.0.1");
       expect(config.server.port).toBe(3838);
       expect(config.server.auth.enabled).toBe(false);
@@ -109,7 +109,7 @@ describe("loadConfig path and database defaults", () => {
 
     try {
       const configPath = join(tempDir, "config.json");
-      process.env.PDF_BRAIN_CONFIG = configPath;
+      process.env.POINK_CONFIG = configPath;
       process.env.OPENROUTER_API_KEY = "env-openrouter-key";
       process.env.OPENROUTER_BASE_URL = "https://openrouter.example/api/v1";
 

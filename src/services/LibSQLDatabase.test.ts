@@ -436,7 +436,7 @@ describe("LibSQLDatabase", () => {
     });
 
     test("repair removes orphaned chunks and embeddings", async () => {
-      const dbPath = `${process.env.TEMP ?? "."}/pdf-brain-repair-${crypto.randomUUID()}.db`.replaceAll("\\", "/");
+      const dbPath = `${process.env.TEMP ?? "."}/poink-repair-${crypto.randomUUID()}.db`.replaceAll("\\", "/");
       const url = `file:${dbPath}`;
       const layer = LibSQLDatabase.make({ url });
       const validEmbedding = new Array(1024).fill(0.1);

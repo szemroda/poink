@@ -97,7 +97,7 @@ function requireGatewayApiKey(config: Config): string {
   if (!apiKey) {
     throw new GatewayError({
       reason:
-        "Gateway API key not set. Use: pdf-brain config set gateway.apiKey <key> or set AI_GATEWAY_API_KEY.",
+        "Gateway API key not set. Use: poink config set gateway.apiKey <key> or set AI_GATEWAY_API_KEY.",
     });
   }
   return apiKey;

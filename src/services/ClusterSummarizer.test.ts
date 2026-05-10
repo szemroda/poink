@@ -175,8 +175,8 @@ describe("ClusterSummarizerService - LLM Abstractive Summarization", () => {
   });
 
   it("should use the configured enrichment model via AI SDK", async () => {
-    const originalConfigPath = process.env.PDF_BRAIN_CONFIG;
-    const tempDir = mkdtempSync(join(tmpdir(), "pdf-brain-cluster-summarizer-"));
+    const originalConfigPath = process.env.POINK_CONFIG;
+    const tempDir = mkdtempSync(join(tmpdir(), "poink-cluster-summarizer-"));
     const configPath = join(tempDir, "config.json");
     writeFileSync(
       configPath,
@@ -189,7 +189,7 @@ describe("ClusterSummarizerService - LLM Abstractive Summarization", () => {
         openai: {},
         database: {
           backend: "libsql",
-          qdrant: { url: "http://localhost:6333", collection: "pdf-brain" },
+          qdrant: { url: "http://localhost:6333", collection: "poink" },
         },
         server: {
           host: "127.0.0.1",
@@ -199,7 +199,7 @@ describe("ClusterSummarizerService - LLM Abstractive Summarization", () => {
       }),
       "utf-8"
     );
-    process.env.PDF_BRAIN_CONFIG = configPath;
+    process.env.POINK_CONFIG = configPath;
 
     const chunks = [
       { id: "1", content: "Test content for model verification." },
@@ -214,9 +214,9 @@ describe("ClusterSummarizerService - LLM Abstractive Summarization", () => {
       );
     } finally {
       if (originalConfigPath === undefined) {
-        delete process.env.PDF_BRAIN_CONFIG;
+        delete process.env.POINK_CONFIG;
       } else {
-        process.env.PDF_BRAIN_CONFIG = originalConfigPath;
+        process.env.POINK_CONFIG = originalConfigPath;
       }
       rmSync(tempDir, { recursive: true, force: true });
     }

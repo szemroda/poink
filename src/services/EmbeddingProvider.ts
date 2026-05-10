@@ -42,7 +42,7 @@ export class EmbeddingProvider extends Context.Tag("EmbeddingProvider")<
 const DEFAULT_QUERY_EMBED_CACHE_SIZE = 256;
 
 const readQueryEmbedCacheSize = (): number => {
-  const raw = process.env.PDF_BRAIN_QUERY_EMBED_CACHE_SIZE;
+  const raw = process.env.POINK_QUERY_EMBED_CACHE_SIZE;
   if (raw === undefined) return DEFAULT_QUERY_EMBED_CACHE_SIZE;
   const n = Number.parseInt(raw, 10);
   if (!Number.isFinite(n) || n < 0) return DEFAULT_QUERY_EMBED_CACHE_SIZE;

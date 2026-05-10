@@ -1,4 +1,4 @@
-# pdf-brain Agent Notes
+# poink Agent Notes
 
 ## libSQL Quirks
 

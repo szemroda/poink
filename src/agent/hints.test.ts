@@ -216,15 +216,15 @@ describe("generateHints", () => {
 describe("formatHintBlock", () => {
   test("produces valid markdown blockquote", () => {
     const block = formatHintBlock([
-      "`pdf-brain search \"test\"` -- Search",
-      "`pdf-brain list` -- Browse",
+      "`poink search \"test\"` -- Search",
+      "`poink list` -- Browse",
     ], { documents: 42 });
 
     expect(block).toContain("---");
     expect(block).toContain("> **Next Actions**");
     expect(block).toContain("> -");
     expect(block).toContain("42 documents");
-    expect(block).toContain("`pdf-brain --help`");
+    expect(block).toContain("`poink --help`");
   });
 
   test("includes concept count when provided", () => {
@@ -242,7 +242,7 @@ describe("formatHintBlock", () => {
   test("works without stats", () => {
     const block = formatHintBlock(["`cmd` -- desc"]);
     expect(block).toContain("> **Next Actions**");
-    expect(block).toContain("`pdf-brain --help`");
+    expect(block).toContain("`poink --help`");
     expect(block).not.toContain("documents");
   });
 });
@@ -256,7 +256,7 @@ describe("stripEmoji", () => {
 
   test("preserves plain text", () => {
     expect(stripEmoji("Hello world")).toBe("Hello world");
-    expect(stripEmoji("pdf-brain search")).toBe("pdf-brain search");
+    expect(stripEmoji("poink search")).toBe("poink search");
   });
 
   test("handles empty string", () => {

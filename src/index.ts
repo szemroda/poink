@@ -377,7 +377,7 @@ export class PDFLibrary extends Effect.Service<PDFLibrary>()("PDFLibrary", {
       /**
        * Replace/rebuild an existing document in-place (non-destructive).
        *
-       * This is the agent-safe primitive used by `pdf-brain rechunk`.
+       * This is the agent-safe primitive used by `poink rechunk`.
        * The DB update is performed as a single transaction: doc upsert +
        * delete old chunks + insert new chunks + insert new embeddings.
        */
@@ -505,7 +505,7 @@ export class PDFLibrary extends Effect.Service<PDFLibrary>()("PDFLibrary", {
        * embedding provider and model, without touching the document row or
        * chunks (non-destructive).
        *
-       * This is the agent-safe primitive used by `pdf-brain reindex`.
+       * This is the agent-safe primitive used by `poink reindex`.
        *
        * Note: we upsert embeddings by chunkId, so repeated calls are safe.
        */

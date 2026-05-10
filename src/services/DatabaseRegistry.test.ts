@@ -43,7 +43,7 @@ function withTempEnv(
 
 describe("DatabaseRegistry", () => {
   test("returns a working libsql database layer when backend is libsql", async () => {
-    const tempDir = mkdtempSync(join(tmpdir(), "pdf-brain-db-registry-"));
+    const tempDir = mkdtempSync(join(tmpdir(), "poink-db-registry-"));
     const configPath = join(tempDir, "config.json");
     const libraryPath = join(tempDir, "library");
 
@@ -61,7 +61,7 @@ describe("DatabaseRegistry", () => {
             backend: "libsql",
             qdrant: {
               url: "http://localhost:6333",
-              collection: "pdf-brain",
+              collection: "poink",
             },
           },
         }),
@@ -70,7 +70,7 @@ describe("DatabaseRegistry", () => {
 
       await withTempEnv(
         {
-          PDF_BRAIN_CONFIG: configPath,
+          POINK_CONFIG: configPath,
           PDF_LIBRARY_PATH: libraryPath,
         },
         async () => {
@@ -94,7 +94,7 @@ describe("DatabaseRegistry", () => {
   });
 
   test("returns a qdrant database layer when backend is qdrant", async () => {
-    const tempDir = mkdtempSync(join(tmpdir(), "pdf-brain-db-registry-"));
+    const tempDir = mkdtempSync(join(tmpdir(), "poink-db-registry-"));
     const configPath = join(tempDir, "config.json");
     const libraryPath = join(tempDir, "library");
 
@@ -112,7 +112,7 @@ describe("DatabaseRegistry", () => {
             backend: "qdrant",
             qdrant: {
               url: "http://localhost:6333",
-              collection: "pdf-brain",
+              collection: "poink",
             },
           },
         }),
@@ -121,7 +121,7 @@ describe("DatabaseRegistry", () => {
 
       await withTempEnv(
         {
-          PDF_BRAIN_CONFIG: configPath,
+          POINK_CONFIG: configPath,
           PDF_LIBRARY_PATH: libraryPath,
         },
         async () => {
@@ -147,7 +147,7 @@ describe("DatabaseRegistry", () => {
   });
 
   test("applies Config schema defaults when provided config object omits database section", async () => {
-    const tempDir = mkdtempSync(join(tmpdir(), "pdf-brain-db-registry-"));
+    const tempDir = mkdtempSync(join(tmpdir(), "poink-db-registry-"));
     const dbPath = join(tempDir, "library.db");
 
     try {

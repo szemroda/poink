@@ -1,5 +1,5 @@
 /**
- * Agent-optimized help text for pdf-brain.
+ * Agent-optimized help text for poink.
  */
 
 import dedent from "dedent";
@@ -12,51 +12,51 @@ export function renderHelp(stats?: {
   const docCount = stats?.documents ?? "?";
 
   return dedent`
-    # pdf-brain
+    # poink
 
     Local knowledge base for PDFs, Markdown, DOCX, and ODT with vector search, full-text search, enrichment, and MCP access.
     ${docCount} documents indexed.
 
     ## Quick Start
-      pdf-brain search "your question here"
+      poink search "your question here"
 
     ## Commands
 
     ### Search
-      pdf-brain search "<query>" [options]
-      pdf-brain search-pack "<q1>" "<q2>" ... [options]
+      poink search "<query>" [options]
+      poink search-pack "<q1>" "<q2>" ... [options]
 
     ### Read And Browse
-      pdf-brain read "<id|title>"
-      pdf-brain list [--tag <tag>]
-      pdf-brain stats
+      poink read "<id|title>"
+      poink list [--tag <tag>]
+      poink stats
 
     ### Progressive Disclosure
-      pdf-brain chunk get <chunkId>
-      pdf-brain doc chunks <docId> [--page N]
-      pdf-brain page get <docId> <page>
+      poink chunk get <chunkId>
+      poink doc chunks <docId> [--page N]
+      poink page get <docId> <page>
 
     ### Taxonomy
-      pdf-brain taxonomy search "<q>"
-      pdf-brain taxonomy tree [id]
-      pdf-brain taxonomy list [--tree]
-      pdf-brain taxonomy add <id> --label "<name>" [--broader <parent>]
+      poink taxonomy search "<q>"
+      poink taxonomy tree [id]
+      poink taxonomy list [--tree]
+      poink taxonomy add <id> --label "<name>" [--broader <parent>]
 
     ### Document Management
-      pdf-brain add <path|url> [--tags t1,t2] [--enrich] [--auto-tag]
-      pdf-brain remove "<id|title>"
-      pdf-brain tag "<id|title>" "tag1,tag2"
-      pdf-brain ingest <dir> [--enrich] [--auto-tag] [--recursive]
+      poink add <path|url> [--tags t1,t2] [--enrich] [--auto-tag]
+      poink remove "<id|title>"
+      poink tag "<id|title>" "tag1,tag2"
+      poink ingest <dir> [--enrich] [--auto-tag] [--recursive]
 
     ### Maintenance
-      pdf-brain capabilities
-      pdf-brain mcp
-      pdf-brain serve [--host <host>] [--port <port>] [--auth-token <token>]
-      pdf-brain doctor [--fix]
-      pdf-brain repair
-      pdf-brain config show|get|set
-      pdf-brain reindex [--clean]
-      pdf-brain rechunk [--dry-run] [--include-missing] [--max-docs N] [--max-chunks N]
+      poink capabilities
+      poink mcp
+      poink serve [--host <host>] [--port <port>] [--auth-token <token>]
+      poink doctor [--fix]
+      poink repair
+      poink config show|get|set
+      poink reindex [--clean]
+      poink rechunk [--dry-run] [--include-missing] [--max-docs N] [--max-chunks N]
 
     ## Options
       --help, -h

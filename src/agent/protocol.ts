@@ -1,5 +1,5 @@
 /**
- * Agent-first output protocol for pdf-brain.
+ * Agent-first output protocol for poink.
  *
  * Design goals:
  * - stdout is machine-readable (JSON by default)
@@ -7,7 +7,7 @@
  * - stable envelope so agents can reliably parse responses and chain next actions
  */
 
-export const PDF_BRAIN_PROTOCOL_VERSION = 1 as const;
+export const POINK_PROTOCOL_VERSION = 1 as const;
 
 export type OutputFormat = "json" | "ndjson" | "text";
 export type LogLevel = "silent" | "error" | "info" | "debug";
@@ -53,7 +53,7 @@ export type AgentEnvelope<T> =
   | {
       ok: true;
       command: string;
-      protocolVersion: typeof PDF_BRAIN_PROTOCOL_VERSION;
+      protocolVersion: typeof POINK_PROTOCOL_VERSION;
       result: T;
       nextActions?: NextAction[];
       meta?: Record<string, unknown>;
@@ -61,7 +61,7 @@ export type AgentEnvelope<T> =
   | {
       ok: false;
       command: string;
-      protocolVersion: typeof PDF_BRAIN_PROTOCOL_VERSION;
+      protocolVersion: typeof POINK_PROTOCOL_VERSION;
       error: AgentErrorShape;
       nextActions?: NextAction[];
       meta?: Record<string, unknown>;

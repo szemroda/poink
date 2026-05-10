@@ -25,7 +25,7 @@ export function stripEmoji(text: string): string {
  * > - `cmd` -- description
  * > ...
  * >
- * > pdf-brain: N documents, M concepts. `pdf-brain --help` for full reference.
+ * > poink: N documents, M concepts. `poink --help` for full reference.
  * ```
  */
 export function formatHintBlock(
@@ -48,11 +48,11 @@ export function formatHintBlock(
       parts.push(`${stats.concepts} concepts`);
     }
     lines.push(
-      `> pdf-brain: ${parts.join(", ")}. \`pdf-brain --help\` for full reference.`
+      `> poink: ${parts.join(", ")}. \`poink --help\` for full reference.`
     );
   } else {
     lines.push(
-      `> \`pdf-brain --help\` for full reference.`
+      `> \`poink --help\` for full reference.`
     );
   }
 

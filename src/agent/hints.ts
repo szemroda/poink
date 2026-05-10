@@ -1,5 +1,5 @@
 /**
- * HATEOAS-style hint engine for pdf-brain CLI.
+ * HATEOAS-style hint engine for poink CLI.
  *
  * Pure function: CommandResult discriminated union in, string[] hints out.
  */
@@ -79,23 +79,23 @@ export function generateHints(result: CommandResult): string[] {
       if (result.results.length > 0) {
         const top = result.results[0];
         hints.push(
-          `\`pdf-brain read "${top.title}"\` -- Full metadata for top result`
+          `\`poink read "${top.title}"\` -- Full metadata for top result`
         );
         if (!result.hadExpand) {
           hints.push(
-            `\`pdf-brain search "${result.query}" --expand 2000\` -- Get expanded context around matches`
+            `\`poink search "${result.query}" --expand 2000\` -- Get expanded context around matches`
           );
         }
       }
       if (result.concepts.length > 0) {
         const topConcept = result.concepts[0];
         hints.push(
-          `\`pdf-brain taxonomy tree "${topConcept.id}"\` -- Navigate concept hierarchy`
+          `\`poink taxonomy tree "${topConcept.id}"\` -- Navigate concept hierarchy`
         );
       }
       if (result.results.length > 0 && !result.wasFts) {
         hints.push(
-          `\`pdf-brain search "${result.query}" --fts\` -- Try keyword matching instead`
+          `\`poink search "${result.query}" --fts\` -- Try keyword matching instead`
         );
       }
       if (result.results.length === 0 && result.concepts.length === 0) {
@@ -113,17 +113,17 @@ export function generateHints(result: CommandResult): string[] {
       if (result.results.length > 0) {
         const top = result.results[0];
         hints.push(
-          `\`pdf-brain read "${top.title}"\` -- Full metadata for top result`
+          `\`poink read "${top.title}"\` -- Full metadata for top result`
         );
         if (top.chunkId) {
           hints.push(
-            `\`pdf-brain chunk get "${top.chunkId}"\` -- Fetch exact top chunk text`
+            `\`poink chunk get "${top.chunkId}"\` -- Fetch exact top chunk text`
           );
         }
       }
       hints.push(
-        `\`pdf-brain search "<query>"\` -- Drill into a single query`,
-        `\`pdf-brain search-pack --with-content "${result.queries[0] ?? "query"}"\` -- Include chunk text in pack output`,
+        `\`poink search "<query>"\` -- Drill into a single query`,
+        `\`poink search-pack --with-content "${result.queries[0] ?? "query"}"\` -- Include chunk text in pack output`,
       );
       return hints;
     }
@@ -132,16 +132,16 @@ export function generateHints(result: CommandResult): string[] {
       const hints: string[] = [];
       if (!result.wasFts) {
         hints.push(
-          `\`pdf-brain search "${result.query}" --fts\` -- Try full-text keyword search`
+          `\`poink search "${result.query}" --fts\` -- Try full-text keyword search`
         );
       } else {
         hints.push(
-          `\`pdf-brain search "${result.query}"\` -- Try semantic vector search`
+          `\`poink search "${result.query}"\` -- Try semantic vector search`
         );
       }
       hints.push(
-        `\`pdf-brain list\` -- Browse all documents`,
-        `\`pdf-brain taxonomy search "${result.query}"\` -- Search taxonomy concepts`
+        `\`poink list\` -- Browse all documents`,
+        `\`poink taxonomy search "${result.query}"\` -- Search taxonomy concepts`
       );
       return hints;
     }
@@ -149,15 +149,15 @@ export function generateHints(result: CommandResult): string[] {
     case "read": {
       const hints: string[] = [];
       hints.push(
-        `\`pdf-brain search "${result.title}" --expand 2000\` -- Search within this document's content`
+        `\`poink search "${result.title}" --expand 2000\` -- Search within this document's content`
       );
       if (result.tags.length > 0) {
         hints.push(
-          `\`pdf-brain list --tag "${result.tags[0]}"\` -- Browse documents with same tag`
+          `\`poink list --tag "${result.tags[0]}"\` -- Browse documents with same tag`
         );
       }
       hints.push(
-        `\`pdf-brain taxonomy search "${result.title}"\` -- Find related concepts`
+        `\`poink taxonomy search "${result.title}"\` -- Find related concepts`
       );
       return hints;
     }
@@ -166,15 +166,15 @@ export function generateHints(result: CommandResult): string[] {
       const hints: string[] = [];
       if (result.firstDoc) {
         hints.push(
-          `\`pdf-brain read "${result.firstDoc.title}"\` -- View document details`
+          `\`poink read "${result.firstDoc.title}"\` -- View document details`
         );
       }
       hints.push(
-        `\`pdf-brain search "<query>"\` -- Search across all documents`
+        `\`poink search "<query>"\` -- Search across all documents`
       );
       if (!result.tag) {
         hints.push(
-          `\`pdf-brain taxonomy list\` -- Browse concept categories`
+          `\`poink taxonomy list\` -- Browse concept categories`
         );
       }
       return hints;
@@ -183,10 +183,10 @@ export function generateHints(result: CommandResult): string[] {
     case "stats": {
       const hints: string[] = [];
       hints.push(
-        `\`pdf-brain search "<query>"\` -- Search across ${result.documents} documents`,
-        `\`pdf-brain list\` -- Browse all documents`,
-        `\`pdf-brain taxonomy list\` -- Browse concept taxonomy`,
-        `\`pdf-brain doctor\` -- Run health check`
+        `\`poink search "<query>"\` -- Search across ${result.documents} documents`,
+        `\`poink list\` -- Browse all documents`,
+        `\`poink taxonomy list\` -- Browse concept taxonomy`,
+        `\`poink doctor\` -- Run health check`
       );
       return hints;
     }
@@ -196,15 +196,15 @@ export function generateHints(result: CommandResult): string[] {
       if (result.matches.length > 0) {
         const top = result.matches[0];
         hints.push(
-          `\`pdf-brain taxonomy tree "${top.id}"\` -- Navigate hierarchy from "${top.prefLabel}"`
+          `\`poink taxonomy tree "${top.id}"\` -- Navigate hierarchy from "${top.prefLabel}"`
         );
         hints.push(
-          `\`pdf-brain search "${top.prefLabel}"\` -- Find documents tagged with this concept`
+          `\`poink search "${top.prefLabel}"\` -- Find documents tagged with this concept`
         );
       } else {
         hints.push(
-          `\`pdf-brain taxonomy list\` -- Browse all concepts`,
-          `\`pdf-brain search "${result.query}"\` -- Search documents instead`
+          `\`poink taxonomy list\` -- Browse all concepts`,
+          `\`poink search "${result.query}"\` -- Search documents instead`
         );
       }
       return hints;
@@ -213,9 +213,9 @@ export function generateHints(result: CommandResult): string[] {
     case "taxonomyList": {
       const hints: string[] = [];
       hints.push(
-        `\`pdf-brain taxonomy list --tree\` -- Show hierarchy tree view`,
-        `\`pdf-brain taxonomy search "<query>"\` -- Find specific concepts`,
-        `\`pdf-brain search "<query>"\` -- Search documents by content`
+        `\`poink taxonomy list --tree\` -- Show hierarchy tree view`,
+        `\`poink taxonomy search "<query>"\` -- Find specific concepts`,
+        `\`poink search "<query>"\` -- Search documents by content`
       );
       return hints;
     }
@@ -223,12 +223,12 @@ export function generateHints(result: CommandResult): string[] {
     case "taxonomyTree": {
       const hints: string[] = [];
       hints.push(
-        `\`pdf-brain taxonomy search "<query>"\` -- Find concepts by keyword`,
-        `\`pdf-brain search "<query>"\` -- Search documents by content`
+        `\`poink taxonomy search "<query>"\` -- Find concepts by keyword`,
+        `\`poink search "<query>"\` -- Search documents by content`
       );
       if (result.rootId) {
         hints.push(
-          `\`pdf-brain taxonomy tree\` -- View full concept tree`
+          `\`poink taxonomy tree\` -- View full concept tree`
         );
       }
       return hints;
@@ -236,23 +236,23 @@ export function generateHints(result: CommandResult): string[] {
 
     case "add": {
       return [
-        `\`pdf-brain read "${result.title}"\` -- View document details`,
-        `\`pdf-brain search "${result.title}" --expand 2000\` -- Search within this document`,
-        `\`pdf-brain tag "${result.id}" "topic1,topic2"\` -- Add tags`,
+        `\`poink read "${result.title}"\` -- View document details`,
+        `\`poink search "${result.title}" --expand 2000\` -- Search within this document`,
+        `\`poink tag "${result.id}" "topic1,topic2"\` -- Add tags`,
       ];
     }
 
     case "remove": {
       return [
-        `\`pdf-brain list\` -- Browse remaining documents`,
-        `\`pdf-brain stats\` -- Check library statistics`,
+        `\`poink list\` -- Browse remaining documents`,
+        `\`poink stats\` -- Check library statistics`,
       ];
     }
 
     case "tag": {
       return [
-        `\`pdf-brain read "${result.title}"\` -- View updated document`,
-        `\`pdf-brain list --tag "${result.tags[0]}"\` -- Browse documents with this tag`,
+        `\`poink read "${result.title}"\` -- View updated document`,
+        `\`poink list --tag "${result.tags[0]}"\` -- Browse documents with this tag`,
       ];
     }
 
@@ -260,7 +260,7 @@ export function generateHints(result: CommandResult): string[] {
       const hints: string[] = [];
       if (!result.healthy) {
         hints.push(
-          `\`pdf-brain doctor --fix\` -- Auto-repair detected issues`
+          `\`poink doctor --fix\` -- Auto-repair detected issues`
         );
       }
       const missing = result.chunkerMissing ?? 0;
@@ -268,29 +268,29 @@ export function generateHints(result: CommandResult): string[] {
 
       if (mismatch > 0) {
         hints.push(
-          `\`pdf-brain rechunk --dry-run\` -- Preview docs with stale chunker metadata`,
-          `\`pdf-brain rechunk\` -- Apply rechunk (rebuild chunks + embeddings)`,
+          `\`poink rechunk --dry-run\` -- Preview docs with stale chunker metadata`,
+          `\`poink rechunk\` -- Apply rechunk (rebuild chunks + embeddings)`,
         );
       }
 
       if (missing > 0) {
         hints.push(
-          `\`pdf-brain rechunk --dry-run --include-missing\` -- Preview docs missing chunker metadata (upgrade sweep)`,
-          `\`pdf-brain rechunk --include-missing --max-docs 25\` -- Rechunk a small batch (expensive)`,
+          `\`poink rechunk --dry-run --include-missing\` -- Preview docs missing chunker metadata (upgrade sweep)`,
+          `\`poink rechunk --include-missing --max-docs 25\` -- Rechunk a small batch (expensive)`,
         );
       }
       hints.push(
-        `\`pdf-brain stats\` -- Check library statistics`,
-        `\`pdf-brain search "<query>"\` -- Search documents`
+        `\`poink stats\` -- Check library statistics`,
+        `\`poink search "<query>"\` -- Search documents`
       );
       return hints;
     }
 
     case "config": {
       return [
-        `\`pdf-brain config show\` -- View all settings`,
-        `\`pdf-brain config set embedding.model <model>\` -- Change embedding model`,
-        `\`pdf-brain stats\` -- Check library statistics`,
+        `\`poink config show\` -- View all settings`,
+        `\`poink config set embedding.model <model>\` -- Change embedding model`,
+        `\`poink stats\` -- Check library statistics`,
       ];
     }
 
@@ -298,13 +298,13 @@ export function generateHints(result: CommandResult): string[] {
       const hints: string[] = [];
       if (result.reachable) {
         hints.push(
-          `\`pdf-brain search "<query>"\` -- Search documents`,
-          `\`pdf-brain stats\` -- Check library statistics`
+          `\`poink search "<query>"\` -- Search documents`,
+          `\`poink stats\` -- Check library statistics`
         );
       } else {
         hints.push(
-          `\`pdf-brain doctor\` -- Run full health check`,
-          `\`pdf-brain config show\` -- Check configuration`
+          `\`poink doctor\` -- Run full health check`,
+          `\`poink config show\` -- Check configuration`
         );
       }
       return hints;
@@ -312,8 +312,8 @@ export function generateHints(result: CommandResult): string[] {
 
     case "repair": {
       return [
-        `\`pdf-brain doctor\` -- Run full health check`,
-        `\`pdf-brain stats\` -- Check library statistics`,
+        `\`poink doctor\` -- Run full health check`,
+        `\`poink stats\` -- Check library statistics`,
       ];
     }
 
@@ -322,22 +322,22 @@ export function generateHints(result: CommandResult): string[] {
       if (result.dryRun) {
         if (result.includeMissing) {
           hints.push(
-            `\`pdf-brain rechunk --include-missing --max-docs 25\` -- Rechunk a small batch (rebuild chunks + embeddings)`,
+            `\`poink rechunk --include-missing --max-docs 25\` -- Rechunk a small batch (rebuild chunks + embeddings)`,
           );
         } else {
           hints.push(
-            `\`pdf-brain rechunk\` -- Apply rechunk (rebuild chunks + embeddings)`,
+            `\`poink rechunk\` -- Apply rechunk (rebuild chunks + embeddings)`,
           );
           if ((result.skippedMissing ?? 0) > 0) {
             hints.push(
-              `\`pdf-brain rechunk --dry-run --include-missing\` -- Include missing-metadata docs in the plan`,
+              `\`poink rechunk --dry-run --include-missing\` -- Include missing-metadata docs in the plan`,
             );
           }
         }
       } else {
         hints.push(
-          `\`pdf-brain stats\` -- Verify counts after rechunk`,
-          `\`pdf-brain search "<query>"\` -- Sanity-check retrieval quality`,
+          `\`poink stats\` -- Verify counts after rechunk`,
+          `\`poink search "<query>"\` -- Sanity-check retrieval quality`,
         );
       }
       return hints;
@@ -345,16 +345,16 @@ export function generateHints(result: CommandResult): string[] {
 
     case "reindex": {
       return [
-        `\`pdf-brain stats\` -- Check updated statistics`,
-        `\`pdf-brain search "<query>"\` -- Test search with new embeddings`,
+        `\`poink stats\` -- Check updated statistics`,
+        `\`poink search "<query>"\` -- Test search with new embeddings`,
       ];
     }
 
     case "error": {
       return [
-        `\`pdf-brain doctor\` -- Run health check`,
-        `\`pdf-brain check\` -- Verify embedding provider`,
-        `\`pdf-brain --help\` -- View all commands`,
+        `\`poink doctor\` -- Run health check`,
+        `\`poink check\` -- Verify embedding provider`,
+        `\`poink --help\` -- View all commands`,
       ];
     }
 
@@ -377,14 +377,14 @@ export function generateNextActions(result: CommandResult): NextAction[] {
         const top = result.results[0];
         actions.push({
           kind: "shell",
-          argv: ["pdf-brain", "read", top.docId],
+          argv: ["poink", "read", top.docId],
           description: "Full metadata for top result",
         });
 
         if (top.chunkId) {
           actions.push({
             kind: "shell",
-            argv: ["pdf-brain", "chunk", "get", top.chunkId],
+            argv: ["poink", "chunk", "get", top.chunkId],
             description: "Fetch exact top chunk text",
           });
         }
@@ -392,7 +392,7 @@ export function generateNextActions(result: CommandResult): NextAction[] {
         if (!result.hadExpand) {
           actions.push({
             kind: "shell",
-            argv: ["pdf-brain", "search", result.query, "--expand", "2000"],
+            argv: ["poink", "search", result.query, "--expand", "2000"],
             description: "Get expanded context around matches",
           });
         }
@@ -402,7 +402,7 @@ export function generateNextActions(result: CommandResult): NextAction[] {
         const topConcept = result.concepts[0];
         actions.push({
           kind: "shell",
-          argv: ["pdf-brain", "taxonomy", "tree", topConcept.id],
+          argv: ["poink", "taxonomy", "tree", topConcept.id],
           description: "Navigate concept hierarchy",
         });
       }
@@ -410,7 +410,7 @@ export function generateNextActions(result: CommandResult): NextAction[] {
       if (result.results.length > 0 && !result.wasFts) {
         actions.push({
           kind: "shell",
-          argv: ["pdf-brain", "search", result.query, "--fts"],
+          argv: ["poink", "search", result.query, "--fts"],
           description: "Try keyword matching instead",
         });
       }
@@ -432,20 +432,20 @@ export function generateNextActions(result: CommandResult): NextAction[] {
         const top = result.results[0];
         actions.push({
           kind: "shell",
-          argv: ["pdf-brain", "read", top.docId],
+          argv: ["poink", "read", top.docId],
           description: "Read top document metadata",
         });
         if (top.chunkId) {
           actions.push({
             kind: "shell",
-            argv: ["pdf-brain", "chunk", "get", top.chunkId],
+            argv: ["poink", "chunk", "get", top.chunkId],
             description: "Fetch exact top chunk text",
           });
         }
       }
       actions.push({
         kind: "shell",
-        argv: ["pdf-brain", "search", "your query here"],
+        argv: ["poink", "search", "your query here"],
         description: "Drill into a single query",
       });
       return actions;
@@ -456,21 +456,21 @@ export function generateNextActions(result: CommandResult): NextAction[] {
       if (!result.wasFts) {
         actions.push({
           kind: "shell",
-          argv: ["pdf-brain", "search", result.query, "--fts"],
+          argv: ["poink", "search", result.query, "--fts"],
           description: "Try full-text keyword search",
         });
       } else {
         actions.push({
           kind: "shell",
-          argv: ["pdf-brain", "search", result.query],
+          argv: ["poink", "search", result.query],
           description: "Try semantic vector search",
         });
       }
       actions.push(
-        { kind: "shell", argv: ["pdf-brain", "list"], description: "Browse all documents" },
+        { kind: "shell", argv: ["poink", "list"], description: "Browse all documents" },
         {
           kind: "shell",
-          argv: ["pdf-brain", "taxonomy", "search", result.query],
+          argv: ["poink", "taxonomy", "search", result.query],
           description: "Search taxonomy concepts",
         },
       );
@@ -481,19 +481,19 @@ export function generateNextActions(result: CommandResult): NextAction[] {
       const actions: NextAction[] = [];
       actions.push({
         kind: "shell",
-        argv: ["pdf-brain", "search", result.title, "--expand", "2000"],
+        argv: ["poink", "search", result.title, "--expand", "2000"],
         description: "Search within this document's content",
       });
       if (result.tags.length > 0) {
         actions.push({
           kind: "shell",
-          argv: ["pdf-brain", "list", "--tag", result.tags[0]],
+          argv: ["poink", "list", "--tag", result.tags[0]],
           description: "Browse documents with same tag",
         });
       }
       actions.push({
         kind: "shell",
-        argv: ["pdf-brain", "taxonomy", "search", result.title],
+        argv: ["poink", "taxonomy", "search", result.title],
         description: "Find related concepts",
       });
       return actions;
@@ -504,13 +504,13 @@ export function generateNextActions(result: CommandResult): NextAction[] {
       if (result.firstDoc) {
         actions.push({
           kind: "shell",
-          argv: ["pdf-brain", "read", result.firstDoc.id],
+          argv: ["poink", "read", result.firstDoc.id],
           description: "Read the first listed document",
         });
       }
       actions.push({
         kind: "shell",
-        argv: ["pdf-brain", "search", "your query here"],
+        argv: ["poink", "search", "your query here"],
         description: "Search the library",
       });
       return actions;
@@ -518,10 +518,10 @@ export function generateNextActions(result: CommandResult): NextAction[] {
 
     case "stats": {
       return [
-        { kind: "shell", argv: ["pdf-brain", "search", "your question here"], description: "Search the library" },
-        { kind: "shell", argv: ["pdf-brain", "list"], description: "Browse all documents" },
-        { kind: "shell", argv: ["pdf-brain", "taxonomy", "list"], description: "Browse taxonomy concepts" },
-        { kind: "shell", argv: ["pdf-brain", "doctor"], description: "Check database health" },
+        { kind: "shell", argv: ["poink", "search", "your question here"], description: "Search the library" },
+        { kind: "shell", argv: ["poink", "list"], description: "Browse all documents" },
+        { kind: "shell", argv: ["poink", "taxonomy", "list"], description: "Browse taxonomy concepts" },
+        { kind: "shell", argv: ["poink", "doctor"], description: "Check database health" },
       ];
     }
 
@@ -530,19 +530,19 @@ export function generateNextActions(result: CommandResult): NextAction[] {
       if (result.matches.length > 0) {
         actions.push({
           kind: "shell",
-          argv: ["pdf-brain", "taxonomy", "tree", result.matches[0].id],
+          argv: ["poink", "taxonomy", "tree", result.matches[0].id],
           description: "Navigate concept hierarchy",
         });
       } else {
         actions.push({
           kind: "shell",
-          argv: ["pdf-brain", "taxonomy", "list"],
+          argv: ["poink", "taxonomy", "list"],
           description: "Browse all concepts",
         });
       }
       actions.push({
         kind: "shell",
-        argv: ["pdf-brain", "search", result.query],
+        argv: ["poink", "search", result.query],
         description: "Search documents for this concept",
       });
       return actions;
@@ -550,36 +550,36 @@ export function generateNextActions(result: CommandResult): NextAction[] {
 
     case "taxonomyList": {
       return [
-        { kind: "shell", argv: ["pdf-brain", "taxonomy", "tree"], description: "View full concept tree" },
-        { kind: "shell", argv: ["pdf-brain", "taxonomy", "search", "your query"], description: "Search concepts" },
+        { kind: "shell", argv: ["poink", "taxonomy", "tree"], description: "View full concept tree" },
+        { kind: "shell", argv: ["poink", "taxonomy", "search", "your query"], description: "Search concepts" },
       ];
     }
 
     case "taxonomyTree": {
       return [
-        { kind: "shell", argv: ["pdf-brain", "taxonomy", "tree"], description: "View full concept tree" },
+        { kind: "shell", argv: ["poink", "taxonomy", "tree"], description: "View full concept tree" },
       ];
     }
 
     case "add": {
       return [
-        { kind: "shell", argv: ["pdf-brain", "read", result.id], description: "Read the new document" },
-        { kind: "shell", argv: ["pdf-brain", "search", result.title], description: "Search for related content" },
-        { kind: "shell", argv: ["pdf-brain", "tag", result.id, "tag1,tag2"], description: "Apply tags" },
+        { kind: "shell", argv: ["poink", "read", result.id], description: "Read the new document" },
+        { kind: "shell", argv: ["poink", "search", result.title], description: "Search for related content" },
+        { kind: "shell", argv: ["poink", "tag", result.id, "tag1,tag2"], description: "Apply tags" },
       ];
     }
 
     case "remove": {
       return [
-        { kind: "shell", argv: ["pdf-brain", "list"], description: "Browse remaining documents" },
-        { kind: "shell", argv: ["pdf-brain", "stats"], description: "Verify counts" },
+        { kind: "shell", argv: ["poink", "list"], description: "Browse remaining documents" },
+        { kind: "shell", argv: ["poink", "stats"], description: "Verify counts" },
       ];
     }
 
     case "tag": {
       const actions: NextAction[] = [
-        { kind: "shell", argv: ["pdf-brain", "read", result.title], description: "Read document metadata" },
-        { kind: "shell", argv: ["pdf-brain", "list", "--tag", result.tags[0] ?? ""], description: "Browse by tag" },
+        { kind: "shell", argv: ["poink", "read", result.title], description: "Read document metadata" },
+        { kind: "shell", argv: ["poink", "list", "--tag", result.tags[0] ?? ""], description: "Browse by tag" },
       ];
       return actions.filter((a) => a.argv[a.argv.length - 1] !== "");
     }
@@ -589,7 +589,7 @@ export function generateNextActions(result: CommandResult): NextAction[] {
       if (!result.healthy) {
         actions.push({
           kind: "shell",
-          argv: ["pdf-brain", "doctor", "--fix"],
+          argv: ["poink", "doctor", "--fix"],
           description: "Attempt auto-repair",
         });
       }
@@ -600,12 +600,12 @@ export function generateNextActions(result: CommandResult): NextAction[] {
         actions.push(
           {
             kind: "shell",
-            argv: ["pdf-brain", "rechunk", "--dry-run"],
+            argv: ["poink", "rechunk", "--dry-run"],
             description: "Preview docs with stale chunker metadata",
           },
           {
             kind: "shell",
-            argv: ["pdf-brain", "rechunk"],
+            argv: ["poink", "rechunk"],
             description: "Apply rechunk (rebuild chunks + embeddings)",
           },
         );
@@ -615,19 +615,19 @@ export function generateNextActions(result: CommandResult): NextAction[] {
         actions.push(
           {
             kind: "shell",
-            argv: ["pdf-brain", "rechunk", "--dry-run", "--include-missing"],
+            argv: ["poink", "rechunk", "--dry-run", "--include-missing"],
             description: "Preview docs missing chunker metadata (upgrade sweep)",
           },
           {
             kind: "shell",
-            argv: ["pdf-brain", "rechunk", "--include-missing", "--max-docs", "25"],
+            argv: ["poink", "rechunk", "--include-missing", "--max-docs", "25"],
             description: "Rechunk a small batch (expensive)",
           },
         );
       }
       actions.push({
         kind: "shell",
-        argv: ["pdf-brain", "stats"],
+        argv: ["poink", "stats"],
         description: "Verify counts",
       });
       return actions;
@@ -635,25 +635,25 @@ export function generateNextActions(result: CommandResult): NextAction[] {
 
     case "config": {
       return [
-        { kind: "shell", argv: ["pdf-brain", "config", "show"], description: "Show config" },
+        { kind: "shell", argv: ["poink", "config", "show"], description: "Show config" },
       ];
     }
 
     case "check": {
       return [
-        { kind: "shell", argv: ["pdf-brain", "stats"], description: "Check library stats" },
+        { kind: "shell", argv: ["poink", "stats"], description: "Check library stats" },
       ];
     }
 
     case "repair": {
       return [
-        { kind: "shell", argv: ["pdf-brain", "doctor"], description: "Re-run health check" },
+        { kind: "shell", argv: ["poink", "doctor"], description: "Re-run health check" },
       ];
     }
 
     case "reindex": {
       return [
-        { kind: "shell", argv: ["pdf-brain", "stats"], description: "Verify counts" },
+        { kind: "shell", argv: ["poink", "stats"], description: "Verify counts" },
       ];
     }
 
@@ -663,7 +663,7 @@ export function generateNextActions(result: CommandResult): NextAction[] {
           return [
             {
               kind: "shell",
-              argv: ["pdf-brain", "rechunk", "--include-missing", "--max-docs", "25"],
+              argv: ["poink", "rechunk", "--include-missing", "--max-docs", "25"],
               description: "Rechunk a small batch (rebuild chunks + embeddings)",
             },
           ];
@@ -672,7 +672,7 @@ export function generateNextActions(result: CommandResult): NextAction[] {
         const actions: NextAction[] = [
           {
             kind: "shell",
-            argv: ["pdf-brain", "rechunk"],
+            argv: ["poink", "rechunk"],
             description: "Apply rechunk (rebuild chunks + embeddings)",
           },
         ];
@@ -680,7 +680,7 @@ export function generateNextActions(result: CommandResult): NextAction[] {
         if ((result.skippedMissing ?? 0) > 0) {
           actions.push({
             kind: "shell",
-            argv: ["pdf-brain", "rechunk", "--dry-run", "--include-missing"],
+            argv: ["poink", "rechunk", "--dry-run", "--include-missing"],
             description: "Include missing-metadata docs in the plan",
           });
         }
@@ -688,15 +688,15 @@ export function generateNextActions(result: CommandResult): NextAction[] {
         return actions;
       }
       return [
-        { kind: "shell", argv: ["pdf-brain", "stats"], description: "Verify counts" },
+        { kind: "shell", argv: ["poink", "stats"], description: "Verify counts" },
       ];
     }
 
     case "error": {
       return [
-        { kind: "shell", argv: ["pdf-brain", "doctor"], description: "Check database health" },
-        { kind: "shell", argv: ["pdf-brain", "check"], description: "Check embedding provider connectivity" },
-        { kind: "shell", argv: ["pdf-brain", "--help"], description: "Show available commands" },
+        { kind: "shell", argv: ["poink", "doctor"], description: "Check database health" },
+        { kind: "shell", argv: ["poink", "check"], description: "Check embedding provider connectivity" },
+        { kind: "shell", argv: ["poink", "--help"], description: "Show available commands" },
       ];
     }
   }
