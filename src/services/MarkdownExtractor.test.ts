@@ -254,10 +254,17 @@ Third section content.
     expect(result.sections).toHaveLength(3);
     expect(result.sections[0].heading).toBe("H1 Title");
     expect(result.sections[0].headingLevel).toBe(1);
+    expect(result.sections[0].headingPath).toEqual(["H1 Title"]);
     expect(result.sections[1].heading).toBe("H2 Section");
     expect(result.sections[1].headingLevel).toBe(2);
+    expect(result.sections[1].headingPath).toEqual(["H1 Title", "H2 Section"]);
     expect(result.sections[2].heading).toBe("H3 Subsection");
     expect(result.sections[2].headingLevel).toBe(3);
+    expect(result.sections[2].headingPath).toEqual([
+      "H1 Title",
+      "H2 Section",
+      "H3 Subsection",
+    ]);
   });
 
   test("handles document with no headings", async () => {
@@ -339,6 +346,8 @@ Content here.
     const result = await runExtract(path);
     expect(result.sections).toHaveLength(1);
     expect(result.sections[0].text).toContain("Column 1");
+    expect(result.sections[0].text).toContain("| Column 1 | Column 2 |");
+    expect(result.sections[0].text).toContain("| --- | --- |");
     expect(result.sections[0].text).toContain("strikethrough");
   });
 });
@@ -428,7 +437,7 @@ x
   });
 
   test("handles very long sentences with hard split", async () => {
-    const longSentence = "word ".repeat(200) + ".";
+    const longSentence = "word ".repeat(600) + ".";
     const path = writeTempFile(
       "long-sentence.md",
       `# Title\n\n${longSentence}`
@@ -437,6 +446,33 @@ x
     const result = await runProcess(path);
     // Should have multiple chunks due to hard split
     expect(result.chunks.length).toBeGreaterThan(1);
+  });
+
+  test("splits large markdown tables with repeated headers", async () => {
+    const rows = Array.from(
+      { length: 140 },
+      (_, index) => `| Row ${index} | Value ${index} with some extra text |`,
+    ).join("\n");
+    const path = writeTempFile(
+      "large-table.md",
+      `# Table Section
+
+| Name | Value |
+|------|-------|
+${rows}
+`
+    );
+
+    const result = await runProcess(path);
+    const tableChunks = result.chunks.filter((chunk) =>
+      chunk.content.includes("| Name | Value |"),
+    );
+
+    expect(tableChunks.length).toBeGreaterThan(1);
+    for (const chunk of tableChunks) {
+      expect(chunk.content).toContain("| Name | Value |");
+      expect(chunk.content).toContain("| --- | --- |");
+    }
   });
 });
 
@@ -551,6 +587,57 @@ This is the content.
     // Chunk should include the heading for context
     const chunk = result.chunks[0];
     expect(chunk.content).toContain("Important Section");
+  });
+
+  test("chunks include full heading ancestry", async () => {
+    const path = writeTempFile(
+      "heading-ancestry.md",
+      `# Parent
+
+Intro.
+
+## Child
+
+Details.
+
+### Grandchild
+
+Nested details.
+`
+    );
+
+    const result = await runProcess(path);
+    const grandchildChunk = result.chunks.find((c) =>
+      c.content.includes("Nested details")
+    );
+
+    expect(grandchildChunk).toBeDefined();
+    expect(grandchildChunk?.content).toContain(
+      "# Parent > Child > Grandchild",
+    );
+  });
+
+  test("chunks compact heading ancestry when levels are skipped", async () => {
+    const path = writeTempFile(
+      "skipped-heading-level.md",
+      `# Parent
+
+Intro.
+
+### Grandchild
+
+Nested details.
+`
+    );
+
+    const result = await runProcess(path);
+    const grandchildChunk = result.chunks.find((c) =>
+      c.content.includes("Nested details")
+    );
+
+    expect(grandchildChunk).toBeDefined();
+    expect(grandchildChunk?.content).toContain("# Parent > Grandchild");
+    expect(grandchildChunk?.content).not.toContain(">  >");
   });
 
   test("process() strips null bytes from content", async () => {

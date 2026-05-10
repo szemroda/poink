@@ -274,6 +274,7 @@ export class QdrantDatabase {
                 page: chunk.page,
                 chunkIndex: chunk.chunkIndex,
                 content: chunk.content,
+                embeddingContent: chunk.embeddingContent ?? chunk.content,
                 title: asString(docPayload?.title),
                 path: asString(docPayload?.path),
                 tags: asStringArray(docPayload?.tags),
@@ -361,6 +362,7 @@ export class QdrantDatabase {
                   page: 0,
                   chunkIndex: 0,
                   content: "",
+                  embeddingContent: "",
                   title: "",
                   path: "",
                   tags: [],
@@ -424,6 +426,7 @@ export class QdrantDatabase {
                   page: chunk.page,
                   chunkIndex: chunk.chunkIndex,
                   content: chunk.content,
+                  embeddingContent: chunk.embeddingContent ?? chunk.content,
                   title: doc.title,
                   path: doc.path,
                   tags: doc.tags,
@@ -451,6 +454,7 @@ export class QdrantDatabase {
                   page: chunk.page,
                   chunkIndex: chunk.chunkIndex,
                   content: chunk.content,
+                  embeddingContent: chunk.embeddingContent ?? chunk.content,
                   title: doc.title,
                   path: doc.path,
                   tags: doc.tags,
@@ -867,6 +871,7 @@ function payloadToChunk(id: string | number, payload: QdrantPayload): PDFChunk {
     page: asNumber(payload.page),
     chunkIndex: asNumber(payload.chunkIndex),
     content: asString(payload.content),
+    embeddingContent: asString(payload.embeddingContent) || undefined,
   });
 }
 

@@ -4,7 +4,11 @@
 
 import { Context, Effect, Layer } from "effect";
 import { getData } from "pdf-parse/worker";
-import { assertValidChunking } from "../chunking.js";
+import {
+  assertValidChunking,
+  chunkNormalizedText,
+  preprocessLargeMarkdownTables,
+} from "../chunking.js";
 import { resolveUserPath } from "../pathUtils.js";
 import { fileExists, readFileBytes } from "../runtime.js";
 import {
@@ -90,6 +94,151 @@ export function sanitizeText(text: string): string {
   return text.replace(/\x00/g, "");
 }
 
+function normalizePdfLine(line: string): string {
+  return sanitizeText(line)
+    .replace(/\u00a0/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function isPageNumberLine(line: string): boolean {
+  return /^(?:page\s*)?\d+(?:\s*(?:\/|of)\s*\d+)?$/i.test(line.trim());
+}
+
+function splitPdfLines(text: string): string[] {
+  return text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
+}
+
+function contentLineIndices(lines: string[]): number[] {
+  return lines
+    .map((line, index) => ({ index, normalized: normalizePdfLine(line) }))
+    .filter(({ normalized }) => normalized)
+    .map(({ index }) => index);
+}
+
+function pageEdgeLineIndices(nonBlankIndices: number[]): Set<number> {
+  const topEdgeCount = nonBlankIndices.length <= 5 ? 1 : 3;
+  const bottomEdgeCount = nonBlankIndices.length <= 5 ? 2 : 3;
+
+  return new Set([
+    ...nonBlankIndices.slice(0, topEdgeCount),
+    ...nonBlankIndices.slice(-bottomEdgeCount),
+  ]);
+}
+
+function pageArtifactCandidates(text: string): Set<string> {
+  const lines = splitPdfLines(text);
+  const edgeIndices = pageEdgeLineIndices(contentLineIndices(lines));
+  const candidates = new Set<string>();
+
+  for (const index of edgeIndices) {
+    const line = normalizePdfLine(lines[index] ?? "");
+    if (line && line.length <= 120) {
+      candidates.add(line);
+    }
+  }
+
+  return candidates;
+}
+
+function repeatedPageArtifactLines(pages: ExtractedPage[]): Set<string> {
+  if (pages.length < 2) return new Set();
+
+  const threshold = Math.max(2, Math.ceil(pages.length * 0.5));
+  const counts = new Map<string, number>();
+  const repeated = new Set<string>();
+
+  for (const { text } of pages) {
+    for (const line of pageArtifactCandidates(text)) {
+      counts.set(line, (counts.get(line) ?? 0) + 1);
+    }
+  }
+
+  for (const [line, count] of counts) {
+    if (count >= threshold) {
+      repeated.add(line);
+    }
+  }
+
+  return repeated;
+}
+
+export function cleanPDFPageArtifacts(pages: ExtractedPage[]): ExtractedPage[] {
+  const repeated = repeatedPageArtifactLines(pages);
+
+  return pages.map(({ page, text }) => {
+    const lines = splitPdfLines(text);
+    const nonBlankIndices = contentLineIndices(lines);
+    const edgeLineIndices = pageEdgeLineIndices(nonBlankIndices);
+    const firstContentLine = nonBlankIndices[0];
+    const lastContentLine = nonBlankIndices[nonBlankIndices.length - 1];
+    const cleaned = lines
+      .filter((line, index) => {
+        const normalized = normalizePdfLine(line);
+        if (!normalized) return true;
+        const repeatedArtifact =
+          edgeLineIndices.has(index) && repeated.has(normalized);
+        const pageNumberArtifact =
+          (index === firstContentLine || index === lastContentLine) &&
+          isPageNumberLine(line);
+        return !repeatedArtifact && !pageNumberArtifact;
+      })
+      .join("\n");
+
+    return { page, text: cleaned };
+  });
+}
+
+function isLikelyPDFSectionTitle(line: string): boolean {
+  const trimmed = line.trim();
+  if (
+    trimmed.length < 3 ||
+    trimmed.length > 120 ||
+    isPageNumberLine(trimmed) ||
+    /[.!?:;]$/.test(trimmed)
+  ) {
+    return false;
+  }
+
+  const words = trimmed.split(/\s+/);
+  if (words.length > 10) return false;
+
+  const letters = trimmed.replace(/[^A-Za-z]/g, "");
+  const upper = trimmed.replace(/[^A-Z]/g, "");
+  const isMostlyUpper = letters.length >= 3 && upper.length / letters.length > 0.75;
+  const isTitleCase = words.every((word) => {
+    const cleaned = word.replace(/[^A-Za-z]/g, "");
+    return !cleaned || /^[A-Z]/.test(cleaned);
+  });
+
+  return isMostlyUpper || isTitleCase;
+}
+
+function preservePDFSectionTitles(text: string): string {
+  const lines = text.split("\n");
+  const output: string[] = [];
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (isLikelyPDFSectionTitle(trimmed)) {
+      if (output.length > 0 && output[output.length - 1] !== "") {
+        output.push("");
+      }
+      output.push(`# ${trimmed}`);
+      output.push("");
+    } else {
+      output.push(line);
+    }
+  }
+
+  return output.join("\n");
+}
+
+function isMarkdownTableBlock(text: string): boolean {
+  return /^\|[^\n]+\|\n\|[-:\s|]+\|/m.test(text.trim());
+}
+
 /**
  * Chunk text with intelligent splitting
  */
@@ -99,9 +248,6 @@ export function chunkText(
   chunkOverlap: number,
 ): string[] {
   assertValidChunking(chunkSize, chunkOverlap);
-  const sentenceSplitStep = chunkSize - chunkOverlap;
-
-  const chunks: string[] = [];
 
   // Clean up text - sanitize first, then normalize while preserving paragraph structure.
   //
@@ -128,77 +274,34 @@ export function chunkText(
 
     // Collapse long blank runs.
     t = t.replace(/\n{3,}/g, "\n\n");
+    t = preservePDFSectionTitles(t);
 
     // Reconstruct paragraphs:
     // - split on blank lines
-    // - within a paragraph, join wrapped lines with spaces
+    // - within normal paragraphs, join wrapped lines with spaces
+    // - preserve Markdown table row newlines from Office/Markdown-derived text
     const paragraphs = t
       .split(/\n\s*\n+/)
-      .map((p) =>
-        p
-          .replace(/\n+/g, " ")
-          .replace(/[ \t]+/g, " ")
-          .trim(),
-      )
+      .map((p) => {
+        const normalized = p
+          .split("\n")
+          .map((line) => line.trim())
+          .join("\n")
+          .trim();
+        if (isMarkdownTableBlock(normalized)) {
+          return normalized.replace(/[ \t]+/g, " ");
+        }
+        return normalized.replace(/\n+/g, " ").replace(/[ \t]+/g, " ").trim();
+      })
       .filter(Boolean);
 
-    return paragraphs.join("\n\n").trim();
+    return preprocessLargeMarkdownTables(
+      paragraphs.join("\n\n").trim(),
+      Math.floor(chunkSize * 0.8),
+    );
   })();
 
-  if (cleaned.length <= chunkSize) {
-    return cleaned ? [cleaned] : [];
-  }
-
-  // Try to split on paragraph boundaries first
-  const paragraphs = cleaned.split(/\n\n+/);
-  let currentChunk = "";
-
-  for (const para of paragraphs) {
-    if (currentChunk.length + para.length + 2 <= chunkSize) {
-      currentChunk += (currentChunk ? "\n\n" : "") + para;
-    } else {
-      if (currentChunk) {
-        chunks.push(currentChunk);
-      }
-
-      // If paragraph itself is too long, split by sentences
-      if (para.length > chunkSize) {
-        const sentences = para.match(/[^.!?]+[.!?]+/g) || [para];
-        currentChunk = "";
-
-        for (const sentence of sentences) {
-          if (currentChunk.length + sentence.length <= chunkSize) {
-            currentChunk += sentence;
-          } else {
-            if (currentChunk) {
-              chunks.push(currentChunk.trim());
-            }
-            // If sentence is still too long, hard split
-            if (sentence.length > chunkSize) {
-              for (
-                let i = 0;
-                i < sentence.length;
-                i += sentenceSplitStep
-              ) {
-                chunks.push(sentence.slice(i, i + chunkSize).trim());
-              }
-              currentChunk = "";
-            } else {
-              currentChunk = sentence;
-            }
-          }
-        }
-      } else {
-        currentChunk = para;
-      }
-    }
-  }
-
-  if (currentChunk) {
-    chunks.push(currentChunk);
-  }
-
-  return chunks.filter((c) => c.length > 20); // Filter tiny chunks
+  return chunkNormalizedText(cleaned, chunkSize, chunkOverlap);
 }
 
 export const PDFExtractorLive = Layer.effect(
@@ -247,7 +350,7 @@ export const PDFExtractorLive = Layer.effect(
 
           const allChunks: ProcessedChunk[] = [];
 
-          for (const { page, text } of extracted.pages) {
+          for (const { page, text } of cleanPDFPageArtifacts(extracted.pages)) {
             const pageChunks = chunkText(
               text,
               config.chunkSize,

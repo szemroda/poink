@@ -46,6 +46,7 @@ export class Database extends Context.Tag("Database")<
         page: number;
         chunkIndex: number;
         content: string;
+        embeddingContent?: string;
       }>
     ) => Effect.Effect<void, DatabaseError>;
     readonly getChunk: (
@@ -69,6 +70,7 @@ export class Database extends Context.Tag("Database")<
         page: number;
         chunkIndex: number;
         content: string;
+        embeddingContent?: string;
       }>,
       embeddings: Array<{ chunkId: string; embedding: number[] }>,
     ) => Effect.Effect<void, DatabaseError>;

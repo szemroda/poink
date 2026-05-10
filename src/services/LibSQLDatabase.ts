@@ -100,6 +100,9 @@ export class LibSQLDatabase {
             page: Number(row.page),
             chunkIndex: Number(row.chunk_index),
             content: row.content as string,
+            embeddingContent: row.embedding_content
+              ? (row.embedding_content as string)
+              : undefined,
           });
 
         // Return Database implementation
@@ -212,13 +215,14 @@ export class LibSQLDatabase {
               try: async () => {
                 // Use batch for transaction
                 const statements = chunks.map((chunk) => ({
-                  sql: "INSERT INTO chunks (id, doc_id, page, chunk_index, content) VALUES (?, ?, ?, ?, ?)",
+                  sql: "INSERT INTO chunks (id, doc_id, page, chunk_index, content, embedding_content) VALUES (?, ?, ?, ?, ?, ?)",
                   args: [
                     chunk.id,
                     chunk.docId,
                     chunk.page,
                     chunk.chunkIndex,
                     chunk.content,
+                    chunk.embeddingContent ?? chunk.content,
                   ],
                 }));
                 await client.batch(statements, "write");
@@ -230,7 +234,7 @@ export class LibSQLDatabase {
             Effect.tryPromise({
               try: async () => {
                 const result = await client.execute({
-                  sql: "SELECT id, doc_id, page, chunk_index, content FROM chunks WHERE id = ?",
+                  sql: "SELECT id, doc_id, page, chunk_index, content, embedding_content FROM chunks WHERE id = ?",
                   args: [chunkId],
                 });
                 const row = result.rows[0];
@@ -245,7 +249,7 @@ export class LibSQLDatabase {
                 const page = opts?.page;
                 const args: any[] = [docId];
                 let sql =
-                  "SELECT id, doc_id, page, chunk_index, content FROM chunks WHERE doc_id = ?";
+                  "SELECT id, doc_id, page, chunk_index, content, embedding_content FROM chunks WHERE doc_id = ?";
                 if (typeof page === "number") {
                   sql += " AND page = ?";
                   args.push(page);
@@ -316,13 +320,14 @@ export class LibSQLDatabase {
                 // 3. Insert new chunks
                 for (const chunk of chunks) {
                   statements.push({
-                    sql: "INSERT INTO chunks (id, doc_id, page, chunk_index, content) VALUES (?, ?, ?, ?, ?)",
+                    sql: "INSERT INTO chunks (id, doc_id, page, chunk_index, content, embedding_content) VALUES (?, ?, ?, ?, ?, ?)",
                     args: [
                       chunk.id,
                       chunk.docId,
                       chunk.page,
                       chunk.chunkIndex,
                       chunk.content,
+                      chunk.embeddingContent ?? chunk.content,
                     ],
                   });
                 }
@@ -919,9 +924,26 @@ async function initSchema(client: Client, embeddingDim: number): Promise<void> {
       doc_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
       page INTEGER NOT NULL,
       chunk_index INTEGER NOT NULL,
-      content TEXT NOT NULL
+      content TEXT NOT NULL,
+      embedding_content TEXT
     )
   `);
+
+  try {
+    const columns = await client.execute(`PRAGMA table_info(chunks)`);
+    const hasEmbeddingContent = columns.rows.some(
+      (row: any) => row.name === "embedding_content",
+    );
+    if (!hasEmbeddingContent) {
+      await client.execute(`ALTER TABLE chunks ADD COLUMN embedding_content TEXT`);
+      await client.execute(
+        `UPDATE chunks SET embedding_content = content WHERE embedding_content IS NULL`,
+      );
+    }
+  } catch {
+    // Best-effort compatibility migration for databases created before
+    // embedding/display text were split.
+  }
 
   // Embeddings table with F32_BLOB for vectors
   await client.execute(`

@@ -79,6 +79,7 @@ type LibraryProcessedChunk = {
   page: number;
   chunkIndex: number;
   content: string;
+  embeddingContent?: string;
 };
 
 // ============================================================================
@@ -142,11 +143,66 @@ export class PDFLibrary extends Effect.Service<PDFLibrary>()("PDFLibrary", {
       { pageCount: number; chunks: LibraryProcessedChunk[] },
       unknown
     > => {
-      if (fileType === "markdown") return markdownExtractor.process(resolvedPath);
+      if (fileType === "markdown")
+        return markdownExtractor.process(resolvedPath);
       if (fileType === "docx" || fileType === "odt") {
         return officeExtractor.process(resolvedPath);
       }
       return pdfExtractor.process(resolvedPath);
+    };
+
+    const sectionFromChunkContent = (content: string): string | null => {
+      const heading = content.match(/^#{1,6}\s+(.+)$/m)?.[1]?.trim();
+      return heading || null;
+    };
+
+    const parseMarkdownTableRow = (line: string): string[] =>
+      line
+        .trim()
+        .replace(/^\|/, "")
+        .replace(/\|$/, "")
+        .split("|")
+        .map((cell) => cell.trim().replace(/\\\|/g, "|"));
+
+    const tableEmbeddingText = (content: string): string | null => {
+      const tables = content.match(
+        /\|[^\n]+\|\n\|[-:\s|]+\|\n(?:\|[^\n]+\|\n?)+/g,
+      );
+      if (!tables) return null;
+
+      const rendered: string[] = [];
+      for (const table of tables) {
+        const lines = table.trim().split("\n");
+        const columns = parseMarkdownTableRow(lines[0] ?? "");
+        if (columns.length === 0) continue;
+
+        const rows = lines.slice(2).map(parseMarkdownTableRow);
+        rendered.push(`Columns: ${columns.join(" | ")}`);
+        rows.forEach((row, index) => {
+          const values = columns.map(
+            (column, cellIndex) => `${column}=${row[cellIndex] ?? ""}`,
+          );
+          rendered.push(`Row ${index + 1}: ${values.join("; ")}`);
+        });
+      }
+
+      return rendered.length > 0 ? rendered.join("\n") : null;
+    };
+
+    const buildEmbeddingContent = (
+      doc: Document,
+      chunk: LibraryProcessedChunk,
+    ): string => {
+      const context = [`Document: ${doc.title}`];
+      const section = sectionFromChunkContent(chunk.content);
+      if (section) context.push(`Section: ${section}`);
+      if (chunk.page > 0) context.push(`Page: ${chunk.page}`);
+      const baseContent = chunk.embeddingContent ?? chunk.content;
+      const tableContent = tableEmbeddingText(baseContent);
+      const body = tableContent
+        ? `${baseContent}\n\n${tableContent}`
+        : baseContent;
+      return `${context.join("\n")}\n\n${body}`;
     };
 
     return {
@@ -236,6 +292,7 @@ export class PDFLibrary extends Effect.Service<PDFLibrary>()("PDFLibrary", {
             page: chunk.page,
             chunkIndex: chunk.chunkIndex,
             content: chunk.content,
+            embeddingContent: buildEmbeddingContent(doc, chunk),
           }));
 
           // Generate embeddings with gated batching to prevent WASM OOM.
@@ -247,7 +304,9 @@ export class PDFLibrary extends Effect.Service<PDFLibrary>()("PDFLibrary", {
             `Generating embeddings for ${chunks.length} chunks (batch size: ${batchSize})...`,
           );
 
-          const contents = chunks.map((c) => c.content);
+          const contents = chunkRecords.map(
+            (c) => c.embeddingContent ?? c.content,
+          );
           const embeddingRecords: Array<{
             chunkId: string;
             embedding: number[];
@@ -264,7 +323,9 @@ export class PDFLibrary extends Effect.Service<PDFLibrary>()("PDFLibrary", {
             const batchContents = contents.slice(batchStart, batchEnd);
 
             yield* Effect.logDebug(
-              `  Batch ${batchIdx}: generating embeddings for indices ${batchStart}-${batchEnd - 1}`,
+              `  Batch ${batchIdx}: generating embeddings for indices ${batchStart}-${
+                batchEnd - 1
+              }`,
             );
 
             // Generate embeddings for this batch with bounded concurrency
@@ -288,7 +349,9 @@ export class PDFLibrary extends Effect.Service<PDFLibrary>()("PDFLibrary", {
             }
 
             yield* Effect.logDebug(
-              `  Batch ${batchIdx}: prepared embeddings for ${id}-${batchStart} to ${id}-${batchEnd - 1}`,
+              `  Batch ${batchIdx}: prepared embeddings for ${id}-${batchStart} to ${id}-${
+                batchEnd - 1
+              }`,
             );
 
             yield* Effect.logDebug(
@@ -344,7 +407,7 @@ export class PDFLibrary extends Effect.Service<PDFLibrary>()("PDFLibrary", {
           const title = options.title ?? existing.title;
           const tags = options.tags ?? existing.tags;
           const baseMetadata: Record<string, unknown> =
-            options.metadata ?? (existing.metadata ?? {});
+            options.metadata ?? existing.metadata ?? {};
 
           const processResult = yield* Effect.either(
             processDocument(resolvedPath, fileType),
@@ -387,13 +450,19 @@ export class PDFLibrary extends Effect.Service<PDFLibrary>()("PDFLibrary", {
             page: chunk.page,
             chunkIndex: chunk.chunkIndex,
             content: chunk.content,
+            embeddingContent: buildEmbeddingContent(doc, chunk),
           }));
 
           // Generate all embeddings before touching the DB (non-destructive).
           const batchSize = DEFAULT_QUEUE_CONFIG.batchSize;
-          const contents = chunks.map((c) => c.content);
+          const contents = chunkRecords.map(
+            (c) => c.embeddingContent ?? c.content,
+          );
 
-          const embeddingRecords: Array<{ chunkId: string; embedding: number[] }> = [];
+          const embeddingRecords: Array<{
+            chunkId: string;
+            embedding: number[];
+          }> = [];
 
           for (
             let batchIdx = 0;
@@ -447,7 +516,9 @@ export class PDFLibrary extends Effect.Service<PDFLibrary>()("PDFLibrary", {
 
           const existing = yield* db.getDocument(docId);
           if (!existing) {
-            return yield* Effect.fail(new DocumentNotFoundError({ query: docId }));
+            return yield* Effect.fail(
+              new DocumentNotFoundError({ query: docId }),
+            );
           }
 
           const chunks = yield* db.listChunksByDocument(docId);
@@ -460,8 +531,10 @@ export class PDFLibrary extends Effect.Service<PDFLibrary>()("PDFLibrary", {
           }
 
           const batchSize = DEFAULT_QUEUE_CONFIG.batchSize;
-          const embeddingRecords: Array<{ chunkId: string; embedding: number[] }> =
-            [];
+          const embeddingRecords: Array<{
+            chunkId: string;
+            embedding: number[];
+          }> = [];
 
           for (
             let batchIdx = 0;
@@ -471,7 +544,9 @@ export class PDFLibrary extends Effect.Service<PDFLibrary>()("PDFLibrary", {
             const batchStart = batchIdx * batchSize;
             const batchEnd = Math.min(batchStart + batchSize, chunks.length);
             const batchChunks = chunks.slice(batchStart, batchEnd);
-            const batchContents = batchChunks.map((c) => c.content);
+            const batchContents = batchChunks.map(
+              (c) => c.embeddingContent ?? buildEmbeddingContent(existing, c),
+            );
 
             const batchEmbeddings = yield* embedProvider.embedBatch(
               batchContents,
@@ -541,7 +616,10 @@ export class PDFLibrary extends Effect.Service<PDFLibrary>()("PDFLibrary", {
                 // Combine signals for matches found in both vector + FTS.
                 const vectorScore = exists.vectorScore ?? exists.score;
                 const ftsScore = fts.score; // already normalized 0..1
-                const combined = Math.min(1, Math.max(vectorScore, ftsScore) * 1.05);
+                const combined = Math.min(
+                  1,
+                  Math.max(vectorScore, ftsScore) * 1.05,
+                );
 
                 const boosted = new SearchResult({
                   ...exists,

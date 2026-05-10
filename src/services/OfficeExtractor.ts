@@ -58,6 +58,7 @@ type XmlNode = {
   nodeValue?: string | null;
   firstChild: XmlNode | null;
   nextSibling: XmlNode | null;
+  parentNode?: XmlNode | null;
   getAttribute?: (name: string) => string | null;
 };
 
@@ -69,6 +70,22 @@ const XML_ELEMENT_NODE = 1;
 const XML_TEXT_NODE = 3;
 const XML_CDATA_NODE = 4;
 const XML_DOCUMENT_NODE = 9;
+
+const HTML_BLOCK_NAMES = new Set([
+  "h1",
+  "h2",
+  "h3",
+  "h4",
+  "h5",
+  "h6",
+  "p",
+  "table",
+]);
+const ODF_BLOCK_NAMES = new Set(["h", "p", "table"]);
+const TABLE_ROW_NAMES = new Set(["tr", "table-row"]);
+const TABLE_CELL_NAMES = new Set(["td", "th", "table-cell"]);
+const TABLE_NAMES = new Set(["table"]);
+const HTML_HEADING_RE = /^h[1-6]$/;
 
 // ============================================================================
 // Service Definition
@@ -122,16 +139,6 @@ function sectionsFromPlainText(text: string): ExtractedOfficeSection[] {
   return [{ section: 1, heading: "", text: cleaned }];
 }
 
-async function extractDocx(path: string): Promise<ExtractedOfficeDocument> {
-  const result = await mammoth.extractRawText({ path });
-  const sections = sectionsFromPlainText(result.value);
-  return {
-    fileType: "docx",
-    sections,
-    sectionCount: sections.length,
-  };
-}
-
 function localName(node: XmlNode): string {
   return node.localName || node.nodeName.split(":").pop() || "";
 }
@@ -164,20 +171,78 @@ function extractNodeText(node: XmlNode): string {
   return text;
 }
 
-function directElementsByLocalName(
-  root: XmlDocument,
-  names: Set<string>,
-): XmlNode[] {
-  const elements = Array.from(
-    root.getElementsByTagName("*"),
-  ) as unknown as XmlNode[];
-  return elements.filter((element) => names.has(localName(element)));
+function cleanExtractedText(text: string): string {
+  return sanitizeText(text)
+    .replace(/\u00a0/g, " ")
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
-function sectionsFromOdfXml(xml: string): ExtractedOfficeSection[] {
-  const parser = new DOMParser();
-  const doc = parser.parseFromString(xml, "text/xml");
-  const bodyElements = directElementsByLocalName(doc, new Set(["h", "p"]));
+function escapeTableCell(value: string): string {
+  return cleanExtractedText(value).replace(/\|/g, "\\|");
+}
+
+function childElementsByLocalName(
+  root: XmlNode,
+  names: Set<string>,
+): XmlNode[] {
+  const elements: XmlNode[] = [];
+
+  for (let child = root.firstChild; child; child = child.nextSibling) {
+    if (child.nodeType === XML_ELEMENT_NODE && names.has(localName(child))) {
+      elements.push(child);
+    }
+  }
+
+  return elements;
+}
+
+function descendantElementsByLocalName(
+  root: XmlNode,
+  names: Set<string>,
+): XmlNode[] {
+  const elements: XmlNode[] = [];
+
+  for (let child = root.firstChild; child; child = child.nextSibling) {
+    if (child.nodeType !== XML_ELEMENT_NODE) continue;
+    if (names.has(localName(child))) elements.push(child);
+    elements.push(...descendantElementsByLocalName(child, names));
+  }
+
+  return elements;
+}
+
+function renderOfficeTable(table: XmlNode): string {
+  const rows = descendantElementsByLocalName(table, TABLE_ROW_NAMES)
+    .map((row) =>
+      childElementsByLocalName(row, TABLE_CELL_NAMES).map((cell) =>
+        escapeTableCell(extractNodeText(cell)),
+      ),
+    )
+    .filter((row) => row.some(Boolean));
+
+  if (rows.length === 0) return "";
+
+  const width = Math.max(...rows.map((row) => row.length));
+  const paddedRows = rows.map((row) => [
+    ...row,
+    ...Array.from({ length: width - row.length }, () => ""),
+  ]);
+  const separator = Array.from({ length: width }, () => "---");
+  const renderRow = (cells: string[]) => `| ${cells.join(" | ")} |`;
+
+  return [
+    renderRow(paddedRows[0] ?? []),
+    renderRow(separator),
+    ...paddedRows.slice(1).map(renderRow),
+  ].join("\n");
+}
+
+function sectionsFromBlockElements(
+  blockElements: XmlNode[],
+  isHeading: (name: string) => boolean,
+): ExtractedOfficeSection[] {
   const sections: ExtractedOfficeSection[] = [];
 
   let currentHeading = "";
@@ -195,16 +260,15 @@ function sectionsFromOdfXml(xml: string): ExtractedOfficeSection[] {
     currentParagraphs = [];
   };
 
-  for (const element of bodyElements) {
+  for (const element of blockElements) {
     const name = localName(element);
-    const text = sanitizeText(extractNodeText(element))
-      .replace(/[ \t]+/g, " ")
-      .replace(/\n{3,}/g, "\n\n")
-      .trim();
-
+    const text =
+      name === "table"
+        ? renderOfficeTable(element)
+        : cleanExtractedText(extractNodeText(element));
     if (!text) continue;
 
-    if (name === "h") {
+    if (isHeading(name)) {
       flush();
       currentHeading = text;
     } else {
@@ -214,6 +278,63 @@ function sectionsFromOdfXml(xml: string): ExtractedOfficeSection[] {
 
   flush();
   return sections;
+}
+
+function sectionsFromHtml(html: string): ExtractedOfficeSection[] {
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(
+    `<root>${html.replace(/&nbsp;/g, " ")}</root>`,
+    "text/xml",
+  );
+  const blockElements = directElementsByLocalName(doc, HTML_BLOCK_NAMES);
+  return sectionsFromBlockElements(blockElements, (name) =>
+    HTML_HEADING_RE.test(name),
+  );
+}
+
+async function extractDocx(path: string): Promise<ExtractedOfficeDocument> {
+  const htmlResult = await mammoth.convertToHtml({ path });
+  let sections = sectionsFromHtml(htmlResult.value);
+
+  if (sections.length === 0) {
+    const rawResult = await mammoth.extractRawText({ path });
+    sections = sectionsFromPlainText(rawResult.value);
+  }
+
+  return {
+    fileType: "docx",
+    sections,
+    sectionCount: sections.length,
+  };
+}
+
+function directElementsByLocalName(
+  root: XmlDocument,
+  names: Set<string>,
+): XmlNode[] {
+  const elements = Array.from(
+    root.getElementsByTagName("*"),
+  ) as unknown as XmlNode[];
+  return elements.filter(
+    (element) =>
+      names.has(localName(element)) &&
+      !hasAncestorWithLocalName(element, TABLE_NAMES),
+  );
+}
+
+function hasAncestorWithLocalName(element: XmlNode, names: Set<string>): boolean {
+  for (let parent = element.parentNode; parent; parent = parent.parentNode) {
+    if (names.has(localName(parent))) return true;
+  }
+
+  return false;
+}
+
+function sectionsFromOdfXml(xml: string): ExtractedOfficeSection[] {
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(xml, "text/xml");
+  const bodyElements = directElementsByLocalName(doc, ODF_BLOCK_NAMES);
+  return sectionsFromBlockElements(bodyElements, (name) => name === "h");
 }
 
 async function extractOdt(path: string): Promise<ExtractedOfficeDocument> {

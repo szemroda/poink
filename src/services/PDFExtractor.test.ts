@@ -3,7 +3,11 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { sanitizeText, chunkText } from "./PDFExtractor.js";
+import {
+  cleanPDFPageArtifacts,
+  sanitizeText,
+  chunkText,
+} from "./PDFExtractor.js";
 
 // ============================================================================
 // sanitizeText() Tests
@@ -57,6 +61,114 @@ describe("sanitizeText", () => {
   });
 });
 
+describe("cleanPDFPageArtifacts", () => {
+  test("removes repeated headers, footers, and page numbers", () => {
+    const pages = cleanPDFPageArtifacts([
+      {
+        page: 1,
+        text: [
+          "Quarterly Report",
+          "Revenue increased in the first quarter.",
+          "Confidential",
+          "Page 1 of 3",
+        ].join("\n"),
+      },
+      {
+        page: 2,
+        text: [
+          "Quarterly Report",
+          "Margins improved in the second quarter.",
+          "Confidential",
+          "Page 2 of 3",
+        ].join("\n"),
+      },
+      {
+        page: 3,
+        text: [
+          "Quarterly Report",
+          "Cash flow remained stable.",
+          "Confidential",
+          "Page 3 of 3",
+        ].join("\n"),
+      },
+    ]);
+
+    expect(pages.map((page) => page.text).join("\n")).not.toContain(
+      "Quarterly Report",
+    );
+    expect(pages.map((page) => page.text).join("\n")).not.toContain(
+      "Confidential",
+    );
+    expect(pages.map((page) => page.text).join("\n")).not.toContain("Page 1");
+    expect(pages[0].text).toContain("Revenue increased");
+    expect(pages[1].text).toContain("Margins improved");
+    expect(pages[2].text).toContain("Cash flow remained");
+  });
+
+  test("keeps repeated body lines that are not page edges", () => {
+    const pages = cleanPDFPageArtifacts([
+      {
+        page: 1,
+        text: [
+          "Header",
+          "Intro unique 1",
+          "More unique 1",
+          "Important repeated finding.",
+          "Detail unique 1",
+          "Closing unique 1",
+          "1",
+        ].join("\n"),
+      },
+      {
+        page: 2,
+        text: [
+          "Header",
+          "Intro unique 2",
+          "More unique 2",
+          "Important repeated finding.",
+          "Detail unique 2",
+          "Closing unique 2",
+          "2",
+        ].join("\n"),
+      },
+    ]);
+
+    expect(pages[0].text).toContain("Important repeated finding.");
+    expect(pages[1].text).toContain("Important repeated finding.");
+    expect(pages.map((page) => page.text).join("\n")).not.toContain("Header");
+  });
+
+  test("keeps numeric-only body lines", () => {
+    const pages = cleanPDFPageArtifacts([
+      {
+        page: 1,
+        text: [
+          "Header",
+          "Intro unique 1",
+          "42",
+          "Body after number.",
+          "1",
+        ].join("\n"),
+      },
+      {
+        page: 2,
+        text: [
+          "Header",
+          "Intro unique 2",
+          "42",
+          "Other body after number.",
+          "2",
+        ].join("\n"),
+      },
+    ]);
+
+    expect(pages[0].text).toContain("42");
+    expect(pages[1].text).toContain("42");
+    expect(pages[0].text).not.toContain("\n1");
+    expect(pages[1].text).not.toContain("\n2");
+  });
+});
+
 // ============================================================================
 // chunkText() Tests
 // ============================================================================
@@ -86,6 +198,22 @@ describe("chunkText", () => {
     expect(chunks[0]).toBe("This is international text.");
   });
 
+  test("preserves likely PDF section titles as heading context", () => {
+    const input = [
+      "Executive Summary",
+      "This paragraph should remain under the section heading.",
+      "",
+      "FINDINGS",
+      "These are the findings in body text.",
+    ].join("\n");
+
+    const chunks = chunkText(input, 10_000, 0);
+
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0]).toContain("# Executive Summary");
+    expect(chunks[0]).toContain("# FINDINGS");
+  });
+
   test("filters tiny chunks (<20 chars)", () => {
     const input = ["Short", "", "This is a longer paragraph that should remain."]
       .join("\n");
@@ -100,5 +228,21 @@ describe("chunkText", () => {
     expect(() => chunkText(input, 100, 100)).toThrow(
       "chunkOverlap (100) must be smaller than chunkSize (100)",
     );
+  });
+
+  test("overlaps adjacent paragraph chunks", () => {
+    const input = [
+      "First paragraph has context that should carry forward.",
+      "",
+      "Second paragraph starts a new chunk with its own content.",
+      "",
+      "Third paragraph completes the sample.",
+    ].join("\n");
+
+    const chunks = chunkText(input, 70, 35);
+
+    expect(chunks.length).toBeGreaterThan(1);
+    expect(chunks[1]).toContain("First paragraph has context");
+    expect(chunks[1]).toContain("Second paragraph starts");
   });
 });

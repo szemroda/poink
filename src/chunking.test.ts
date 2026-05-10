@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import {
+  applyAdjacentChunkOverlap,
   assertValidChunking,
   buildChunkerMetadata,
+  buildChunkOverlapPrefix,
   inferFileTypeFromPath,
 } from "./chunking.js";
 
@@ -30,6 +32,32 @@ describe("document file type inference", () => {
       buildChunkerMetadata("pdf", { chunkSize: 100, chunkOverlap: 150 }),
     ).toThrow(
       "chunkOverlap (150) must be smaller than chunkSize (100)",
+    );
+  });
+});
+
+describe("chunk overlap helpers", () => {
+  test("uses complete trailing sentences for overlap when possible", () => {
+    const overlap = buildChunkOverlapPrefix(
+      "First sentence. Second sentence. Third sentence.",
+      20,
+    );
+
+    expect(overlap).toBe("Third sentence.");
+  });
+
+  test("applies adjacent overlap between chunks", () => {
+    const chunks = applyAdjacentChunkOverlap(
+      [
+        "Alpha starts here. Beta carries forward.",
+        "Gamma starts the next chunk.",
+      ],
+      24,
+    );
+
+    expect(chunks[0]).toBe("Alpha starts here. Beta carries forward.");
+    expect(chunks[1]).toBe(
+      "Beta carries forward.\n\nGamma starts the next chunk.",
     );
   });
 });

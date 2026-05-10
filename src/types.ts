@@ -48,6 +48,7 @@ export class PDFChunk extends Schema.Class<PDFChunk>("PDFChunk")({
   page: Schema.Number,
   chunkIndex: Schema.Number,
   content: Schema.String,
+  embeddingContent: Schema.optional(Schema.String),
 }) {}
 
 /**
@@ -198,8 +199,8 @@ export function expandHomePath(path: string): string {
   return path;
 }
 
-const DEFAULT_CHUNK_SIZE = 512;
-const DEFAULT_CHUNK_OVERLAP = 50;
+const DEFAULT_CHUNK_SIZE = 2000;
+const DEFAULT_CHUNK_OVERLAP = 200;
 
 function getLibraryConfigProps(libraryPath: string) {
   assertValidChunking(DEFAULT_CHUNK_SIZE, DEFAULT_CHUNK_OVERLAP);

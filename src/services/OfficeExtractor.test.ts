@@ -102,6 +102,77 @@ async function writeDocxFile(name: string): Promise<string> {
   return path;
 }
 
+async function writeStyledDocxFile(name: string): Promise<string> {
+  const path = join(tempDir, name);
+  const zip = new JSZip();
+  zip.file(
+    "[Content_Types].xml",
+    `<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+  <Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
+</Types>`,
+  );
+  zip.file(
+    "_rels/.rels",
+    `<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>`,
+  );
+  zip.file(
+    "word/_rels/document.xml.rels",
+    `<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rIdStyles" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+</Relationships>`,
+  );
+  zip.file(
+    "word/styles.xml",
+    `<?xml version="1.0" encoding="UTF-8"?>
+<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:style w:type="paragraph" w:styleId="Heading1">
+    <w:name w:val="heading 1"/>
+  </w:style>
+  <w:style w:type="paragraph" w:styleId="Heading2">
+    <w:name w:val="heading 2"/>
+  </w:style>
+</w:styles>`,
+  );
+  zip.file(
+    "word/document.xml",
+    `<?xml version="1.0" encoding="UTF-8"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p>
+      <w:pPr><w:pStyle w:val="Heading1"/></w:pPr>
+      <w:r><w:t>Research Notes</w:t></w:r>
+    </w:p>
+    <w:p><w:r><w:t>This paragraph belongs under the research notes heading.</w:t></w:r></w:p>
+    <w:p>
+      <w:pPr><w:pStyle w:val="Heading2"/></w:pPr>
+      <w:r><w:t>Methods</w:t></w:r>
+    </w:p>
+    <w:p><w:r><w:t>This paragraph belongs under the methods heading.</w:t></w:r></w:p>
+    <w:tbl>
+      <w:tr>
+        <w:tc><w:p><w:r><w:t>Metric</w:t></w:r></w:p></w:tc>
+        <w:tc><w:p><w:r><w:t>Value</w:t></w:r></w:p></w:tc>
+      </w:tr>
+      <w:tr>
+        <w:tc><w:p><w:r><w:t>Accuracy</w:t></w:r></w:p></w:tc>
+        <w:tc><w:p><w:r><w:t>High</w:t></w:r></w:p></w:tc>
+      </w:tr>
+    </w:tbl>
+  </w:body>
+</w:document>`,
+  );
+  await Bun.write(path, await zip.generateAsync({ type: "uint8array" }));
+  return path;
+}
+
 describe("OfficeExtractor", () => {
   test("extracts sections from flat OpenDocument text XML", async () => {
     const path = writeTempFile("notes.fodt", sampleFodtXml());
@@ -140,5 +211,98 @@ describe("OfficeExtractor", () => {
     expect(result.sectionCount).toBe(1);
     expect(result.sections[0].text).toContain("DOCX Research Notes");
     expect(result.sections[0].text).toContain("document pipeline");
+  });
+
+  test("preserves DOCX heading styles as sections", async () => {
+    const path = await writeStyledDocxFile("styled-headings.docx");
+    const result = await runExtract(path);
+
+    expect(result.fileType).toBe("docx");
+    expect(result.sectionCount).toBe(2);
+    expect(result.sections[0].heading).toBe("Research Notes");
+    expect(result.sections[0].text).toContain("research notes heading");
+    expect(result.sections[1].heading).toBe("Methods");
+    expect(result.sections[1].text).toContain("methods heading");
+    expect(result.sections[1].text).toContain("| Metric | Value |");
+    expect(result.sections[1].text).toContain("| Accuracy | High |");
+  });
+
+  test("preserves ODT table structure as markdown tables", async () => {
+    const path = writeTempFile(
+      "table.fodt",
+      `<?xml version="1.0" encoding="UTF-8"?>
+<office:document
+  xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+  xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"
+  xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0">
+  <office:body>
+    <office:text>
+      <text:h text:outline-level="1">Results</text:h>
+      <table:table>
+        <table:table-row>
+          <table:table-cell><text:p>Metric</text:p></table:table-cell>
+          <table:table-cell><text:p>Value</text:p></table:table-cell>
+        </table:table-row>
+        <table:table-row>
+          <table:table-cell><text:p>Recall</text:p></table:table-cell>
+          <table:table-cell><text:p>High</text:p></table:table-cell>
+        </table:table-row>
+      </table:table>
+      <text:p>Paragraph after the table stays in the same section.</text:p>
+    </office:text>
+  </office:body>
+</office:document>`,
+    );
+
+    const result = await runExtract(path);
+
+    expect(result.sections).toHaveLength(1);
+    expect(result.sections[0].heading).toBe("Results");
+    expect(result.sections[0].text).toContain("| Metric | Value |");
+    expect(result.sections[0].text).toContain("| Recall | High |");
+    expect(result.sections[0].text).toContain("Paragraph after the table");
+  });
+
+  test("processes large Office tables with repeated headers", async () => {
+    const rows = Array.from(
+      { length: 140 },
+      (_, index) => `
+        <table:table-row>
+          <table:table-cell><text:p>Row ${index}</text:p></table:table-cell>
+          <table:table-cell><text:p>Value ${index} with extra text</text:p></table:table-cell>
+        </table:table-row>`,
+    ).join("\n");
+    const path = writeTempFile(
+      "large-table.fodt",
+      `<?xml version="1.0" encoding="UTF-8"?>
+<office:document
+  xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+  xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"
+  xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0">
+  <office:body>
+    <office:text>
+      <text:h text:outline-level="1">Large Results</text:h>
+      <table:table>
+        <table:table-row>
+          <table:table-cell><text:p>Name</text:p></table:table-cell>
+          <table:table-cell><text:p>Value</text:p></table:table-cell>
+        </table:table-row>
+        ${rows}
+      </table:table>
+    </office:text>
+  </office:body>
+</office:document>`,
+    );
+
+    const result = await runProcess(path);
+    const tableChunks = result.chunks.filter((chunk) =>
+      chunk.content.includes("| Name | Value |"),
+    );
+
+    expect(tableChunks.length).toBeGreaterThan(1);
+    for (const chunk of tableChunks) {
+      expect(chunk.content).toContain("| Name | Value |");
+      expect(chunk.content).toContain("| --- | --- |");
+    }
   });
 });

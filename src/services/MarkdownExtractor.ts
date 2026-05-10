@@ -14,7 +14,11 @@ import remarkGfm from "remark-gfm";
 import { toString as mdastToString } from "mdast-util-to-string";
 import matter from "gray-matter";
 import type { Root, Heading, RootContent } from "mdast";
-import { assertValidChunking } from "../chunking.js";
+import {
+  assertValidChunking,
+  chunkNormalizedText,
+  preprocessLargeMarkdownTables,
+} from "../chunking.js";
 import { resolveUserPath } from "../pathUtils.js";
 import { LibraryConfig } from "../types.js";
 
@@ -53,6 +57,7 @@ export interface ExtractedSection {
   section: number;
   heading: string;
   headingLevel: number;
+  headingPath: string[];
   text: string;
 }
 
@@ -144,6 +149,62 @@ function isFrontmatterNode(node: RootContent): boolean {
   return node.type === "yaml" || (node as { type: string }).type === "toml";
 }
 
+function escapeTableCell(value: string): string {
+  return value.replace(/\|/g, "\\|").replace(/\s+/g, " ").trim();
+}
+
+function renderTableSeparator(align: unknown): string {
+  if (align === "left") return ":---";
+  if (align === "right") return "---:";
+  if (align === "center") return ":---:";
+  return "---";
+}
+
+function renderMarkdownTable(node: RootContent): string | null {
+  if (node.type !== "table") return null;
+
+  const table = node as {
+    align?: unknown[];
+    children?: Array<{ children?: RootContent[] }>;
+  };
+  const rows =
+    table.children?.map((row) =>
+      (row.children ?? []).map((cell) => escapeTableCell(mdastToString(cell))),
+    ) ?? [];
+
+  if (rows.length === 0) return "";
+
+  const width = Math.max(...rows.map((row) => row.length));
+  const paddedRows = rows.map((row) => [
+    ...row,
+    ...Array.from({ length: width - row.length }, () => ""),
+  ]);
+  const align = table.align ?? [];
+  const separator = Array.from({ length: width }, (_, index) =>
+    renderTableSeparator(align[index]),
+  );
+
+  const renderRow = (cells: string[]) => `| ${cells.join(" | ")} |`;
+  return [
+    renderRow(paddedRows[0] ?? []),
+    renderRow(separator),
+    ...paddedRows.slice(1).map(renderRow),
+  ].join("\n");
+}
+
+function renderMarkdownNode(node: RootContent): string {
+  return renderMarkdownTable(node) ?? mdastToString(node);
+}
+
+function compactHeadingPath(
+  headingStack: string[],
+  headingLevel: number,
+): string[] {
+  return headingStack
+    .slice(0, headingLevel)
+    .filter((heading): heading is string => Boolean(heading));
+}
+
 /**
  * Parse markdown content into AST and extract sections
  */
@@ -155,7 +216,9 @@ function parseMarkdownAST(content: string): ExtractedSection[] {
   let currentSection = 0;
   let currentHeading = "";
   let currentHeadingLevel = 0;
+  let currentHeadingPath: string[] = [];
   let currentContent: RootContent[] = [];
+  const headingStack: string[] = [];
 
   /**
    * Flush current section to results
@@ -163,7 +226,7 @@ function parseMarkdownAST(content: string): ExtractedSection[] {
   function flushSection() {
     if (currentContent.length > 0 || currentHeading) {
       const text = currentContent
-        .map((node) => mdastToString(node))
+        .map((node) => renderMarkdownNode(node))
         .join("\n\n")
         .trim();
 
@@ -172,6 +235,7 @@ function parseMarkdownAST(content: string): ExtractedSection[] {
           section: currentSection || 1,
           heading: currentHeading,
           headingLevel: currentHeadingLevel,
+          headingPath: currentHeadingPath,
           text,
         });
       }
@@ -193,6 +257,12 @@ function parseMarkdownAST(content: string): ExtractedSection[] {
       currentSection = sections.length + 1;
       currentHeading = mdastToString(node);
       currentHeadingLevel = (node as Heading).depth;
+      headingStack[currentHeadingLevel - 1] = currentHeading;
+      headingStack.length = currentHeadingLevel;
+      currentHeadingPath = compactHeadingPath(
+        headingStack,
+        currentHeadingLevel,
+      );
       currentContent = [];
     } else {
       // Add to current section content
@@ -211,6 +281,7 @@ function parseMarkdownAST(content: string): ExtractedSection[] {
       section: 1,
       heading: "",
       headingLevel: 0,
+      headingPath: [],
       text: bodyContent.trim(),
     });
   }
@@ -302,64 +373,6 @@ function preprocessLargeCodeBlocks(
 }
 
 /**
- * Split a large table into smaller chunks
- *
- * @param table - The full table markdown
- * @param maxSize - Maximum size per chunk
- * @returns Array of table chunks (each with header)
- */
-function splitTable(table: string, maxSize: number): string[] {
-  const lines = table.trim().split("\n");
-  if (lines.length < 3) return [table]; // Need at least header + separator + 1 row
-
-  const header = lines[0];
-  const separator = lines[1];
-  const rows = lines.slice(2);
-
-  const headerOverhead = header.length + separator.length + 2;
-  const effectiveMax = maxSize - headerOverhead;
-
-  const chunks: string[] = [];
-  let currentRows: string[] = [];
-  let currentLength = 0;
-
-  for (const row of rows) {
-    const rowLength = row.length + 1;
-
-    if (currentLength + rowLength > effectiveMax && currentRows.length > 0) {
-      chunks.push([header, separator, ...currentRows].join("\n"));
-      currentRows = [];
-      currentLength = 0;
-    }
-
-    currentRows.push(row);
-    currentLength += rowLength;
-  }
-
-  if (currentRows.length > 0) {
-    chunks.push([header, separator, ...currentRows].join("\n"));
-  }
-
-  return chunks;
-}
-
-/**
- * Pre-process text to split large tables
- */
-function preprocessLargeTables(text: string, maxTableSize: number): string {
-  // Match markdown tables: header | separator | rows
-  return text.replace(
-    /(\|[^\n]+\|\n\|[-:\s|]+\|\n(?:\|[^\n]+\|\n?)+)/g,
-    (match) => {
-      if (match.length <= maxTableSize) {
-        return match;
-      }
-      return splitTable(match, maxTableSize).join("\n\n");
-    },
-  );
-}
-
-/**
  * Chunk text with intelligent splitting
  * Handles code blocks and tables specially to prevent oversized chunks
  */
@@ -369,9 +382,6 @@ function chunkText(
   chunkOverlap: number,
 ): string[] {
   assertValidChunking(chunkSize, chunkOverlap);
-  const sentenceSplitStep = chunkSize - chunkOverlap;
-
-  const chunks: string[] = [];
 
   // Sanitize first to remove null bytes
   const sanitized = sanitizeText(text);
@@ -380,7 +390,7 @@ function chunkText(
   // Use 80% of chunk size as max to leave room for surrounding context
   const maxElementSize = Math.floor(chunkSize * 0.8);
   let processed = preprocessLargeCodeBlocks(sanitized, maxElementSize);
-  processed = preprocessLargeTables(processed, maxElementSize);
+  processed = preprocessLargeMarkdownTables(processed, maxElementSize);
 
   // Now extract code blocks for preservation during text chunking
   const codeBlocks: { placeholder: string; content: string }[] = [];
@@ -414,66 +424,14 @@ function chunkText(
     return result ? [result] : [];
   }
 
-  // Try to split on paragraph boundaries first
-  const paragraphs = cleaned.split(/\n\n+/);
-  let currentChunk = "";
-
-  for (const para of paragraphs) {
-    if (currentChunk.length + para.length + 2 <= chunkSize) {
-      currentChunk += (currentChunk ? "\n\n" : "") + para;
-    } else {
-      if (currentChunk) {
-        chunks.push(currentChunk);
-      }
-
-      // If paragraph itself is too long, split by sentences
-      if (para.length > chunkSize) {
-        const sentences = para.match(/[^.!?]+[.!?]+/g) || [para];
-        currentChunk = "";
-
-        for (const sentence of sentences) {
-          if (currentChunk.length + sentence.length <= chunkSize) {
-            currentChunk += sentence;
-          } else {
-            if (currentChunk) {
-              chunks.push(currentChunk.trim());
-            }
-            // If sentence is still too long, hard split with overlap
-            if (sentence.length > chunkSize) {
-              for (
-                let i = 0;
-                i < sentence.length;
-                i += sentenceSplitStep
-              ) {
-                chunks.push(sentence.slice(i, i + chunkSize).trim());
-              }
-              currentChunk = "";
-            } else {
-              currentChunk = sentence;
-            }
-          }
-        }
-      } else {
-        currentChunk = para;
-      }
-    }
-  }
-
-  if (currentChunk) {
-    chunks.push(currentChunk);
-  }
-
-  // Restore code blocks in all chunks
-  const restoredChunks = chunks.map((chunk) => {
+  const chunks = chunkNormalizedText(cleaned, chunkSize, chunkOverlap);
+  return chunks.map((chunk) => {
     let restored = chunk;
     for (const { placeholder, content } of codeBlocks) {
       restored = restored.replace(placeholder, content);
     }
     return restored;
   });
-
-  // Filter tiny chunks (less than 20 chars)
-  return restoredChunks.filter((c) => c.length > 20);
 }
 
 /**
@@ -552,9 +510,12 @@ export const MarkdownExtractorLive = Layer.effect(
 
           const allChunks: ProcessedChunk[] = [];
 
-          for (const { section, heading, text } of sections) {
-            // Include heading in chunk content for better context
-            const sectionContent = heading ? `# ${heading}\n\n${text}` : text;
+          for (const { section, heading, headingPath, text } of sections) {
+            const contextHeading =
+              headingPath.length > 0 ? headingPath.join(" > ") : heading;
+            const sectionContent = contextHeading
+              ? `# ${contextHeading}\n\n${text}`
+              : text;
             const sectionChunks = chunkText(
               sectionContent,
               config.chunkSize,
