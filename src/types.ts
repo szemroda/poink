@@ -5,7 +5,7 @@
 import { Schema } from "effect";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
 import { homedir } from "os";
-import { dirname, join } from "path";
+import { dirname, join, win32 } from "path";
 import { assertValidChunking } from "./chunking.js";
 
 // ============================================================================
@@ -187,14 +187,24 @@ function resolveHomeDir(): string {
   return process.env.HOME || process.env.USERPROFILE || homedir() || ".";
 }
 
+function isWindowsPath(path: string): boolean {
+  return /^[A-Za-z]:[\\/]/.test(path) || path.startsWith("\\\\");
+}
+
+function joinForBase(basePath: string, ...segments: string[]): string {
+  return isWindowsPath(basePath)
+    ? win32.join(basePath, ...segments)
+    : join(basePath, ...segments);
+}
+
 export function getDefaultLibraryPath(): string {
-  return join(resolveHomeDir(), ".poink");
+  return joinForBase(resolveHomeDir(), ".poink");
 }
 
 export function expandHomePath(path: string): string {
   if (path === "~") return resolveHomeDir();
   if (path.startsWith("~/") || path.startsWith("~\\")) {
-    return join(resolveHomeDir(), path.slice(2));
+    return joinForBase(resolveHomeDir(), path.slice(2));
   }
   return path;
 }
@@ -212,7 +222,7 @@ function getLibraryConfigProps(libraryPath: string) {
 
   return {
     libraryPath,
-    dbPath: join(libraryPath, "library.db"),
+    dbPath: joinForBase(libraryPath, "library.db"),
     chunkSize: DEFAULT_CHUNK_SIZE,
     chunkOverlap: DEFAULT_CHUNK_OVERLAP,
   };
@@ -568,7 +578,7 @@ export function resolveLibraryPath(config: Config): string {
 }
 
 export function resolveLibraryDbPath(config: Config): string {
-  return join(resolveLibraryPath(config), "library.db");
+  return joinForBase(resolveLibraryPath(config), "library.db");
 }
 
 export function resolveLibsqlUrl(config: Config): string {

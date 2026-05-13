@@ -4,6 +4,17 @@
   "description": "Local document knowledge base with semantic search, enrichment, and MCP support.",
   "license": "MIT",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/szemroda/poink.git"
+  },
+  "bugs": {
+    "url": "https://github.com/szemroda/poink/issues"
+  },
+  "homepage": "https://github.com/szemroda/poink#readme",
+  "publishConfig": {
+    "access": "public"
+  },
   "main": "./dist/index.js",
   "exports": {
     ".": "./dist/index.js"
