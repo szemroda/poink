@@ -3,7 +3,7 @@
  */
 
 import { Effect, Layer } from "effect";
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import { createClient } from "@libsql/client";
 import { Database } from "./Database.js";
 import { LibSQLDatabase } from "./LibSQLDatabase.js";

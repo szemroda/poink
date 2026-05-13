@@ -1,10 +1,23 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { createServer } from "net";
 import { tmpdir } from "os";
 import { join } from "path";
 import { Client } from "@modelcontextprotocol/sdk/client";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+
+function nodeTsxArgs(args: string[]): string[] {
+  return ["--import", "tsx", "src/cli.ts", ...args];
+}
+
+function npmCommand(): string {
+  return process.platform === "win32" ? "npm.cmd" : "npm";
+}
+
+function sleep(delayMs: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, delayMs));
+}
 
 function makeTestConfig(
   libraryPath: string,
@@ -109,16 +122,15 @@ function runCli(
     ...(opts?.env ?? {}),
   } as any;
 
-  const proc = Bun.spawnSync([process.execPath, "run", "src/cli.ts", ...argv], {
+  const proc = spawnSync(process.execPath, nodeTsxArgs(argv), {
     env,
-    stdout: "pipe",
-    stderr: "pipe",
+    encoding: "utf-8",
   });
 
   return {
-    exitCode: proc.exitCode ?? 0,
-    stdout: new TextDecoder().decode(proc.stdout),
-    stderr: new TextDecoder().decode(proc.stderr),
+    exitCode: proc.status ?? 0,
+    stdout: proc.stdout,
+    stderr: proc.stderr,
   };
 }
 
@@ -170,32 +182,27 @@ describe("Node Build Smoke", () => {
         const configPath = join(libraryPath, "config.json");
         writeTestConfig(configPath, libraryPath);
 
-        const build = Bun.spawnSync([process.execPath, "run", "build"], {
-          stdout: "pipe",
-          stderr: "pipe",
+        const build = spawnSync(npmCommand(), ["run", "build"], {
+          encoding: "utf-8",
         });
-        if ((build.exitCode ?? 0) !== 0) {
-          throw new Error(
-            new TextDecoder().decode(build.stderr || build.stdout),
-          );
+        if ((build.status ?? 0) !== 0) {
+          throw new Error(build.stderr || build.stdout);
         }
 
-        const proc = Bun.spawnSync(["node", "dist/cli.js", "--help"], {
+        const proc = spawnSync(process.execPath, ["dist/cli.js", "--help"], {
           env: {
             ...process.env,
             ...envForConfig(configPath),
           } as any,
-          stdout: "pipe",
-          stderr: "pipe",
+          encoding: "utf-8",
         });
 
-        expect(proc.exitCode ?? 0).toBe(0);
-        const stdout = new TextDecoder().decode(proc.stdout);
-        const envelope = JSON.parse(stdout);
+        expect(proc.status ?? 0).toBe(0);
+        const envelope = JSON.parse(proc.stdout);
         expect(envelope.ok).toBe(true);
         expect(envelope.command).toBe("help");
       }),
-    { timeout: 30000 },
+    30000,
   );
 });
 
@@ -456,7 +463,7 @@ describe("MCP Tool Output Contract", () => {
 
         const transport = new StdioClientTransport({
           command: process.execPath,
-          args: ["run", "src/cli.ts", "mcp", "--quiet"],
+          args: nodeTsxArgs(["mcp", "--quiet"]),
           cwd: process.cwd(),
           stderr: "pipe",
           env: {
@@ -502,7 +509,7 @@ describe("MCP Tool Output Contract", () => {
           }
         }
       }),
-    { timeout: 20000 },
+    20000,
   );
 });
 
@@ -515,22 +522,19 @@ describe("HTTP MCP Server", () => {
         writeTestConfig(configPath, libraryPath);
 
         const port = await getAvailablePort();
-        const proc = Bun.spawn(
-          [
-            process.execPath,
-            "run",
-            "src/cli.ts",
+        const proc = spawn(
+          process.execPath,
+          nodeTsxArgs([
             "serve",
             "--host",
             "127.0.0.1",
             "--port",
             String(port),
             "--quiet",
-          ],
+          ]),
           {
             cwd: process.cwd(),
-            stdout: "pipe",
-            stderr: "pipe",
+            stdio: ["ignore", "pipe", "pipe"],
             env: {
               ...process.env,
               ...envForConfig(configPath),
@@ -547,7 +551,7 @@ describe("HTTP MCP Server", () => {
             } catch {
               // server not ready yet
             }
-            await Bun.sleep(100);
+            await sleep(100);
           }
 
           expect(health).toBeDefined();
@@ -562,9 +566,15 @@ describe("HTTP MCP Server", () => {
           });
         } finally {
           proc.kill();
-          await proc.exited;
+          await new Promise<void>((resolve) => {
+            if (proc.exitCode !== null || proc.signalCode !== null) {
+              resolve();
+              return;
+            }
+            proc.once("exit", () => resolve());
+          });
         }
       }),
-    { timeout: 20000 },
+    20000,
   );
 });

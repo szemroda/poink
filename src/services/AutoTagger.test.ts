@@ -4,7 +4,7 @@
  * Focus: Auto-accept proposals with embedding-based deduplication + RAG context
  */
 
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it } from "vitest";
 
 // ============================================================================
 // Tests - Verifying JSON file workflow is removed

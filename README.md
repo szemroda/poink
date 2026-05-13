@@ -673,16 +673,16 @@ git clone <repository-url>
 cd poink
 
 # Install
-bun install
+npm install
 
 # Run CLI
-bun run src/cli.ts <command>
+npm run dev -- <command>
 
 # Run tests
-bun test
+npm test
 
 # Type check
-bun run typecheck
+npm run typecheck
 ```
 
 ## License

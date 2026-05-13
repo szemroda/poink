@@ -1,9 +1,13 @@
 import { rmSync } from "fs";
 
+function sleep(delayMs: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, delayMs));
+}
+
 export async function removeDirWithRetries(
   path: string,
-  attempts = 40,
-  delayMs = 50,
+  attempts = 100,
+  delayMs = 100,
 ): Promise<void> {
   let lastError: Error | undefined;
 
@@ -19,7 +23,7 @@ export async function removeDirWithRetries(
       if (code !== "EBUSY" && code !== "EPERM") throw error;
       lastError = error;
       if (attempt < attempts - 1) {
-        await Bun.sleep(delayMs);
+        await sleep(delayMs);
       }
     }
   }

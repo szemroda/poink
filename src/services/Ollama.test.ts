@@ -7,7 +7,7 @@
  */
 
 import { Effect, Either } from "effect";
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import { OllamaError } from "../types.js";
 import { normalizeOllamaHostUrl } from "./Ollama.js";
 

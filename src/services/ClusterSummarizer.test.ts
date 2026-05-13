@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, it, expect, mock } from "bun:test";
+import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
 import { Effect, Layer } from "effect";
 import { mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
@@ -10,18 +10,20 @@ import {
 } from "./ClusterSummarizer.js";
 
 // Mock the AI SDK
-const mockGenerateText = mock(() =>
-  Promise.resolve({
-    output: {
-      summary:
-        "This cluster explores React hooks, focusing on useState and useEffect patterns, along with best practices for creating custom hooks.",
-      keyTopics: ["React hooks", "useState", "useEffect", "custom hooks"],
-      representativeQuote: "React hooks enable state in functional components",
-    },
-  })
+const mockGenerateText = vi.hoisted(() =>
+  vi.fn(() =>
+    Promise.resolve({
+      output: {
+        summary:
+          "This cluster explores React hooks, focusing on useState and useEffect patterns, along with best practices for creating custom hooks.",
+        keyTopics: ["React hooks", "useState", "useEffect", "custom hooks"],
+        representativeQuote: "React hooks enable state in functional components",
+      },
+    }),
+  ),
 );
 
-mock.module("ai", () => ({
+vi.mock("ai", () => ({
   Output: {
     object: (spec: unknown) => spec,
   },

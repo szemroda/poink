@@ -2,9 +2,10 @@
  * OfficeExtractor Unit Tests
  */
 
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { Effect } from "effect";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import JSZip from "jszip";
@@ -65,7 +66,7 @@ async function writeOdtFile(name: string): Promise<string> {
   const path = join(tempDir, name);
   const zip = new JSZip();
   zip.file("content.xml", sampleFodtXml());
-  await Bun.write(path, await zip.generateAsync({ type: "uint8array" }));
+  await writeFile(path, await zip.generateAsync({ type: "uint8array" }));
   return path;
 }
 
@@ -98,7 +99,7 @@ async function writeDocxFile(name: string): Promise<string> {
   </w:body>
 </w:document>`,
   );
-  await Bun.write(path, await zip.generateAsync({ type: "uint8array" }));
+  await writeFile(path, await zip.generateAsync({ type: "uint8array" }));
   return path;
 }
 
@@ -169,7 +170,7 @@ async function writeStyledDocxFile(name: string): Promise<string> {
   </w:body>
 </w:document>`,
   );
-  await Bun.write(path, await zip.generateAsync({ type: "uint8array" }));
+  await writeFile(path, await zip.generateAsync({ type: "uint8array" }));
   return path;
 }
 

@@ -8,7 +8,7 @@
  * - Cluster assignment storage with probabilities - new
  */
 
-import { describe, it, expect } from "bun:test";
+import { describe, it, expect } from "vitest";
 import { Effect } from "effect";
 import {
   ClusteringService,

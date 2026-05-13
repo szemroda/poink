@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import { generateHints, type CommandResult } from "./hints.js";
 import { formatHintBlock, stripEmoji } from "./format.js";
 

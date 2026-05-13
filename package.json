@@ -19,8 +19,8 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "dev": "bun run src/cli.ts",
-    "test": "bun test",
+    "dev": "tsx src/cli.ts",
+    "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "prepare": "husky || true",
     "prepack": "npm run build"
@@ -55,14 +55,15 @@
   },
   "devDependencies": {
     "@secretlint/secretlint-rule-preset-recommend": "^11.2.5",
-    "@types/bun": "latest",
-    "@types/node": "^24.10.1",
     "@types/mdast": "^4.0.4",
+    "@types/node": "^24.10.1",
     "@types/react": "^19.2.7",
     "husky": "^9.1.7",
     "lint-staged": "^16.2.7",
     "secretlint": "^11.2.5",
-    "typescript": "^5.7.2"
+    "tsx": "^4.21.0",
+    "typescript": "^5.7.2",
+    "vitest": "^4.1.6"
   },
   "engines": {
     "node": ">=20"

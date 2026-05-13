@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { beforeEach, describe, expect, test, vi } from "vitest";
 import { Effect } from "effect";
 import { Database } from "./Database.js";
 import { Document, SearchOptions } from "../types.js";
@@ -308,7 +308,7 @@ class FakeQdrantClient {
 
 const fakeClients: FakeQdrantClient[] = [];
 
-mock.module("@qdrant/js-client-rest", () => ({
+vi.doMock("@qdrant/js-client-rest", () => ({
   QdrantClient: class extends FakeQdrantClient {
     constructor(config: Record<string, unknown>) {
       super(config);

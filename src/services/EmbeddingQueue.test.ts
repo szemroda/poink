@@ -5,7 +5,7 @@
  * These tests verify the queue prevents WASM OOM under heavy load.
  */
 
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it } from "vitest";
 import { Effect } from "effect";
 import {
   processInBatches,
