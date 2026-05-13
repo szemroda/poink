@@ -63,6 +63,7 @@ class FakeQdrantClient {
     const points = args.points ?? [];
 
     for (const point of points) {
+      this.validateVector(state, point.vector);
       const index = state.points.findIndex((candidate) => candidate.id === point.id);
       const nextPoint: PointRecord = {
         id: point.id,
@@ -194,6 +195,7 @@ class FakeQdrantClient {
     },
   ): Promise<Array<PointRecord & { score: number }>> {
     const state = this.requireCollection(collection);
+    this.validateVector(state, args.vector);
 
     const scored = state.points
       .filter((point) => Array.isArray(point.vector))
@@ -294,6 +296,14 @@ class FakeQdrantClient {
     this.collections.set(collection, created);
     return created;
   }
+
+  private validateVector(state: CollectionState, vector: unknown): void {
+    if (!Array.isArray(vector)) return;
+    const size = (state.vectors as { size?: unknown } | undefined)?.size;
+    if (typeof size === "number" && vector.length !== size) {
+      throw new Error(`Vector size ${vector.length} does not match collection size ${size}`);
+    }
+  }
 }
 
 const fakeClients: FakeQdrantClient[] = [];
@@ -363,6 +373,13 @@ function makeLayer(embeddingDimension = 3) {
   });
 }
 
+function makeLayerWithoutEmbeddingDimension() {
+  return QdrantDatabase.make({
+    url: "http://localhost:6333",
+    collection: "poink",
+  });
+}
+
 async function collectGenerator<T>(gen: AsyncGenerator<T>): Promise<T[]> {
   const results: T[] = [];
   for await (const item of gen) {
@@ -376,7 +393,7 @@ describe("QdrantDatabase", () => {
     fakeClients.length = 0;
   });
 
-  test("auto-creates collections and payload indexes using configured embedding dimension", async () => {
+  test("auto-creates metadata collections without requiring embedding dimension", async () => {
     const program = Effect.gen(function* () {
       const db = yield* Database;
       return yield* db.getStats();
@@ -388,12 +405,92 @@ describe("QdrantDatabase", () => {
     const client = fakeClients[0]!;
     const docs = client.collections.get("poink-documents");
     const chunks = client.collections.get("poink-chunks");
+    const embeddings = client.collections.get("poink-embeddings");
 
     expect(docs?.vectors).toEqual({ size: 1, distance: "Cosine" });
-    expect(chunks?.vectors).toEqual({ size: 384, distance: "Cosine" });
+    expect(chunks?.vectors).toEqual({ size: 1, distance: "Cosine" });
+    expect(embeddings).toBeUndefined();
     expect(chunks?.payloadIndexes.map((index) => index.field_name)).toEqual(
       expect.arrayContaining(["docId", "content", "tags"]),
     );
+  });
+
+  test("derives collection dimension from first embedding when not configured", async () => {
+    const program = Effect.gen(function* () {
+      const db = yield* Database;
+      yield* db.replaceDocument(
+        new Document({
+          id: "doc-derived-dim",
+          title: "Derived Dim",
+          path: "/docs/derived.pdf",
+          addedAt: new Date("2024-01-01T00:00:00Z"),
+          pageCount: 1,
+          sizeBytes: 100,
+          tags: [],
+        }),
+        [
+          {
+            id: "chunk-derived-dim",
+            docId: "doc-derived-dim",
+            page: 1,
+            chunkIndex: 0,
+            content: "derived dimension",
+          },
+        ],
+        [{ chunkId: "chunk-derived-dim", embedding: [0.1, 0.2, 0.3, 0.4, 0.5] }],
+      );
+    });
+
+    await Effect.runPromise(
+      program.pipe(Effect.provide(makeLayerWithoutEmbeddingDimension())),
+    );
+
+    const client = fakeClients[0]!;
+    const chunks = client.collections.get("poink-chunks");
+    const embeddings = client.collections.get("poink-embeddings");
+    expect(chunks?.vectors).toEqual({ size: 1, distance: "Cosine" });
+    expect(embeddings?.vectors).toEqual({ size: 5, distance: "Cosine" });
+  });
+
+  test("addChunks before addEmbeddings still derives embedding dimension from first embedding", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const db = yield* Database;
+        yield* db.addDocument(
+          new Document({
+            id: "doc-split-derived",
+            title: "Split Derived",
+            path: "/docs/split-derived.pdf",
+            addedAt: new Date("2024-01-01T00:00:00Z"),
+            pageCount: 1,
+            sizeBytes: 100,
+            tags: ["dynamic"],
+          }),
+        );
+        yield* db.addChunks([
+          {
+            id: "chunk-split-derived",
+            docId: "doc-split-derived",
+            page: 1,
+            chunkIndex: 0,
+            content: "split dynamic dimension",
+          },
+        ]);
+        yield* db.addEmbeddings([
+          { chunkId: "chunk-split-derived", embedding: [0.1, 0.2, 0.3, 0.4, 0.5] },
+        ]);
+      }).pipe(Effect.provide(makeLayerWithoutEmbeddingDimension())),
+    );
+
+    const client = fakeClients[0]!;
+    expect(client.collections.get("poink-chunks")?.vectors).toEqual({
+      size: 1,
+      distance: "Cosine",
+    });
+    expect(client.collections.get("poink-embeddings")?.vectors).toEqual({
+      size: 5,
+      distance: "Cosine",
+    });
   });
 
   test("supports document CRUD and tag filtering", async () => {
@@ -652,6 +749,70 @@ describe("QdrantDatabase", () => {
       zeroVectorEmbeddings: 0,
     });
     expect(result.orphanChunk).toBeNull();
+    expect(result.embeddingIds).toEqual(["chunk-ok"]);
+  });
+
+  test("repair preserves chunks when embeddingOnly is stale but chunk exists", async () => {
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const db = yield* Database;
+
+        yield* db.addDocument(
+          new Document({
+            id: "doc-ok",
+            title: "Kept",
+            path: "/tmp/ok.pdf",
+            addedAt: new Date("2025-01-01T00:00:00Z"),
+            pageCount: 1,
+            sizeBytes: 100,
+            tags: [],
+          }),
+        );
+
+        yield* db.addChunks([
+          { id: "chunk-ok", docId: "doc-ok", page: 1, chunkIndex: 0, content: "ok" },
+        ]);
+        yield* db.addEmbeddings([{ chunkId: "chunk-ok", embedding: [1, 0, 0] }]);
+
+        const client = fakeClients[0]!;
+        const embeddingPoint = client.collections
+          .get("poink-embeddings")!
+          .points.find((point) => point.payload?.id === "chunk-ok")!;
+        embeddingPoint.payload = {
+          id: "chunk-ok",
+          docId: "",
+          page: 0,
+          chunkIndex: 0,
+          content: "",
+          embeddingContent: "",
+          title: "",
+          path: "",
+          tags: [],
+          hasEmbedding: true,
+          embeddingOnly: true,
+        };
+
+        const repair = yield* db.repair();
+        const chunk = yield* db.getChunk("chunk-ok");
+        const streamed = yield* Effect.promise(() => collectGenerator(db.streamEmbeddings(10)));
+
+        return {
+          repair,
+          chunk,
+          embeddingPayload: embeddingPoint.payload,
+          embeddingIds: streamed.flat().map((item) => item.chunkId),
+        };
+      }).pipe(Effect.provide(makeLayer())),
+    );
+
+    expect(result.repair).toEqual({
+      orphanedChunks: 0,
+      orphanedEmbeddings: 0,
+      zeroVectorEmbeddings: 0,
+    });
+    expect(result.chunk?.id).toBe("chunk-ok");
+    expect(result.embeddingPayload?.embeddingOnly).toBe(false);
+    expect(result.embeddingPayload?.docId).toBe("doc-ok");
     expect(result.embeddingIds).toEqual(["chunk-ok"]);
   });
 

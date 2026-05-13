@@ -9,5 +9,5 @@
     "noEmit": false
   },
   "include": ["src/**/*.ts", "src/**/*.tsx"],
-  "exclude": ["src/**/*.test.ts", "src/testUtils.ts"]
+  "exclude": ["src/**/*.test.ts", "src/testUtils.ts", "src/testSetup.ts"]
 }

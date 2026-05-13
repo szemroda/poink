@@ -289,7 +289,7 @@ export function generateHints(result: CommandResult): string[] {
     case "config": {
       return [
         `\`poink config show\` -- View all settings`,
-        `\`poink config set embedding.model <model>\` -- Change embedding model`,
+        `\`poink config set models.embedding.model <model>\` -- Change embedding model`,
         `\`poink stats\` -- Check library statistics`,
       ];
     }

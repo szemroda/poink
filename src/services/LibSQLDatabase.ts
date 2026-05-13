@@ -15,12 +15,14 @@ import {
   type DocumentFileType,
 } from "../types.js";
 import { inferFileTypeFromPath } from "../chunking.js";
-
-// Default embedding dimension (mxbai-embed-large)
-// Can be overridden via config for other models:
-// - nomic-embed-text: 768
-// - all-minilm: 384
-const DEFAULT_EMBEDDING_DIM = 1024;
+import {
+  ensureMetadataTable,
+  ensureVectorSchemaForEmbeddings,
+  ensureVectorSchemaForDimension,
+  ensureVectorSchemaForQuery,
+  readEmbeddingDimension,
+  tableExists,
+} from "./LibSQLVectorSchema.js";
 
 // ============================================================================
 // LibSQLDatabase Service
@@ -33,16 +35,16 @@ export class LibSQLDatabase {
    * @param config - Connection configuration
    *   - url: ":memory:" for in-memory, "file:./path.db" for local file, or remote URL
    *   - authToken: Optional auth token for Turso/remote databases
-   *   - embeddingDimension: Vector dimension for embeddings (default: 1024 for mxbai-embed-large)
-   *     Use 768 for nomic-embed-text, 384 for all-minilm, etc.
+   *   - embeddingDimension: Optional bootstrap vector dimension. When omitted,
+   *     the vector schema is created from stored metadata or the first embedding.
    */
   static make(config: {
     url: string;
     authToken?: string;
     embeddingDimension?: number;
+    embeddingProvider?: string;
+    embeddingModel?: string;
   }) {
-    const embeddingDim = config.embeddingDimension ?? DEFAULT_EMBEDDING_DIM;
-
     return Layer.scoped(
       Database,
       Effect.gen(function* () {
@@ -52,10 +54,11 @@ export class LibSQLDatabase {
           authToken: config.authToken,
         });
 
-        // Initialize schema with configured embedding dimension
+        // Initialize non-vector schema. Vector tables are created from the
+        // stored DB metadata or from the first embedding response dimension.
         yield* Effect.tryPromise({
           try: async () => {
-            await initSchema(client, embeddingDim);
+            await initSchema(client, config.embeddingDimension);
           },
           catch: (e) =>
             new DatabaseError({ reason: `Schema init failed: ${e}` }),
@@ -265,6 +268,10 @@ export class LibSQLDatabase {
           addEmbeddings: (embeddings) =>
             Effect.tryPromise({
               try: async () => {
+                await ensureVectorSchemaForEmbeddings(client, embeddings, {
+                  provider: config.embeddingProvider,
+                  model: config.embeddingModel,
+                });
                 // LibSQL stores vectors as F32_BLOB using vector32() function
                 const statements = embeddings.map((item) => ({
                   sql: `INSERT INTO embeddings (chunk_id, embedding)
@@ -281,6 +288,10 @@ export class LibSQLDatabase {
           replaceDocument: (doc, chunks, embeddings) =>
             Effect.tryPromise({
               try: async () => {
+                await ensureVectorSchemaForEmbeddings(client, embeddings, {
+                  provider: config.embeddingProvider,
+                  model: config.embeddingModel,
+                });
                 const statements: Array<{ sql: string; args: any[] }> = [];
 
                 // 1. Upsert document row
@@ -352,6 +363,11 @@ export class LibSQLDatabase {
           vectorSearch: (queryEmbedding, options) =>
             Effect.tryPromise({
               try: async () => {
+                const hasVectorSchema = await ensureVectorSchemaForQuery(
+                  client,
+                  queryEmbedding.length,
+                );
+                if (!hasVectorSchema) return [];
                 const {
                   limit = 10,
                   tags,
@@ -700,9 +716,12 @@ export class LibSQLDatabase {
                 const chunks = await client.execute(
                   "SELECT COUNT(id) as count FROM chunks",
                 );
-                const embeddings = await client.execute(
-                  "SELECT COUNT(chunk_id) as count FROM embeddings",
-                );
+                const hasEmbeddings = await tableExists(client, "embeddings");
+                const embeddings = hasEmbeddings
+                  ? await client.execute(
+                      "SELECT COUNT(chunk_id) as count FROM embeddings",
+                    )
+                  : { rows: [{ count: 0 }] };
 
                 return {
                   documents: Number((docs.rows[0] as any).count),
@@ -821,6 +840,8 @@ export class LibSQLDatabase {
           streamEmbeddings: async function* (batchSize: number) {
             // Stream embeddings in batches to avoid loading all into memory
             // Useful for clustering large embedding sets
+            if (!(await tableExists(client, "embeddings"))) return;
+
             let offset = 0;
 
             while (true) {
@@ -869,7 +890,10 @@ export class LibSQLDatabase {
 // Schema Initialization
 // ============================================================================
 
-async function initSchema(client: Client, embeddingDim: number): Promise<void> {
+async function initSchema(
+  client: Client,
+  embeddingDim?: number,
+): Promise<void> {
   // Set busy timeout to wait up to 30s for locks instead of failing immediately
   await client.execute("PRAGMA busy_timeout = 30000");
 
@@ -945,13 +969,7 @@ async function initSchema(client: Client, embeddingDim: number): Promise<void> {
     // embedding/display text were split.
   }
 
-  // Embeddings table with F32_BLOB for vectors
-  await client.execute(`
-    CREATE TABLE IF NOT EXISTS embeddings (
-      chunk_id TEXT PRIMARY KEY REFERENCES chunks(id) ON DELETE CASCADE,
-      embedding F32_BLOB(${embeddingDim}) NOT NULL
-    )
-  `);
+  await ensureMetadataTable(client);
 
   // Create indexes
   await client.execute(
@@ -959,12 +977,6 @@ async function initSchema(client: Client, embeddingDim: number): Promise<void> {
   );
   await client.execute(
     `CREATE INDEX IF NOT EXISTS idx_docs_path ON documents(path)`,
-  );
-
-  // Vector index for fast ANN search (DiskANN algorithm)
-  // compress_neighbors=float8 reduces index size ~4x with minimal recall loss (~1-2%)
-  await client.execute(
-    `CREATE INDEX IF NOT EXISTS embeddings_idx ON embeddings(libsql_vector_idx(embedding, 'compress_neighbors=float8'))`,
   );
 
   // FTS5 virtual table for full-text search
@@ -1040,14 +1052,6 @@ async function initSchema(client: Client, embeddingDim: number): Promise<void> {
     )
   `);
 
-  // Concept Embeddings - vector representations of concepts (unified with document embeddings)
-  await client.execute(`
-    CREATE TABLE IF NOT EXISTS concept_embeddings (
-      concept_id TEXT PRIMARY KEY REFERENCES concepts(id) ON DELETE CASCADE,
-      embedding F32_BLOB(${embeddingDim}) NOT NULL
-    )
-  `);
-
   // Taxonomy indexes for efficient hierarchy traversal
   await client.execute(
     `CREATE INDEX IF NOT EXISTS idx_concept_hierarchy_concept ON concept_hierarchy(concept_id)`,
@@ -1066,11 +1070,6 @@ async function initSchema(client: Client, embeddingDim: number): Promise<void> {
   );
   await client.execute(
     `CREATE INDEX IF NOT EXISTS idx_document_concepts_concept ON document_concepts(concept_id)`,
-  );
-
-  // Vector index for concept embeddings (same compression as document embeddings)
-  await client.execute(
-    `CREATE INDEX IF NOT EXISTS concept_embeddings_idx ON concept_embeddings(libsql_vector_idx(embedding, 'compress_neighbors=float8'))`,
   );
 
   // ============================================================================
@@ -1095,32 +1094,10 @@ async function initSchema(client: Client, embeddingDim: number): Promise<void> {
     )
   `);
 
-  // Cluster summaries with embedded metadata
-  // Combines cluster metadata, summary, and concept mapping in a single table
-  await client.execute(`
-    CREATE TABLE IF NOT EXISTS cluster_summaries (
-      id INTEGER PRIMARY KEY,
-      centroid F32_BLOB(${embeddingDim}),
-      summary TEXT,
-      embedding F32_BLOB(${embeddingDim}),
-      concept_id TEXT,
-      concept_confidence REAL,
-      chunk_count INTEGER NOT NULL,
-      created_at TEXT NOT NULL DEFAULT (datetime('now'))
-    )
-  `);
-
-  // Indexes for efficient cluster queries
+  // Indexes for efficient cluster queries. The cluster_summaries table itself
+  // is vector-dimension dependent and is created with the vector schema.
   await client.execute(
     `CREATE INDEX IF NOT EXISTS idx_chunk_clusters_cluster ON chunk_clusters(cluster_id)`,
-  );
-  await client.execute(
-    `CREATE INDEX IF NOT EXISTS idx_cluster_summaries_concept ON cluster_summaries(concept_id)`,
-  );
-
-  // Vector index for cluster summary embeddings (for multi-scale retrieval)
-  await client.execute(
-    `CREATE INDEX IF NOT EXISTS cluster_summaries_idx ON cluster_summaries(libsql_vector_idx(embedding, 'compress_neighbors=float8'))`,
   );
 
   // Triggers to keep FTS5 in sync with chunks table
@@ -1143,7 +1120,7 @@ async function initSchema(client: Client, embeddingDim: number): Promise<void> {
   `);
 
   await client.execute(`
-    CREATE TRIGGER IF NOT EXISTS chunks_au 
+    CREATE TRIGGER IF NOT EXISTS chunks_au
     AFTER UPDATE ON chunks 
     BEGIN 
       INSERT INTO chunks_fts(chunks_fts, rowid, content) 
@@ -1152,4 +1129,10 @@ async function initSchema(client: Client, embeddingDim: number): Promise<void> {
       VALUES (new.rowid, new.content);
     END
   `);
+
+  const storedDimension = await readEmbeddingDimension(client);
+  const dimension = storedDimension ?? embeddingDim;
+  if (dimension) {
+    await ensureVectorSchemaForDimension(client, dimension);
+  }
 }

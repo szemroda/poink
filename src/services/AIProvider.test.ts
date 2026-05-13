@@ -9,9 +9,18 @@ import {
 } from "./AIProvider.js";
 
 function makeTestConfig(overrides: Record<string, unknown>) {
+  const { models, providers, ...rest } = overrides;
   return normalizeConfig({
     ...JSON.parse(JSON.stringify(Config.Default)),
-    ...overrides,
+    ...rest,
+    models: {
+      ...JSON.parse(JSON.stringify(Config.Default.models)),
+      ...(models as Record<string, unknown> | undefined),
+    },
+    providers: {
+      ...JSON.parse(JSON.stringify(Config.Default.providers)),
+      ...(providers as Record<string, unknown> | undefined),
+    },
   });
 }
 
@@ -50,8 +59,10 @@ describe("AIProvider", () => {
 
   test("resolves OpenRouter language models through the provider abstraction", () => {
     const config = makeTestConfig({
-      openrouter: {
-        apiKey: "test-openrouter-key",
+      providers: {
+        openrouter: {
+          apiKey: "test-openrouter-key",
+        },
       },
     });
 
@@ -69,15 +80,16 @@ describe("AIProvider", () => {
 
   test("resolves OpenRouter embedding models through the provider abstraction", () => {
     const config = makeTestConfig({
-      embedding: {
-        provider: "openrouter",
-        model: "openai/text-embedding-3-small",
-        openai: {
-          model: "text-embedding-3-small",
+      models: {
+        embedding: {
+          provider: "openrouter",
+          model: "openai/text-embedding-3-small",
         },
       },
-      openrouter: {
-        apiKey: "test-openrouter-key",
+      providers: {
+        openrouter: {
+          apiKey: "test-openrouter-key",
+        },
       },
     });
 

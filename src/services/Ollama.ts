@@ -52,6 +52,11 @@ interface OllamaTagsResponse {
  */
 let detectedEmbeddingDimension: number | null = null;
 
+export function normalizeOllamaHostUrl(baseUrl: string): string {
+  const trimmed = baseUrl.trim().replace(/\/+$/, "");
+  return trimmed.endsWith("/api") ? trimmed.slice(0, -"/api".length) : trimmed;
+}
+
 /**
  * Get the detected embedding dimension (for use by database schema)
  */
@@ -184,9 +189,10 @@ export function probeEmbeddingDimension(
   model: string,
 ): Effect.Effect<number, OllamaError> {
   return Effect.gen(function* () {
+    const ollamaHost = normalizeOllamaHostUrl(host);
     const response = yield* Effect.tryPromise({
       try: () =>
-        fetch(`${host}/api/embeddings`, {
+        fetch(`${ollamaHost}/api/embeddings`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -229,16 +235,17 @@ export const OllamaLive = Layer.effect(
   Ollama,
   Effect.gen(function* () {
     const config = loadConfig();
+    const ollamaHost = normalizeOllamaHostUrl(config.providers.ollama.baseUrl);
 
     const embedSingle = (text: string): Effect.Effect<number[], OllamaError> =>
       Effect.gen(function* () {
         const response = yield* Effect.tryPromise({
           try: () =>
-            fetch(`${config.ollama.host}/api/embeddings`, {
+            fetch(`${ollamaHost}/api/embeddings`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
-                model: config.embedding.model,
+                model: config.models.embedding.model,
                 prompt: text,
               }),
             }),
@@ -283,10 +290,10 @@ export const OllamaLive = Layer.effect(
       checkHealth: () =>
         Effect.gen(function* () {
           const response = yield* Effect.tryPromise({
-            try: () => fetch(`${config.ollama.host}/api/tags`),
+            try: () => fetch(`${ollamaHost}/api/tags`),
             catch: () =>
               new OllamaError({
-                reason: `Cannot connect to Ollama at ${config.ollama.host}`,
+                reason: `Cannot connect to Ollama at ${ollamaHost}`,
               }),
           });
 
@@ -302,15 +309,15 @@ export const OllamaLive = Layer.effect(
               new OllamaError({ reason: "Invalid response from Ollama" }),
           });
 
-          const modelName = config.embedding.model;
+          const modelName = config.models.embedding.model;
           const hasModel = data.models.some(
             (m) => m.name === modelName || m.name.startsWith(`${modelName}:`),
           );
 
           if (!hasModel) {
-            if (config.ollama.autoInstall) {
+            if (config.providers.ollama.autoPull) {
               // Auto-install the model
-              yield* autoInstallModel(modelName, config.ollama.host);
+              yield* autoInstallModel(modelName, ollamaHost);
             } else {
               return yield* Effect.fail(
                 new OllamaError({

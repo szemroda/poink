@@ -6,44 +6,99 @@ import { join } from "path";
 import { Client } from "@modelcontextprotocol/sdk/client";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
-const OPENROUTER_CONFIG_WITHOUT_KEY = {
-  embedding: {
-    provider: "openrouter",
-    model: "openai/text-embedding-3-small",
-    openai: {
-      model: "text-embedding-3-small",
+function makeTestConfig(
+  libraryPath: string,
+  modelProvider: "ollama" | "openrouter" = "ollama",
+) {
+  const models =
+    modelProvider === "openrouter"
+      ? {
+          embedding: {
+            provider: "openrouter",
+            model: "openai/text-embedding-3-small",
+          },
+          enrichment: {
+            provider: "openrouter",
+            model: "anthropic/claude-3.5-haiku",
+          },
+          judge: {
+            provider: "openrouter",
+            model: "anthropic/claude-3.5-haiku",
+          },
+        }
+      : {
+          embedding: {
+            provider: "ollama",
+            model: "mxbai-embed-large",
+          },
+          enrichment: {
+            provider: "ollama",
+            model: "llama3.2:3b",
+          },
+          judge: {
+            provider: "ollama",
+            model: "llama3.2:3b",
+          },
+        };
+
+  return {
+    version: 1,
+    library: { path: libraryPath },
+    chunking: { strategy: "text", size: 2000, overlap: 200 },
+    models,
+    providers: {
+      ollama: {
+        baseUrl: "http://127.0.0.1:1",
+        autoPull: true,
+      },
+      gateway: { apiKeyEnv: "AI_GATEWAY_API_KEY" },
+      openai: {
+        apiKeyEnv: "OPENAI_API_KEY",
+        baseUrl: "https://api.openai.com/v1",
+      },
+      openrouter: {
+        apiKeyEnv: "OPENROUTER_API_KEY",
+        baseUrl: "https://openrouter.ai/api/v1",
+      },
     },
-  },
-  enrichment: {
-    provider: "openrouter",
-    model: "anthropic/claude-3.5-haiku",
-  },
-  judge: {
-    provider: "openrouter",
-    model: "anthropic/claude-3.5-haiku",
-  },
-  ollama: {
-    host: "http://localhost:11434",
-    autoInstall: true,
-  },
-  gateway: {},
-  openai: {},
-  openrouter: {},
-  database: {
-    backend: "libsql",
-    qdrant: {
-      url: "http://localhost:6333",
-      collection: "poink",
+    storage: {
+      backend: "libsql",
+      libsql: { url: `file:${join(libraryPath, "library.db")}` },
+      qdrant: {
+        url: "http://localhost:6333",
+        collection: "poink",
+        apiKeyEnv: "QDRANT_API_KEY",
+      },
     },
-  },
-  server: {
-    host: "127.0.0.1",
-    port: 3838,
-    auth: {
-      enabled: false,
+    server: {
+      host: "127.0.0.1",
+      port: 3838,
+      auth: {
+        enabled: false,
+        tokenEnv: "POINK_SERVER_TOKEN",
+      },
     },
-  },
-};
+  };
+}
+
+function writeTestConfig(
+  configPath: string,
+  libraryPath: string,
+  modelProvider?: "ollama" | "openrouter",
+): void {
+  writeFileSync(
+    configPath,
+    JSON.stringify(makeTestConfig(libraryPath, modelProvider), null, 2),
+    "utf-8",
+  );
+}
+
+function envForConfig(configPath: string): Record<string, string> {
+  return {
+    POINK_CONFIG: configPath,
+    POINK_LOG_LEVEL: "silent",
+  };
+}
 
 function runCli(
   argv: string[],
@@ -112,6 +167,9 @@ describe("Node Build Smoke", () => {
     "dist CLI runs with node",
     () =>
       withTempLibraryPath((libraryPath) => {
+        const configPath = join(libraryPath, "config.json");
+        writeTestConfig(configPath, libraryPath);
+
         const build = Bun.spawnSync([process.execPath, "run", "build"], {
           stdout: "pipe",
           stderr: "pipe",
@@ -125,9 +183,7 @@ describe("Node Build Smoke", () => {
         const proc = Bun.spawnSync(["node", "dist/cli.js", "--help"], {
           env: {
             ...process.env,
-            PDF_LIBRARY_PATH: libraryPath,
-            OLLAMA_HOST: "http://127.0.0.1:1",
-            POINK_LOG_LEVEL: "silent",
+            ...envForConfig(configPath),
           } as any,
           stdout: "pipe",
           stderr: "pipe",
@@ -146,12 +202,11 @@ describe("Node Build Smoke", () => {
 describe("CLI JSON Envelope Contract", () => {
   test("stats emits a single JSON envelope with nextActions when not --quiet", () =>
     withTempLibraryPath((libraryPath) => {
+      const configPath = join(libraryPath, "config.json");
+      writeTestConfig(configPath, libraryPath);
+
       const res = runCli(["stats", "--format", "json"], {
-        env: {
-          PDF_LIBRARY_PATH: libraryPath,
-          // Avoid touching any real local Ollama instance during tests.
-          OLLAMA_HOST: "http://127.0.0.1:1",
-        },
+        env: envForConfig(configPath),
       });
 
       expect(res.exitCode).toBe(0);
@@ -174,11 +229,11 @@ describe("CLI JSON Envelope Contract", () => {
 
   test("stats with --quiet omits nextActions", () =>
     withTempLibraryPath((libraryPath) => {
+      const configPath = join(libraryPath, "config.json");
+      writeTestConfig(configPath, libraryPath);
+
       const res = runCli(["stats", "--format", "json", "--quiet"], {
-        env: {
-          PDF_LIBRARY_PATH: libraryPath,
-          OLLAMA_HOST: "http://127.0.0.1:1",
-        },
+        env: envForConfig(configPath),
       });
 
       expect(res.exitCode).toBe(0);
@@ -190,11 +245,11 @@ describe("CLI JSON Envelope Contract", () => {
 
   test("invalid --format returns a structured error envelope and non-zero exit code", () =>
     withTempLibraryPath((libraryPath) => {
+      const configPath = join(libraryPath, "config.json");
+      writeTestConfig(configPath, libraryPath);
+
       const res = runCli(["--format", "wat", "stats"], {
-        env: {
-          PDF_LIBRARY_PATH: libraryPath,
-          OLLAMA_HOST: "http://127.0.0.1:1",
-        },
+        env: envForConfig(configPath),
       });
 
       expect(res.exitCode).not.toBe(0);
@@ -207,11 +262,11 @@ describe("CLI JSON Envelope Contract", () => {
 
   test("rechunk flag validation: --max-docs requires a numeric value", () =>
     withTempLibraryPath((libraryPath) => {
+      const configPath = join(libraryPath, "config.json");
+      writeTestConfig(configPath, libraryPath);
+
       const res = runCli(["rechunk", "--max-docs", "--format", "json"], {
-        env: {
-          PDF_LIBRARY_PATH: libraryPath,
-          OLLAMA_HOST: "http://127.0.0.1:1",
-        },
+        env: envForConfig(configPath),
       });
 
       expect(res.exitCode).not.toBe(0);
@@ -223,11 +278,11 @@ describe("CLI JSON Envelope Contract", () => {
 
   test("capabilities is self-describing and includes JSON Schemas", () =>
     withTempLibraryPath((libraryPath) => {
+      const configPath = join(libraryPath, "config.json");
+      writeTestConfig(configPath, libraryPath);
+
       const res = runCli(["capabilities", "--format", "json", "--quiet"], {
-        env: {
-          PDF_LIBRARY_PATH: libraryPath,
-          OLLAMA_HOST: "http://127.0.0.1:1",
-        },
+        env: envForConfig(configPath),
       });
 
       expect(res.exitCode).toBe(0);
@@ -276,56 +331,44 @@ describe("CLI JSON Envelope Contract", () => {
   test("config show text output includes database backend details", () =>
     withTempLibraryPath((libraryPath) => {
       const configPath = join(libraryPath, "config.json");
+      writeTestConfig(configPath, libraryPath);
+
       const res = runCli(["config", "show", "--format", "text"], {
-        env: {
-          PDF_LIBRARY_PATH: libraryPath,
-          POINK_CONFIG: configPath,
-          OLLAMA_HOST: "http://127.0.0.1:1",
-        },
+        env: envForConfig(configPath),
       });
 
       expect(res.exitCode).toBe(0);
-      expect(res.stdout).toContain("Database:");
+      expect(res.stdout).toContain("Storage:");
       expect(res.stdout).toContain("libsql");
       expect(res.stdout).toContain("Qdrant:");
     }));
 
-  test("config show succeeds when PDF_LIBRARY_PATH does not exist yet", () =>
+  test("config show succeeds when configured library path does not exist yet", () =>
     withTempLibraryPath((libraryRoot) => {
       const libraryPath = join(libraryRoot, "missing-library");
       const configPath = join(libraryRoot, "config.json");
+      writeTestConfig(configPath, libraryPath);
+
       const res = runCli(["config", "show", "--format", "text"], {
-        env: {
-          PDF_LIBRARY_PATH: libraryPath,
-          POINK_CONFIG: configPath,
-          OLLAMA_HOST: "http://127.0.0.1:1",
-        },
+        env: envForConfig(configPath),
       });
 
       expect(res.exitCode).toBe(0);
       expect(res.stdout).toContain("PDF Library Config");
-      expect(res.stdout).toContain("Database:");
+      expect(res.stdout).toContain("Storage:");
     }));
 
-  test("config set openrouter.apiKey succeeds even when current config uses openrouter without a key", () =>
+  test("config set providers.openrouter.apiKey succeeds even when current config uses openrouter without a key", () =>
     withTempLibraryPath((libraryRoot) => {
       const libraryPath = join(libraryRoot, "library");
       const configPath = join(libraryRoot, "config.json");
 
-      writeFileSync(
-        configPath,
-        JSON.stringify(OPENROUTER_CONFIG_WITHOUT_KEY),
-        "utf-8",
-      );
+      writeTestConfig(configPath, libraryPath, "openrouter");
 
       const res = runCli(
-        ["config", "set", "openrouter.apiKey", "test-openrouter-key"],
+        ["config", "set", "providers.openrouter.apiKey", "test-openrouter-key"],
         {
-          env: {
-            PDF_LIBRARY_PATH: libraryPath,
-            POINK_CONFIG: configPath,
-            OLLAMA_HOST: "http://127.0.0.1:1",
-          },
+          env: envForConfig(configPath),
         },
       );
 
@@ -333,26 +376,23 @@ describe("CLI JSON Envelope Contract", () => {
       const obj = JSON.parse(res.stdout);
       expect(obj.ok).toBe(true);
       expect(obj.command).toBe("config");
-      expect(obj.result.path).toBe("openrouter.apiKey");
+      expect(obj.result.path).toBe("providers.openrouter.apiKey");
       expect(obj.result.value).toBe("test-openrouter-key");
 
       const saved = JSON.parse(readFileSync(configPath, "utf-8"));
-      expect(saved.openrouter.apiKey).toBe("test-openrouter-key");
+      expect(saved.providers.openrouter.apiKey).toBe("test-openrouter-key");
     }));
 
   test("config set rejects invalid config keys and does not persist them", () =>
     withTempLibraryPath((libraryRoot) => {
       const libraryPath = join(libraryRoot, "library");
       const configPath = join(libraryRoot, "config.json");
+      writeTestConfig(configPath, libraryPath);
 
       const res = runCli(
-        ["config", "set", "openrouter.apiKeyyyyy", "123"],
+        ["config", "set", "providers.openrouter.apiKeyyyyy", "123"],
         {
-          env: {
-            PDF_LIBRARY_PATH: libraryPath,
-            POINK_CONFIG: configPath,
-            OLLAMA_HOST: "http://127.0.0.1:1",
-          },
+          env: envForConfig(configPath),
         },
       );
 
@@ -360,22 +400,40 @@ describe("CLI JSON Envelope Contract", () => {
       const obj = JSON.parse(res.stdout);
       expect(obj.ok).toBe(false);
       expect(obj.error.code).toBe("INVALID_ARGS");
-      expect(String(obj.error.message)).toContain("openrouter.apiKeyyyyy");
+      expect(String(obj.error.message)).toContain("providers.openrouter.apiKeyyyyy");
 
       const saved = JSON.parse(readFileSync(configPath, "utf-8"));
-      expect(saved.openrouter.apiKeyyyyy).toBeUndefined();
+      expect(saved.providers?.openrouter?.apiKeyyyyy).toBeUndefined();
+    }));
+
+  test("config set rejects invalid chunking combinations", () =>
+    withTempLibraryPath((libraryRoot) => {
+      const libraryPath = join(libraryRoot, "library");
+      const configPath = join(libraryRoot, "config.json");
+      writeTestConfig(configPath, libraryPath);
+
+      const res = runCli(["config", "set", "chunking.overlap", "2000"], {
+        env: envForConfig(configPath),
+      });
+
+      expect(res.exitCode).not.toBe(0);
+      const obj = JSON.parse(res.stdout);
+      expect(obj.ok).toBe(false);
+      expect(obj.error.code).toBe("INVALID_ARGS");
+      expect(String(obj.error.message)).toContain("chunking.overlap");
+
+      const saved = JSON.parse(readFileSync(configPath, "utf-8"));
+      expect(saved.chunking.overlap).toBe(200);
     }));
 
   test("init creates a missing library directory before opening the database", () =>
     withTempLibraryPath((libraryRoot) => {
       const libraryPath = join(libraryRoot, "missing-library");
       const configPath = join(libraryRoot, "config.json");
+      writeTestConfig(configPath, libraryPath, "openrouter");
+
       const res = runCli(["init", "--format", "json", "--quiet"], {
-        env: {
-          PDF_LIBRARY_PATH: libraryPath,
-          POINK_CONFIG: configPath,
-          OLLAMA_HOST: "http://127.0.0.1:1",
-        },
+        env: envForConfig(configPath),
       });
 
       expect(res.exitCode).toBe(0);
@@ -393,6 +451,9 @@ describe("MCP Tool Output Contract", () => {
     "mcp tools return structuredContent matching the agent envelope schema",
     async () =>
       withTempLibraryPathAsync(async (libraryPath) => {
+        const configPath = join(libraryPath, "config.json");
+        writeTestConfig(configPath, libraryPath);
+
         const transport = new StdioClientTransport({
           command: process.execPath,
           args: ["run", "src/cli.ts", "mcp", "--quiet"],
@@ -400,11 +461,7 @@ describe("MCP Tool Output Contract", () => {
           stderr: "pipe",
           env: {
             ...process.env,
-            PDF_LIBRARY_PATH: libraryPath,
-            // Avoid hitting any real local Ollama instance during tests.
-            OLLAMA_HOST: "http://127.0.0.1:1",
-            // Keep noise down if something logs unexpectedly.
-            POINK_LOG_LEVEL: "silent",
+            ...envForConfig(configPath),
           } as any,
         });
 
@@ -454,6 +511,9 @@ describe("HTTP MCP Server", () => {
     "serve starts the HTTP MCP server and exposes /health",
     async () =>
       withTempLibraryPathAsync(async (libraryPath) => {
+        const configPath = join(libraryPath, "config.json");
+        writeTestConfig(configPath, libraryPath);
+
         const port = await getAvailablePort();
         const proc = Bun.spawn(
           [
@@ -473,9 +533,7 @@ describe("HTTP MCP Server", () => {
             stderr: "pipe",
             env: {
               ...process.env,
-              PDF_LIBRARY_PATH: libraryPath,
-              OLLAMA_HOST: "http://127.0.0.1:1",
-              POINK_LOG_LEVEL: "silent",
+              ...envForConfig(configPath),
             } as any,
           },
         );

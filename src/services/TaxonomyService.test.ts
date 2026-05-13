@@ -444,3 +444,32 @@ describe("TaxonomyService - Bulk Operations", () => {
     );
   });
 });
+
+describe("TaxonomyService - Concept Embeddings", () => {
+  test("storeConceptEmbedding initializes vector schema on a fresh database", async () => {
+    const result = await runTest(
+      Effect.gen(function* () {
+        const svc = yield* TaxonomyService;
+        yield* svc.addConcept({
+          id: "concept-vector",
+          prefLabel: "Vector Concept",
+        });
+        yield* svc.storeConceptEmbedding("concept-vector", [1, 0, 0]);
+        return yield* svc.findSimilarConcepts([1, 0, 0], 0.1, 5);
+      }),
+    );
+
+    expect(result.map((concept) => concept.id)).toContain("concept-vector");
+  });
+
+  test("findSimilarConcepts returns empty results before vector schema exists", async () => {
+    const result = await runTest(
+      Effect.gen(function* () {
+        const svc = yield* TaxonomyService;
+        return yield* svc.findSimilarConcepts([1, 0, 0], 0.1, 5);
+      }),
+    );
+
+    expect(result).toEqual([]);
+  });
+});

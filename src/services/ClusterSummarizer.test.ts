@@ -1,4 +1,4 @@
-import { describe, it, expect, mock } from "bun:test";
+import { afterEach, beforeEach, describe, it, expect, mock } from "bun:test";
 import { Effect, Layer } from "effect";
 import { mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
@@ -29,6 +29,71 @@ mock.module("ai", () => ({
 }));
 
 describe("ClusterSummarizerService - LLM Abstractive Summarization", () => {
+  let originalConfigPath: string | undefined;
+  let tempDir: string | undefined;
+
+  beforeEach(() => {
+    originalConfigPath = process.env.POINK_CONFIG;
+    tempDir = mkdtempSync(join(tmpdir(), "poink-cluster-summarizer-"));
+    const configPath = join(tempDir, "config.json");
+
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        version: 1,
+        library: { path: join(tempDir, "library") },
+        chunking: { strategy: "text", size: 2000, overlap: 200 },
+        models: {
+          embedding: { provider: "ollama", model: "mxbai-embed-large" },
+          enrichment: { provider: "ollama", model: "llama3.2:3b" },
+          judge: { provider: "ollama", model: "llama3.2:3b" },
+        },
+        providers: {
+          ollama: { baseUrl: "http://127.0.0.1:1", autoPull: true },
+          gateway: { apiKeyEnv: "AI_GATEWAY_API_KEY" },
+          openai: {
+            apiKeyEnv: "OPENAI_API_KEY",
+            baseUrl: "https://api.openai.com/v1",
+          },
+          openrouter: {
+            apiKeyEnv: "OPENROUTER_API_KEY",
+            baseUrl: "https://openrouter.ai/api/v1",
+          },
+        },
+        storage: {
+          backend: "libsql",
+          libsql: { url: `file:${join(tempDir, "library", "library.db")}` },
+          qdrant: {
+            url: "http://localhost:6333",
+            collection: "poink",
+            apiKeyEnv: "QDRANT_API_KEY",
+          },
+        },
+        server: {
+          host: "127.0.0.1",
+          port: 3838,
+          auth: { enabled: false, tokenEnv: "POINK_SERVER_TOKEN" },
+        },
+      }),
+      "utf-8",
+    );
+
+    process.env.POINK_CONFIG = configPath;
+  });
+
+  afterEach(() => {
+    if (originalConfigPath === undefined) {
+      delete process.env.POINK_CONFIG;
+    } else {
+      process.env.POINK_CONFIG = originalConfigPath;
+    }
+
+    if (tempDir) {
+      rmSync(tempDir, { recursive: true, force: true });
+      tempDir = undefined;
+    }
+  });
+
   it("should generate LLM-based abstractive summary with key topics", async () => {
     const chunks = [
       {
@@ -175,51 +240,16 @@ describe("ClusterSummarizerService - LLM Abstractive Summarization", () => {
   });
 
   it("should use the configured enrichment model via AI SDK", async () => {
-    const originalConfigPath = process.env.POINK_CONFIG;
-    const tempDir = mkdtempSync(join(tmpdir(), "poink-cluster-summarizer-"));
-    const configPath = join(tempDir, "config.json");
-    writeFileSync(
-      configPath,
-      JSON.stringify({
-        embedding: { provider: "ollama", model: "mxbai-embed-large" },
-        enrichment: { provider: "ollama", model: "llama3.2:3b" },
-        judge: { provider: "ollama", model: "llama3.2:3b" },
-        ollama: { host: "http://localhost:11434", autoInstall: true },
-        gateway: {},
-        openai: {},
-        database: {
-          backend: "libsql",
-          qdrant: { url: "http://localhost:6333", collection: "poink" },
-        },
-        server: {
-          host: "127.0.0.1",
-          port: 3838,
-          auth: { enabled: false },
-        },
-      }),
-      "utf-8"
-    );
-    process.env.POINK_CONFIG = configPath;
-
     const chunks = [
       { id: "1", content: "Test content for model verification." },
     ];
 
-    try {
-      await Effect.runPromise(
-        Effect.gen(function* () {
-          const service = yield* ClusterSummarizerService;
-          return yield* service.summarize(chunks, { clusterId: 5 });
-        }).pipe(Effect.provide(ClusterSummarizerImpl.Default))
-      );
-    } finally {
-      if (originalConfigPath === undefined) {
-        delete process.env.POINK_CONFIG;
-      } else {
-        process.env.POINK_CONFIG = originalConfigPath;
-      }
-      rmSync(tempDir, { recursive: true, force: true });
-    }
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const service = yield* ClusterSummarizerService;
+        return yield* service.summarize(chunks, { clusterId: 5 });
+      }).pipe(Effect.provide(ClusterSummarizerImpl.Default))
+    );
 
     // Verify generateText was called with correct model
     expect(mockGenerateText).toHaveBeenCalled();

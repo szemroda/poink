@@ -9,6 +9,7 @@
 import { Effect, Either } from "effect";
 import { describe, expect, test } from "bun:test";
 import { OllamaError } from "../types.js";
+import { normalizeOllamaHostUrl } from "./Ollama.js";
 
 // ============================================================================
 // Embedding Dimension Validation Tests (TDD - RED phase)
@@ -120,5 +121,25 @@ describe("Ollama Embedding Validation", () => {
     if (Either.isLeft(result)) {
       expect(result.left.reason).toContain("non-finite");
     }
+  });
+});
+
+describe("Ollama URL normalization", () => {
+  test("keeps a plain host suitable for raw Ollama REST endpoints", () => {
+    expect(normalizeOllamaHostUrl("http://localhost:11434")).toBe(
+      "http://localhost:11434",
+    );
+  });
+
+  test("strips a trailing /api accepted by the AI SDK provider", () => {
+    expect(normalizeOllamaHostUrl("http://localhost:11434/api")).toBe(
+      "http://localhost:11434",
+    );
+  });
+
+  test("trims trailing slashes before stripping /api", () => {
+    expect(normalizeOllamaHostUrl("http://localhost:11434/api/")).toBe(
+      "http://localhost:11434",
+    );
   });
 });

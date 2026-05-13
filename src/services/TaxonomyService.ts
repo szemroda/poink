@@ -10,6 +10,10 @@ import { createClient, type Client, type InValue } from "@libsql/client";
 import { DatabaseError } from "../types.js";
 import { EmbeddingProvider } from "./EmbeddingProvider.js";
 import type { EmbeddingError } from "./EmbeddingProvider.js";
+import {
+  ensureVectorSchemaForDimension,
+  ensureVectorSchemaForQuery,
+} from "./LibSQLVectorSchema.js";
 
 // ============================================================================
 // Types
@@ -591,6 +595,11 @@ export class TaxonomyServiceImpl {
 
           storeConceptEmbedding: (conceptId, embedding) =>
             Effect.gen(function* () {
+              yield* Effect.tryPromise({
+                try: () => ensureVectorSchemaForDimension(client, embedding.length),
+                catch: (e) => new DatabaseError({ reason: String(e) }),
+              });
+
               // Store embedding as F32_BLOB using vector32() function
               yield* execute(
                 `INSERT INTO concept_embeddings (concept_id, embedding)
@@ -603,6 +612,12 @@ export class TaxonomyServiceImpl {
 
           findSimilarConcepts: (embedding, threshold = 0.85, limit = 5) =>
             Effect.gen(function* () {
+              const hasVectorSchema = yield* Effect.tryPromise({
+                try: () => ensureVectorSchemaForQuery(client, embedding.length),
+                catch: (e) => new DatabaseError({ reason: String(e) }),
+              });
+              if (!hasVectorSchema) return [];
+
               const queryVec = JSON.stringify(embedding);
 
               // Use vector_top_k with DiskANN index for fast ANN search

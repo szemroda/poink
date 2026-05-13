@@ -2130,24 +2130,24 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
           `───────────────────────────────────────────────────────────────────`
         );
         yield* Console.log(
-          `Embedding:   ${config.embedding.provider} / ${config.embedding.model}`
+          `Embedding:   ${config.models.embedding.provider} / ${config.models.embedding.model}`
         );
         yield* Console.log(
-          `Enrichment:  ${config.enrichment.provider} / ${config.enrichment.model}`
+          `Enrichment:  ${config.models.enrichment.provider} / ${config.models.enrichment.model}`
         );
         yield* Console.log(
-          `Judge:       ${config.judge.provider} / ${config.judge.model}`
+          `Judge:       ${config.models.judge.provider} / ${config.models.judge.model}`
         );
         yield* Console.log("");
         yield* Console.log(
-          `Ollama:      ${config.ollama.host} (auto-install: ${
-            config.ollama.autoInstall ? "on" : "off"
+          `Ollama:      ${config.providers.ollama.baseUrl} (auto-pull: ${
+            config.providers.ollama.autoPull ? "on" : "off"
           })`
         );
         yield* Console.log("");
-        yield* Console.log(`Database:    ${config.database.backend}`);
+        yield* Console.log(`Storage:     ${config.storage.backend}`);
         yield* Console.log(
-          `Qdrant:      ${config.database.qdrant.url} / ${config.database.qdrant.collection}`
+          `Qdrant:      ${config.storage.qdrant.url} / ${config.storage.qdrant.collection}`
         );
         yield* Console.log("");
         yield* Console.log(`Server:      ${config.server.host}:${config.server.port}`);
@@ -2162,12 +2162,12 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
 	        yield* Console.log(
 	          hasGatewayKey
 	            ? `Gateway:     API key configured`
-	            : `Gateway:     No API key (set via: poink config set gateway.apiKey <key>)`
+	            : `Gateway:     No API key (set via: poink config set providers.gateway.apiKey <key>)`
 	        );
         yield* Console.log(
           hasOpenRouterKey
             ? `OpenRouter:  API key configured`
-            : `OpenRouter:  No API key (set via: poink config set openrouter.apiKey <key>)`
+            : `OpenRouter:  No API key (set via: poink config set providers.openrouter.apiKey <key>)`
         );
 	        resultPayload = {
 	          configPath,
@@ -2180,11 +2180,11 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
 	        if (!path) {
 	          yield* Console.error("Error: Path required");
 	          yield* Console.error("Usage: poink config get <path>");
-	          yield* Console.error("Example: poink config get embedding.model");
+	          yield* Console.error("Example: poink config get models.embedding.model");
 	          return yield* Effect.fail(
 	            new CLIError("INVALID_ARGS", "Path required", {
 	              command: "config get",
-	              hint: "poink config get embedding.model",
+	              hint: "poink config get models.embedding.model",
 	            })
 	          );
 	        }
@@ -2217,12 +2217,12 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
           yield* Console.error("Error: Path and value required");
           yield* Console.error("Usage: poink config set <path> <value>");
 	          yield* Console.error(
-	            "Example: poink config set embedding.model nomic-embed-text"
+	            "Example: poink config set models.embedding.model nomic-embed-text"
 	          );
 	          return yield* Effect.fail(
 	            new CLIError("INVALID_ARGS", "Path and value required", {
 	              command: "config set",
-	              hint: "poink config set embedding.model nomic-embed-text",
+	              hint: "poink config set models.embedding.model nomic-embed-text",
 	            })
 	          );
 	        }

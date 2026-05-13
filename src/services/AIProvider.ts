@@ -8,6 +8,7 @@ import {
   OllamaError,
   OpenAIError,
   OpenRouterError,
+  getModelConfig,
 } from "../types.js";
 
 export type SupportedProvider = "ollama" | "openai" | "gateway" | "openrouter";
@@ -16,7 +17,7 @@ export type ProviderError =
   | OllamaError
   | OpenAIError
   | OpenRouterError;
-export type ConfiguredLanguageRole = "enrichment" | "judge" | "summary";
+export type ConfiguredLanguageRole = "enrichment" | "judge";
 
 export interface ResolvedEmbeddingModel {
   readonly provider: SupportedProvider;
@@ -97,7 +98,7 @@ function requireGatewayApiKey(config: Config): string {
   if (!apiKey) {
     throw new GatewayError({
       reason:
-        "Gateway API key not set. Use: poink config set gateway.apiKey <key> or set AI_GATEWAY_API_KEY.",
+        "Gateway API key not set. Use: poink config set providers.gateway.apiKey <key> or set AI_GATEWAY_API_KEY.",
     });
   }
   return apiKey;
@@ -107,7 +108,7 @@ function requireOpenAIApiKey(config: Config): string {
   const apiKey = config.openaiApiKey;
   if (!apiKey) {
     throw new OpenAIError({
-      reason: "OpenAI API key not set. Use openai.apiKey or OPENAI_API_KEY.",
+      reason: "OpenAI API key not set. Use providers.openai.apiKey or OPENAI_API_KEY.",
     });
   }
   return apiKey;
@@ -118,7 +119,7 @@ function requireOpenRouterApiKey(config: Config): string {
   if (!apiKey) {
     throw new OpenRouterError({
       reason:
-        "OpenRouter API key not set. Use openrouter.apiKey or OPENROUTER_API_KEY.",
+        "OpenRouter API key not set. Use providers.openrouter.apiKey or OPENROUTER_API_KEY.",
     });
   }
   return apiKey;
@@ -147,7 +148,7 @@ function createConfiguredOpenRouterProvider(config: Config) {
 
 function createConfiguredOllamaProvider(config: Config) {
   return createOllama({
-    baseURL: normalizeOllamaBaseUrl(config.ollama.host),
+    baseURL: normalizeOllamaBaseUrl(config.providers.ollama.baseUrl),
     compatibility: "strict",
   });
 }
@@ -155,11 +156,9 @@ function createConfiguredOllamaProvider(config: Config) {
 export function getConfiguredEmbeddingModel(
   config: Config,
 ): ResolvedEmbeddingModel {
-  const provider = config.embedding.provider;
-  const modelId =
-    provider === "openai"
-      ? config.embedding.openai.model ?? config.embedding.model
-      : config.embedding.model;
+  const embedding = getModelConfig(config, "embedding");
+  const provider = embedding.provider;
+  const modelId = embedding.model;
 
   if (provider === "gateway") {
     return {
@@ -193,10 +192,7 @@ export function getConfiguredEmbeddingModel(
 }
 
 function getConfiguredLanguageConfig(config: Config, role: ConfiguredLanguageRole) {
-  if (role === "summary") {
-    return config.enrichment;
-  }
-  return config[role];
+  return getModelConfig(config, role);
 }
 
 export function resolveLanguageModel(

@@ -1,4 +1,4 @@
-import type { Document, DocumentFileType, LibraryConfig } from "./types.js";
+import type { Document, DocumentFileType } from "./types.js";
 
 export type ChunkerMetadata = {
   /** Stable identifier for the chunking algorithm implementation */
@@ -226,7 +226,7 @@ export function assertValidChunking(
 
 export function buildChunkerMetadata(
   fileType: DocumentFileType,
-  config: Pick<LibraryConfig, "chunkSize" | "chunkOverlap">,
+  config: { chunkSize: number; chunkOverlap: number },
 ): ChunkerMetadata {
   assertValidChunking(config.chunkSize, config.chunkOverlap);
   const base = CURRENT_CHUNKER[fileType];
@@ -265,7 +265,7 @@ export function getDocChunkerMetadata(doc: Document): ChunkerMetadata | null {
 
 export function assessDocChunker(
   doc: Document,
-  config: Pick<LibraryConfig, "chunkSize" | "chunkOverlap">,
+  config: { chunkSize: number; chunkOverlap: number },
 ): {
   needsRechunk: boolean;
   code:

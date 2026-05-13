@@ -2,31 +2,11 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-import { loadConfig } from "./types.js";
+import { Config, LibraryConfig, loadConfig } from "./types.js";
 
 const ORIGINAL_POINK_CONFIG = process.env.POINK_CONFIG;
 const ORIGINAL_OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
 const ORIGINAL_OPENROUTER_BASE_URL = process.env.OPENROUTER_BASE_URL;
-
-const LEGACY_CONFIG_SHAPE = {
-  embedding: {
-    provider: "ollama",
-    model: "mxbai-embed-large",
-  },
-  enrichment: {
-    provider: "ollama",
-    model: "llama3.2",
-  },
-  judge: {
-    provider: "ollama",
-    model: "llama3.2",
-  },
-  ollama: {
-    host: "http://localhost:11434",
-    autoInstall: true,
-  },
-  gateway: {},
-};
 
 function makeTempDir(): string {
   return mkdtempSync(join(tmpdir(), "poink-config-"));
@@ -63,42 +43,20 @@ describe("loadConfig path and database defaults", () => {
       const config = loadConfig();
 
       expect(existsSync(configPath)).toBe(true);
-      expect(config.database.backend).toBe("libsql");
-      expect(config.database.qdrant.url).toBe("http://localhost:6333");
-      expect(config.database.qdrant.collection).toBe("poink");
+      expect(config.version).toBe(1);
+      expect(config.storage.backend).toBe("libsql");
+      expect(config.storage.qdrant.url).toBe("http://localhost:6333");
+      expect(config.storage.qdrant.collection).toBe("poink");
+      expect(config.chunking.size).toBe(2000);
+      expect(config.chunking.overlap).toBe(200);
       expect(config.server.host).toBe("127.0.0.1");
       expect(config.server.port).toBe(3838);
       expect(config.server.auth.enabled).toBe(false);
       expect(config.server.auth.token).toBeUndefined();
-      expect(config.enrichment.model).toBe("llama3.2:3b");
-      expect(config.judge.model).toBe("llama3.2:3b");
-      expect(config.openrouter.apiKey).toBeUndefined();
-      expect(config.openrouter.baseUrl).toBeUndefined();
-    } finally {
-      rmSync(tempDir, { recursive: true, force: true });
-    }
-  });
-
-  test("applies default database settings when loading legacy config without database section", () => {
-    const tempDir = makeTempDir();
-
-    try {
-      const configPath = join(tempDir, "legacy-config.json");
-      process.env.POINK_CONFIG = configPath;
-      writeFileSync(configPath, JSON.stringify(LEGACY_CONFIG_SHAPE), "utf-8");
-
-      const config = loadConfig();
-      expect(config.database.backend).toBe("libsql");
-      expect(config.database.qdrant.url).toBe("http://localhost:6333");
-      expect(config.database.qdrant.collection).toBe("poink");
-      expect(config.server.host).toBe("127.0.0.1");
-      expect(config.server.port).toBe(3838);
-      expect(config.server.auth.enabled).toBe(false);
-      expect(config.server.auth.token).toBeUndefined();
-      expect(config.enrichment.model).toBe("llama3.2");
-      expect(config.judge.model).toBe("llama3.2");
-      expect(config.openrouter.apiKey).toBeUndefined();
-      expect(config.openrouter.baseUrl).toBeUndefined();
+      expect(config.models.enrichment.model).toBe("llama3.2:3b");
+      expect(config.models.judge.model).toBe("llama3.2:3b");
+      expect(config.providers.openrouter.apiKey).toBeUndefined();
+      expect(config.providers.openrouter.baseUrl).toBe("https://openrouter.ai/api/v1");
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }
@@ -117,6 +75,50 @@ describe("loadConfig path and database defaults", () => {
 
       expect(config.openrouterApiKey).toBe("env-openrouter-key");
       expect(config.openrouterBaseUrl).toBe("https://openrouter.example/api/v1");
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  test("explicit OpenRouter base URL config takes precedence over environment", () => {
+    const tempDir = makeTempDir();
+
+    try {
+      const configPath = join(tempDir, "config.json");
+      const config = JSON.parse(JSON.stringify(Config.Default));
+      config.providers.openrouter.baseUrl = "https://configured.example/api/v1";
+
+      process.env.POINK_CONFIG = configPath;
+      process.env.OPENROUTER_BASE_URL = "https://env.example/api/v1";
+      writeFileSync(configPath, JSON.stringify(config), "utf-8");
+
+      expect(loadConfig().openrouterBaseUrl).toBe(
+        "https://configured.example/api/v1",
+      );
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects invalid chunking instead of falling back to defaults", () => {
+    const tempDir = makeTempDir();
+
+    try {
+      const configPath = join(tempDir, "config.json");
+      const config = JSON.parse(JSON.stringify(Config.Default));
+      config.library.path = join(tempDir, "library");
+      config.chunking.size = 100;
+      config.chunking.overlap = 100;
+
+      process.env.POINK_CONFIG = configPath;
+      writeFileSync(configPath, JSON.stringify(config), "utf-8");
+
+      expect(() => loadConfig()).toThrow(
+        "chunkOverlap (100) must be smaller than chunkSize (100)",
+      );
+      expect(() => LibraryConfig.fromEnv()).toThrow(
+        "chunkOverlap (100) must be smaller than chunkSize (100)",
+      );
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }

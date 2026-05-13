@@ -70,6 +70,14 @@ const makeLruCache = <V>(maxSize: number) => {
   };
 };
 
+function readConfiguredEmbeddingProvider(): SupportedProvider {
+  try {
+    return loadConfig().models.embedding.provider;
+  } catch {
+    return "ollama";
+  }
+}
+
 function toEmbeddingError(
   provider: SupportedProvider,
   message: string,
@@ -145,9 +153,10 @@ export const EmbeddingProviderLive = Layer.effect(
       maxParallelCalls?: number,
     ): Effect.Effect<number[][], EmbeddingError> =>
       Effect.gen(function* () {
-        const resolved = getResolved();
+        let resolved: ReturnType<typeof getConfiguredEmbeddingModel> | undefined;
         const embeddings = yield* Effect.tryPromise({
           try: async () => {
+            resolved = getResolved();
             if (texts.length === 0) return [];
 
             if (texts.length === 1) {
@@ -169,19 +178,20 @@ export const EmbeddingProviderLive = Layer.effect(
           },
           catch: (error) =>
             toEmbeddingError(
-              resolved.provider,
+              resolved?.provider ?? readConfiguredEmbeddingProvider(),
               `Embedding failed: ${
                 error instanceof Error ? error.message : String(error)
               }`,
             ),
         });
 
+        const provider = resolved?.provider ?? readConfiguredEmbeddingProvider();
         const validated: number[][] = [];
         for (const embedding of embeddings) {
           const result = yield* validateEmbedding(
             embedding,
             expectedDimension,
-            resolved.provider,
+            provider,
           );
           expectedDimension = result.expectedDimension;
           validated.push(result.embedding);
@@ -213,7 +223,7 @@ export const EmbeddingProviderLive = Layer.effect(
       embedBatch: (texts: string[], concurrency = 10) => runEmbed(texts, concurrency),
       checkHealth: () => Effect.asVoid(runEmbed(["health check"])),
       get provider() {
-        return loadConfig().embedding.provider;
+        return loadConfig().models.embedding.provider;
       },
     };
   }),

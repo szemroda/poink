@@ -201,6 +201,11 @@ export function expandHomePath(path: string): string {
 
 const DEFAULT_CHUNK_SIZE = 2000;
 const DEFAULT_CHUNK_OVERLAP = 200;
+const DEFAULT_LIBRARY_PATH = "~/.poink";
+const DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434";
+const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1";
+const DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
+const DEFAULT_LIBSQL_URL = "file:~/.poink/library.db";
 
 function getLibraryConfigProps(libraryPath: string) {
   assertValidChunking(DEFAULT_CHUNK_SIZE, DEFAULT_CHUNK_OVERLAP);
@@ -208,8 +213,6 @@ function getLibraryConfigProps(libraryPath: string) {
   return {
     libraryPath,
     dbPath: join(libraryPath, "library.db"),
-    ollamaModel: process.env.OLLAMA_MODEL || "mxbai-embed-large",
-    ollamaHost: process.env.OLLAMA_HOST || "http://localhost:11434",
     chunkSize: DEFAULT_CHUNK_SIZE,
     chunkOverlap: DEFAULT_CHUNK_OVERLAP,
   };
@@ -219,8 +222,6 @@ export class LibraryConfig extends Schema.Class<LibraryConfig>("LibraryConfig")(
   {
     libraryPath: Schema.String,
     dbPath: Schema.String,
-    ollamaModel: Schema.String,
-    ollamaHost: Schema.String,
     chunkSize: Schema.Number,
     chunkOverlap: Schema.Number,
   }
@@ -230,67 +231,164 @@ export class LibraryConfig extends Schema.Class<LibraryConfig>("LibraryConfig")(
   );
 
   static fromEnv(): LibraryConfig {
-    const libraryPath = process.env.PDF_LIBRARY_PATH || getDefaultLibraryPath();
-    return new LibraryConfig(getLibraryConfigProps(libraryPath));
+    const config = loadConfig();
+    const libraryPath = resolveLibraryPath(config);
+    const props = getLibraryConfigProps(libraryPath);
+    const chunking = resolveChunkingConfig(config);
+    return new LibraryConfig({
+      ...props,
+      chunkSize: chunking.chunkSize,
+      chunkOverlap: chunking.chunkOverlap,
+    });
   }
 }
 
-const DEFAULT_OPENAI_EMBEDDING_MODEL = "text-embedding-3-small";
+export type ModelRole = "embedding" | "enrichment" | "judge";
+export type ProviderName = "ollama" | "gateway" | "openai" | "openrouter";
+
+const ProviderNameSchema = Schema.Literal(
+  "ollama",
+  "gateway",
+  "openai",
+  "openrouter",
+);
+
+const ModelRefSchema = Schema.Struct({
+  provider: ProviderNameSchema,
+  model: Schema.String,
+});
+
+const SecretRefSchema = Schema.Struct({
+  apiKey: Schema.optional(Schema.String),
+  apiKeyEnv: Schema.optional(Schema.String),
+});
 
 /**
  * Multi-provider configuration for embedding, enrichment, and judge models.
  */
 export class Config extends Schema.Class<Config>("Config")({
-  embedding: Schema.Struct({
-    provider: Schema.Literal("ollama", "gateway", "openai", "openrouter"),
-    model: Schema.String,
-    openai: Schema.optionalWith(
-      Schema.Struct({
-        apiKey: Schema.optional(Schema.String),
-        model: Schema.optional(Schema.String),
-        baseUrl: Schema.optional(Schema.String),
+  version: Schema.optionalWith(Schema.Number, { default: () => 1 }),
+  library: Schema.optionalWith(Schema.Struct({
+    path: Schema.optionalWith(Schema.String, {
+      default: () => DEFAULT_LIBRARY_PATH,
+    }),
+  }), {
+    default: () => ({ path: DEFAULT_LIBRARY_PATH }),
+  }),
+  chunking: Schema.optionalWith(Schema.Struct({
+    strategy: Schema.optionalWith(Schema.Literal("text"), {
+      default: () => "text" as const,
+    }),
+    size: Schema.optionalWith(Schema.Number, {
+      default: () => DEFAULT_CHUNK_SIZE,
+    }),
+    overlap: Schema.optionalWith(Schema.Number, {
+      default: () => DEFAULT_CHUNK_OVERLAP,
+    }),
+  }), {
+    default: () => ({
+      strategy: "text" as const,
+      size: DEFAULT_CHUNK_SIZE,
+      overlap: DEFAULT_CHUNK_OVERLAP,
+    }),
+  }),
+  models: Schema.Struct({
+    embedding: ModelRefSchema,
+    enrichment: ModelRefSchema,
+    judge: ModelRefSchema,
+  }),
+  providers: Schema.optionalWith(Schema.Struct({
+    ollama: Schema.optionalWith(Schema.Struct({
+      baseUrl: Schema.optionalWith(Schema.String, {
+        default: () => DEFAULT_OLLAMA_BASE_URL,
       }),
-      { default: () => ({ model: DEFAULT_OPENAI_EMBEDDING_MODEL }) },
-    ),
+      autoPull: Schema.optionalWith(Schema.Boolean, {
+        default: () => true,
+      }),
+    }), {
+      default: () => ({
+        baseUrl: DEFAULT_OLLAMA_BASE_URL,
+        autoPull: true,
+      }),
+    }),
+    gateway: Schema.optionalWith(SecretRefSchema, {
+      default: () => ({ apiKeyEnv: "AI_GATEWAY_API_KEY" }),
+    }),
+    openai: Schema.optionalWith(Schema.Struct({
+      apiKey: Schema.optional(Schema.String),
+      apiKeyEnv: Schema.optionalWith(Schema.String, {
+        default: () => "OPENAI_API_KEY",
+      }),
+      baseUrl: Schema.optionalWith(Schema.String, {
+        default: () => DEFAULT_OPENAI_BASE_URL,
+      }),
+    }), {
+      default: () => ({
+        apiKeyEnv: "OPENAI_API_KEY",
+        baseUrl: DEFAULT_OPENAI_BASE_URL,
+      }),
+    }),
+    openrouter: Schema.optionalWith(Schema.Struct({
+      apiKey: Schema.optional(Schema.String),
+      apiKeyEnv: Schema.optionalWith(Schema.String, {
+        default: () => "OPENROUTER_API_KEY",
+      }),
+      baseUrl: Schema.optionalWith(Schema.String, {
+        default: () => DEFAULT_OPENROUTER_BASE_URL,
+      }),
+    }), {
+      default: () => ({
+        apiKeyEnv: "OPENROUTER_API_KEY",
+        baseUrl: DEFAULT_OPENROUTER_BASE_URL,
+      }),
+    }),
+  }), {
+    default: () => ({
+      ollama: { baseUrl: DEFAULT_OLLAMA_BASE_URL, autoPull: true },
+      gateway: { apiKeyEnv: "AI_GATEWAY_API_KEY" },
+      openai: {
+        apiKeyEnv: "OPENAI_API_KEY",
+        baseUrl: DEFAULT_OPENAI_BASE_URL,
+      },
+      openrouter: {
+        apiKeyEnv: "OPENROUTER_API_KEY",
+        baseUrl: DEFAULT_OPENROUTER_BASE_URL,
+      },
+    }),
   }),
-  enrichment: Schema.Struct({
-    provider: Schema.Literal("ollama", "gateway", "openai", "openrouter"),
-    model: Schema.String,
-  }),
-  judge: Schema.Struct({
-    provider: Schema.Literal("ollama", "gateway", "openai", "openrouter"),
-    model: Schema.String,
-  }),
-  ollama: Schema.Struct({
-    host: Schema.String,
-    autoInstall: Schema.Boolean,
-  }),
-  gateway: Schema.optionalWith(Schema.Struct({
-    apiKey: Schema.optional(Schema.String),
-  }), { default: () => ({}) }),
-  openai: Schema.optionalWith(Schema.Struct({
-    apiKey: Schema.optional(Schema.String),
-    baseUrl: Schema.optional(Schema.String),
-  }), { default: () => ({}) }),
-  openrouter: Schema.optionalWith(Schema.Struct({
-    apiKey: Schema.optional(Schema.String),
-    baseUrl: Schema.optional(Schema.String),
-  }), { default: () => ({}) }),
-  database: Schema.optionalWith(
+  storage: Schema.optionalWith(
     Schema.Struct({
       backend: Schema.optionalWith(Schema.Literal("libsql", "qdrant"), {
         default: () => "libsql" as const,
       }),
+      libsql: Schema.optionalWith(
+        Schema.Struct({
+          url: Schema.optionalWith(Schema.String, {
+            default: () => DEFAULT_LIBSQL_URL,
+          }),
+          authToken: Schema.optional(Schema.String),
+          authTokenEnv: Schema.optional(Schema.String),
+        }),
+        {
+          default: () => ({
+            url: DEFAULT_LIBSQL_URL,
+          }),
+        },
+      ),
       qdrant: Schema.optionalWith(
         Schema.Struct({
           url: Schema.String,
           collection: Schema.String,
           apiKey: Schema.optional(Schema.String),
+          apiKeyEnv: Schema.optionalWith(Schema.String, {
+            default: () => "QDRANT_API_KEY",
+          }),
         }),
         {
           default: () => ({
             url: "http://localhost:6333",
             collection: "poink",
+            apiKeyEnv: "QDRANT_API_KEY",
           }),
         }
       ),
@@ -298,9 +396,13 @@ export class Config extends Schema.Class<Config>("Config")({
     {
       default: () => ({
         backend: "libsql" as const,
+        libsql: {
+          url: "file:~/.poink/library.db",
+        },
         qdrant: {
           url: "http://localhost:6333",
           collection: "poink",
+          apiKeyEnv: "QDRANT_API_KEY",
         },
       }),
     }
@@ -319,10 +421,14 @@ export class Config extends Schema.Class<Config>("Config")({
             default: () => false,
           }),
           token: Schema.optional(Schema.String),
+          tokenEnv: Schema.optionalWith(Schema.String, {
+            default: () => "POINK_SERVER_TOKEN",
+          }),
         }),
         {
           default: () => ({
             enabled: false,
+            tokenEnv: "POINK_SERVER_TOKEN",
           }),
         }
       ),
@@ -333,6 +439,7 @@ export class Config extends Schema.Class<Config>("Config")({
         port: 3838,
         auth: {
           enabled: false,
+          tokenEnv: "POINK_SERVER_TOKEN",
         },
       }),
     }
@@ -342,33 +449,55 @@ export class Config extends Schema.Class<Config>("Config")({
    * Default configuration: Ollama for all providers
    */
   static readonly Default = new Config({
-    embedding: {
-      provider: "ollama" as const,
-      model: "mxbai-embed-large",
-      openai: {
-        model: DEFAULT_OPENAI_EMBEDDING_MODEL,
+    version: 1,
+    library: {
+      path: DEFAULT_LIBRARY_PATH,
+    },
+    chunking: {
+      strategy: "text",
+      size: DEFAULT_CHUNK_SIZE,
+      overlap: DEFAULT_CHUNK_OVERLAP,
+    },
+    models: {
+      embedding: {
+        provider: "ollama" as const,
+        model: "mxbai-embed-large",
+      },
+      enrichment: {
+        provider: "ollama" as const,
+        model: "llama3.2:3b",
+      },
+      judge: {
+        provider: "ollama" as const,
+        model: "llama3.2:3b",
       },
     },
-    enrichment: {
-      provider: "ollama" as const,
-      model: "llama3.2:3b",
+    providers: {
+      ollama: {
+        baseUrl: DEFAULT_OLLAMA_BASE_URL,
+        autoPull: true,
+      },
+      gateway: {
+        apiKeyEnv: "AI_GATEWAY_API_KEY",
+      },
+      openai: {
+        apiKeyEnv: "OPENAI_API_KEY",
+        baseUrl: DEFAULT_OPENAI_BASE_URL,
+      },
+      openrouter: {
+        apiKeyEnv: "OPENROUTER_API_KEY",
+        baseUrl: DEFAULT_OPENROUTER_BASE_URL,
+      },
     },
-    judge: {
-      provider: "ollama" as const,
-      model: "llama3.2:3b",
-    },
-    ollama: {
-      host: "http://localhost:11434",
-      autoInstall: true,
-    },
-    gateway: {},
-    openai: {},
-    openrouter: {},
-    database: {
+    storage: {
       backend: "libsql",
+      libsql: {
+        url: DEFAULT_LIBSQL_URL,
+      },
       qdrant: {
         url: "http://localhost:6333",
         collection: "poink",
+        apiKeyEnv: "QDRANT_API_KEY",
       },
     },
     server: {
@@ -376,6 +505,7 @@ export class Config extends Schema.Class<Config>("Config")({
       port: 3838,
       auth: {
         enabled: false,
+        tokenEnv: "POINK_SERVER_TOKEN",
       },
     },
   });
@@ -384,36 +514,87 @@ export class Config extends Schema.Class<Config>("Config")({
    * Resolve the gateway API key: config takes precedence over env var.
    */
   get gatewayApiKey(): string | undefined {
-    return this.gateway.apiKey ?? process.env.AI_GATEWAY_API_KEY;
+    return this.providers.gateway.apiKey ??
+      readConfiguredEnv(this.providers.gateway.apiKeyEnv) ??
+      process.env.AI_GATEWAY_API_KEY;
   }
 
   /**
    * Resolve the OpenAI API key: config takes precedence over env var.
    */
   get openaiApiKey(): string | undefined {
-    return this.openai.apiKey ?? this.embedding.openai.apiKey ?? process.env.OPENAI_API_KEY;
+    return this.providers.openai.apiKey ??
+      readConfiguredEnv(this.providers.openai.apiKeyEnv) ??
+      process.env.OPENAI_API_KEY;
   }
 
-  /**
-   * Resolve the OpenAI base URL: top-level config takes precedence over legacy embedding config.
-   */
   get openaiBaseUrl(): string | undefined {
-    return this.openai.baseUrl ?? this.embedding.openai.baseUrl;
+    return this.providers.openai.baseUrl;
   }
 
   /**
    * Resolve the OpenRouter API key: config takes precedence over env var.
    */
   get openrouterApiKey(): string | undefined {
-    return this.openrouter.apiKey ?? process.env.OPENROUTER_API_KEY;
+    return this.providers.openrouter.apiKey ??
+      readConfiguredEnv(this.providers.openrouter.apiKeyEnv) ??
+      process.env.OPENROUTER_API_KEY;
   }
 
-  /**
-   * Resolve the OpenRouter base URL: config takes precedence over env var.
-   */
   get openrouterBaseUrl(): string | undefined {
-    return this.openrouter.baseUrl ?? process.env.OPENROUTER_BASE_URL;
+    const configured = this.providers.openrouter.baseUrl;
+    if (configured && !isDefaultOpenRouterBaseUrl(configured)) {
+      return configured;
+    }
+    return process.env.OPENROUTER_BASE_URL ?? configured;
   }
+}
+
+function isDefaultOpenRouterBaseUrl(baseUrl: string): boolean {
+  return baseUrl.replace(/\/+$/, "") === DEFAULT_OPENROUTER_BASE_URL;
+}
+
+function readConfiguredEnv(name: string | undefined): string | undefined {
+  if (!name) return undefined;
+  return process.env[name];
+}
+
+export function getModelConfig(config: Config, role: ModelRole) {
+  return config.models[role];
+}
+
+export function resolveLibraryPath(config: Config): string {
+  return expandHomePath(config.library.path);
+}
+
+export function resolveLibraryDbPath(config: Config): string {
+  return join(resolveLibraryPath(config), "library.db");
+}
+
+export function resolveLibsqlUrl(config: Config): string {
+  const configured = config.storage.libsql.url;
+  if (!configured || configured === DEFAULT_LIBSQL_URL) {
+    return `file:${resolveLibraryDbPath(config)}`;
+  }
+  if (configured.startsWith("file:~/") || configured.startsWith("file:~\\")) {
+    return `file:${expandHomePath(configured.slice("file:".length))}`;
+  }
+  return configured;
+}
+
+export function resolveChunkingConfig(config: Config) {
+  assertValidChunking(config.chunking.size, config.chunking.overlap);
+  return {
+    chunkSize: config.chunking.size,
+    chunkOverlap: config.chunking.overlap,
+  };
+}
+
+export function resolveStorageApiKey(value: {
+  apiKey?: string;
+  apiKeyEnv?: string;
+}): string | undefined {
+  return value.apiKey ?? readConfiguredEnv(value.apiKeyEnv);
 }
 
 // ============================================================================
@@ -425,16 +606,6 @@ export class Config extends Schema.Class<Config>("Config")({
  */
 export function getDefaultConfigPath(): string {
   return join(resolveHomeDir(), ".config", "poink", "config.json");
-}
-
-/**
- * Legacy config path ($PDF_LIBRARY_PATH/config.json).
- */
-export function getLegacyConfigPath(): string {
-  const libraryPath =
-    process.env.PDF_LIBRARY_PATH ||
-    join(resolveHomeDir(), "Documents", ".pdf-library");
-  return join(libraryPath, "config.json");
 }
 
 /**
@@ -451,7 +622,9 @@ export function resolveConfigPath(): string {
  * Decode config data and apply schema defaults for missing fields.
  */
 export function normalizeConfig(configData: unknown): Config {
-  return Schema.decodeUnknownSync(Config)(configData);
+  const config = Schema.decodeUnknownSync(Config)(configData);
+  resolveChunkingConfig(config);
+  return config;
 }
 
 /**
@@ -460,17 +633,9 @@ export function normalizeConfig(configData: unknown): Config {
  */
 export function loadConfig(): Config {
   const configPath = resolveConfigPath();
-  const legacyConfigPath = getLegacyConfigPath();
-  const explicitPath = Boolean(process.env.POINK_CONFIG);
 
-  // Create config file with defaults if missing (or read legacy config for compatibility)
+  // Create config file with defaults if missing.
   if (!existsSync(configPath)) {
-    if (!explicitPath && existsSync(legacyConfigPath)) {
-      const configJson = readFileSync(legacyConfigPath, "utf-8");
-      const configData = JSON.parse(configJson);
-      return normalizeConfig(configData);
-    }
-
     mkdirSync(dirname(configPath), { recursive: true });
     writeFileSync(configPath, JSON.stringify(Config.Default, null, 2), "utf-8");
     return Config.Default;

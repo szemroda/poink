@@ -40,6 +40,12 @@ async function collectGenerator<T>(gen: AsyncGenerator<T>): Promise<T[]> {
   return results;
 }
 
+function tempDbUrl(prefix: string): string {
+  const dbPath = `${process.env.TEMP ?? "."}/${prefix}-${crypto.randomUUID()}.db`
+    .replaceAll("\\", "/");
+  return `file:${dbPath}`;
+}
+
 describe("LibSQLDatabase", () => {
   describe("initialization", () => {
     test("can be created with in-memory DB", async () => {
@@ -70,16 +76,19 @@ describe("LibSQLDatabase", () => {
       //
       // This test verifies the actual schema by querying sqlite_master
 
-      // Create and initialize database through the Effect layer
+      // Create and initialize database through the Effect layer.
       const program = Effect.gen(function* () {
         yield* Database; // Force initialization
         return "db-initialized";
       });
 
-      const layer = LibSQLDatabase.make({ url: "file::memory:?cache=shared" });
+      const layer = LibSQLDatabase.make({
+        url: "file::memory:?cache=shared",
+        embeddingDimension: 1024,
+      });
       await Effect.runPromise(Effect.provide(program, layer));
 
-      // Query schema using raw client on the same shared memory DB
+      // Query schema using raw client on the same DB
       const client = createClient({ url: "file::memory:?cache=shared" });
       const result = await client.execute({
         sql: "SELECT sql FROM sqlite_master WHERE type='table' AND name='embeddings'",
@@ -814,16 +823,17 @@ describe("LibSQLDatabase", () => {
   describe("concept embeddings schema", () => {
     test("concept_embeddings table exists with F32_BLOB(1024)", async () => {
       // RED TEST: Verify concept embeddings use same 1024-dim as mxbai-embed-large
+      const url = tempDbUrl("poink-concept-schema");
       const program = Effect.gen(function* () {
         yield* Database; // Force initialization
         return "db-initialized";
       });
 
-      const layer = LibSQLDatabase.make({ url: "file::memory:?cache=shared" });
+      const layer = LibSQLDatabase.make({ url, embeddingDimension: 1024 });
       await Effect.runPromise(Effect.provide(program, layer));
 
       // Query schema
-      const client = createClient({ url: "file::memory:?cache=shared" });
+      const client = createClient({ url });
       const result = await client.execute({
         sql: "SELECT sql FROM sqlite_master WHERE type='table' AND name='concept_embeddings'",
         args: [],
@@ -842,15 +852,16 @@ describe("LibSQLDatabase", () => {
     });
 
     test("concept_embeddings_idx vector index exists", async () => {
+      const url = tempDbUrl("poink-concept-index");
       const program = Effect.gen(function* () {
         yield* Database;
         return "db-initialized";
       });
 
-      const layer = LibSQLDatabase.make({ url: "file::memory:?cache=shared" });
+      const layer = LibSQLDatabase.make({ url, embeddingDimension: 1024 });
       await Effect.runPromise(Effect.provide(program, layer));
 
-      const client = createClient({ url: "file::memory:?cache=shared" });
+      const client = createClient({ url });
       const result = await client.execute({
         sql: "SELECT name FROM sqlite_master WHERE type='index' AND name='concept_embeddings_idx'",
         args: [],
@@ -1297,16 +1308,17 @@ describe("LibSQLDatabase", () => {
 
     test("cluster_summaries table exists with correct schema", async () => {
       // Create and initialize database through the Effect layer
+      const url = tempDbUrl("poink-cluster-schema");
       const program = Effect.gen(function* () {
         yield* Database; // Force initialization
         return "db-initialized";
       });
 
-      const layer = LibSQLDatabase.make({ url: "file::memory:?cache=shared" });
+      const layer = LibSQLDatabase.make({ url, embeddingDimension: 1024 });
       await Effect.runPromise(Effect.provide(program, layer));
 
       // Query schema using raw client on the same shared memory DB
-      const client = createClient({ url: "file::memory:?cache=shared" });
+      const client = createClient({ url });
       const result = await client.execute({
         sql: "SELECT sql FROM sqlite_master WHERE type='table' AND name='cluster_summaries'",
         args: [],
@@ -1350,15 +1362,16 @@ describe("LibSQLDatabase", () => {
     });
 
     test("cluster_summaries has index on concept_id", async () => {
+      const url = tempDbUrl("poink-cluster-concept-index");
       const program = Effect.gen(function* () {
         yield* Database;
         return "initialized";
       });
 
-      const layer = LibSQLDatabase.make({ url: "file::memory:?cache=shared" });
+      const layer = LibSQLDatabase.make({ url, embeddingDimension: 1024 });
       await Effect.runPromise(Effect.provide(program, layer));
 
-      const client = createClient({ url: "file::memory:?cache=shared" });
+      const client = createClient({ url });
       const result = await client.execute({
         sql: "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='cluster_summaries' AND name='idx_cluster_summaries_concept'",
         args: [],
@@ -1370,15 +1383,16 @@ describe("LibSQLDatabase", () => {
     });
 
     test("cluster_summaries has vector index on embedding", async () => {
+      const url = tempDbUrl("poink-cluster-vector-index");
       const program = Effect.gen(function* () {
         yield* Database;
         return "initialized";
       });
 
-      const layer = LibSQLDatabase.make({ url: "file::memory:?cache=shared" });
+      const layer = LibSQLDatabase.make({ url, embeddingDimension: 1024 });
       await Effect.runPromise(Effect.provide(program, layer));
 
-      const client = createClient({ url: "file::memory:?cache=shared" });
+      const client = createClient({ url });
       const result = await client.execute({
         sql: "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='cluster_summaries' AND name='cluster_summaries_idx'",
         args: [],

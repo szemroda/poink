@@ -17,8 +17,8 @@ import {
 } from "../types.js";
 import { inferFileTypeFromPath } from "../chunking.js";
 
-const DEFAULT_EMBEDDING_DIM = 1024;
 const DOCUMENT_VECTOR_DIM = 1;
+const METADATA_VECTOR_DIM = 1;
 const SCROLL_PAGE_SIZE = 256;
 
 /**
@@ -37,6 +37,20 @@ type QdrantPoint = {
   vector?: unknown;
   score?: number;
 };
+type QdrantUpsertPoint = {
+  id: string | number;
+  vector: number[];
+  payload: QdrantPayload;
+};
+
+type ChunkInput = {
+  id: string;
+  docId: string;
+  page: number;
+  chunkIndex: number;
+  content: string;
+  embeddingContent?: string;
+};
 
 export class QdrantDatabase {
   static make(config: {
@@ -45,9 +59,10 @@ export class QdrantDatabase {
     apiKey?: string;
     embeddingDimension?: number;
   }) {
-    const embeddingDimension = config.embeddingDimension ?? DEFAULT_EMBEDDING_DIM;
+    let embeddingDimension = config.embeddingDimension;
     const documentsCollection = `${config.collection}-documents`;
     const chunksCollection = `${config.collection}-chunks`;
+    const embeddingsCollection = `${config.collection}-embeddings`;
 
     const client = new QdrantClient({
       url: config.url,
@@ -55,14 +70,42 @@ export class QdrantDatabase {
       checkCompatibility: false,
     });
 
-    let initialized = false;
-    let initializing: Promise<void> | null = null;
+    let metadataInitialized = false;
+    let metadataInitializing: Promise<void> | null = null;
+    let embeddingsInitialized = false;
+    let embeddingsInitializing: Promise<void> | null = null;
 
-    const ensureCollections = async (): Promise<void> => {
-      if (initialized) return;
-      if (initializing) return initializing;
+    const resolveEmbeddingDimension = (dimension?: number): number | undefined => {
+      const resolved = dimension ?? embeddingDimension;
+      if (dimension !== undefined && (!Number.isFinite(dimension) || dimension <= 0)) {
+        throw new Error(`Invalid embedding dimension: ${dimension}`);
+      }
+      if (
+        embeddingDimension !== undefined &&
+        dimension !== undefined &&
+        embeddingDimension !== dimension
+      ) {
+        throw new Error(
+          `Embedding dimension ${dimension} does not match existing Qdrant collection dimension ${embeddingDimension}`,
+        );
+      }
+      if (resolved !== undefined) embeddingDimension = resolved;
+      return resolved;
+    };
 
-      initializing = (async () => {
+    const requireEmbeddingDimension = (dimension?: number): number => {
+      const resolved = resolveEmbeddingDimension(dimension);
+      if (resolved === undefined) {
+        throw new Error("Embedding dimension is not established yet");
+      }
+      return resolved;
+    };
+
+    const ensureMetadataCollections = async (): Promise<void> => {
+      if (metadataInitialized) return;
+      if (metadataInitializing) return metadataInitializing;
+
+      metadataInitializing = (async () => {
         const docsExists = await client.collectionExists(documentsCollection);
         if (!docsExists.exists) {
           await client.createCollection(documentsCollection, {
@@ -82,7 +125,7 @@ export class QdrantDatabase {
         if (!chunksExists.exists) {
           await client.createCollection(chunksCollection, {
             vectors: {
-              size: embeddingDimension,
+              size: METADATA_VECTOR_DIM,
               distance: "Cosine",
             },
           });
@@ -100,26 +143,63 @@ export class QdrantDatabase {
           await safeCreatePayloadIndex(client, chunksCollection, "content", "text");
         }
 
-        initialized = true;
+        metadataInitialized = true;
       })();
 
       try {
-        await initializing;
+        await metadataInitializing;
       } finally {
-        initializing = null;
+        metadataInitializing = null;
       }
+    };
+
+    const ensureEmbeddingCollection = async (dimension: number): Promise<void> => {
+      await ensureMetadataCollections();
+      const vectorDimension = requireEmbeddingDimension(dimension);
+      if (embeddingsInitialized) return;
+      if (embeddingsInitializing) return embeddingsInitializing;
+
+      embeddingsInitializing = (async () => {
+        const embeddingsExists = await client.collectionExists(embeddingsCollection);
+        if (!embeddingsExists.exists) {
+          await client.createCollection(embeddingsCollection, {
+            vectors: {
+              size: vectorDimension,
+              distance: "Cosine",
+            },
+          });
+
+          await safeCreatePayloadIndex(client, embeddingsCollection, "docId", "keyword");
+          await safeCreatePayloadIndex(client, embeddingsCollection, "tags", "keyword");
+        }
+
+        embeddingsInitialized = true;
+      })();
+
+      try {
+        await embeddingsInitializing;
+      } finally {
+        embeddingsInitializing = null;
+      }
+    };
+
+    const embeddingCollectionExists = async (): Promise<boolean> => {
+      if (embeddingsInitialized) return true;
+      const exists = await client.collectionExists(embeddingsCollection);
+      embeddingsInitialized = exists.exists;
+      return exists.exists;
     };
 
     const withDb = <A>(run: () => Promise<A>) =>
       Effect.tryPromise({
         try: async () => {
-          await ensureCollections();
+          await ensureMetadataCollections();
           return run();
         },
         catch: (error) => {
           const msg = error instanceof Error ? error.message : String(error);
           const stack = error instanceof Error ? error.stack : undefined;
-          console.error(`[QdrantDatabase] Error:`, msg, stack ? `\n${stack}` : '');
+          console.error(`[QdrantDatabase] Error:`, msg, stack ? `\n${stack}` : "");
           return new DatabaseError({ reason: msg });
         },
       });
@@ -224,15 +304,15 @@ export class QdrantDatabase {
 
           await client.delete(chunksCollection, {
             wait: true,
-            filter: {
-              must: [
-                {
-                  key: "docId",
-                  match: { value: id },
-                },
-              ],
-            },
+            filter: docIdFilter(id),
           });
+
+          if (await embeddingCollectionExists()) {
+            await client.delete(embeddingsCollection, {
+              wait: true,
+              filter: docIdFilter(id),
+            });
+          }
         }),
 
       updateTags: (id, tags) =>
@@ -243,16 +323,16 @@ export class QdrantDatabase {
           });
 
           await client.setPayload(chunksCollection, {
-            filter: {
-              must: [
-                {
-                  key: "docId",
-                  match: { value: id },
-                },
-              ],
-            },
+            filter: docIdFilter(id),
             payload: { tags },
           });
+
+          if (await embeddingCollectionExists()) {
+            await client.setPayload(embeddingsCollection, {
+              filter: docIdFilter(id),
+              payload: { tags },
+            });
+          }
         }),
 
       addChunks: (chunks) =>
@@ -264,30 +344,45 @@ export class QdrantDatabase {
 
           const points = chunks.map((chunk) => {
             const docPayload = docsById.get(chunk.docId);
-
-            return {
-              id: toPointId(chunk.id),
-              vector: zeroVector(embeddingDimension),
-              payload: {
-                id: chunk.id,
-                docId: chunk.docId,
-                page: chunk.page,
-                chunkIndex: chunk.chunkIndex,
-                content: chunk.content,
-                embeddingContent: chunk.embeddingContent ?? chunk.content,
-                title: asString(docPayload?.title),
-                path: asString(docPayload?.path),
-                tags: asStringArray(docPayload?.tags),
-                hasEmbedding: false,
-                embeddingOnly: false,
-              },
-            };
+            return metadataPoint(serializeChunk(chunk, docPayload, false));
           });
 
           await client.upsert(chunksCollection, {
             wait: true,
             points,
           });
+
+          if (await embeddingCollectionExists()) {
+            const existing = await client.retrieve(embeddingsCollection, {
+              ids: chunks.map((chunk) => toPointId(chunk.id)),
+              with_payload: true,
+              with_vector: false,
+            });
+            const existingIds = new Set(
+              (existing as unknown as QdrantPoint[]).map((point) => point.id),
+            );
+            const payloadUpdates = points.filter((point) =>
+              existingIds.has(point.id),
+            );
+
+            for (const point of payloadUpdates) {
+              await client.setPayload(embeddingsCollection, {
+                points: [point.id],
+                payload: {
+                  ...point.payload,
+                  hasEmbedding: true,
+                  embeddingOnly: false,
+                },
+              });
+            }
+
+            if (payloadUpdates.length > 0) {
+              await client.setPayload(chunksCollection, {
+                points: payloadUpdates.map((point) => point.id),
+                payload: { hasEmbedding: true },
+              });
+            }
+          }
         }),
 
       getChunk: (chunkId) =>
@@ -334,6 +429,7 @@ export class QdrantDatabase {
       addEmbeddings: (embeddings) =>
         withDb(async () => {
           if (embeddings.length === 0) return;
+          await ensureEmbeddingCollection(embeddings[0]!.embedding.length);
 
           const ids = embeddings.map((item) => toPointId(item.chunkId));
           const existing = await client.retrieve(chunksCollection, {
@@ -356,19 +452,7 @@ export class QdrantDatabase {
               return {
                 id: toPointId(item.chunkId),
                 vector: item.embedding,
-                payload: {
-                  id: item.chunkId,
-                  docId: "",
-                  page: 0,
-                  chunkIndex: 0,
-                  content: "",
-                  embeddingContent: "",
-                  title: "",
-                  path: "",
-                  tags: [],
-                  hasEmbedding: true,
-                  embeddingOnly: true,
-                },
+                payload: embeddingOnlyPayload(item.chunkId),
               };
             }
 
@@ -383,7 +467,23 @@ export class QdrantDatabase {
             };
           });
 
-          await client.upsert(chunksCollection, {
+          const chunkPoints = points
+            .filter((point) => !asBoolean(point.payload.embeddingOnly))
+            .map((point) =>
+              metadataPoint({
+                ...point.payload,
+                hasEmbedding: true,
+              }),
+            );
+
+          if (chunkPoints.length > 0) {
+            await client.upsert(chunksCollection, {
+              wait: true,
+              points: chunkPoints,
+            });
+          }
+
+          await client.upsert(embeddingsCollection, {
             wait: true,
             points,
           });
@@ -391,6 +491,10 @@ export class QdrantDatabase {
 
       replaceDocument: (doc, chunks, embeddings) =>
         withDb(async () => {
+          if (embeddings.length > 0) {
+            await ensureEmbeddingCollection(embeddings[0]!.embedding.length);
+          }
+
           await client.upsert(documentsCollection, {
             wait: true,
             points: [
@@ -404,70 +508,50 @@ export class QdrantDatabase {
 
           await client.delete(chunksCollection, {
             wait: true,
-            filter: {
-              must: [
-                {
-                  key: "docId",
-                  match: { value: doc.id },
-                },
-              ],
-            },
+            filter: docIdFilter(doc.id),
           });
+
+          if (await embeddingCollectionExists()) {
+            await client.delete(embeddingsCollection, {
+              wait: true,
+              filter: docIdFilter(doc.id),
+            });
+          }
+
+          const embeddingMap = new Map<string, number[]>(
+            embeddings.map((item) => [item.chunkId, item.embedding]),
+          );
 
           if (chunks.length > 0) {
             await client.upsert(chunksCollection, {
               wait: true,
-              points: chunks.map((chunk) => ({
-                id: toPointId(chunk.id),
-                vector: zeroVector(embeddingDimension),
-                payload: {
-                  id: chunk.id,
-                  docId: chunk.docId,
-                  page: chunk.page,
-                  chunkIndex: chunk.chunkIndex,
-                  content: chunk.content,
-                  embeddingContent: chunk.embeddingContent ?? chunk.content,
-                  title: doc.title,
-                  path: doc.path,
-                  tags: doc.tags,
-                  hasEmbedding: false,
-                  embeddingOnly: false,
-                },
-              })),
+              points: chunks.map((chunk) =>
+                metadataPoint(
+                  serializeChunk(chunk, doc, embeddingMap.has(chunk.id)),
+                ),
+              ),
             });
           }
 
           if (embeddings.length > 0) {
-            const embeddingMap = new Map<string, number[]>(
-              embeddings.map((item) => [item.chunkId, item.embedding]),
-            );
-
-            await client.upsert(chunksCollection, {
+            await client.upsert(embeddingsCollection, {
               wait: true,
-              points: chunks.map((chunk) => ({
-                id: toPointId(chunk.id),
-                vector:
-                  embeddingMap.get(chunk.id) ?? zeroVector(embeddingDimension),
-                payload: {
-                  id: chunk.id,
-                  docId: chunk.docId,
-                  page: chunk.page,
-                  chunkIndex: chunk.chunkIndex,
-                  content: chunk.content,
-                  embeddingContent: chunk.embeddingContent ?? chunk.content,
-                  title: doc.title,
-                  path: doc.path,
-                  tags: doc.tags,
-                  hasEmbedding: embeddingMap.has(chunk.id),
-                  embeddingOnly: false,
-                },
-              })),
+              points: chunks
+                .filter((chunk) => embeddingMap.has(chunk.id))
+                .map((chunk) => ({
+                  id: toPointId(chunk.id),
+                  vector: embeddingMap.get(chunk.id)!,
+                  payload: serializeChunk(chunk, doc, true),
+                })),
             });
           }
         }),
 
       vectorSearch: (embedding, options) =>
         withDb(async () => {
+          if (!(await embeddingCollectionExists())) return [];
+          resolveEmbeddingDimension(embedding.length);
+
           const { limit = 10, tags, threshold = 0.0 } = options || {};
 
           const must: Array<Record<string, unknown>> = [
@@ -484,7 +568,7 @@ export class QdrantDatabase {
             });
           }
 
-          const points = await client.search(chunksCollection, {
+          const points = await client.search(embeddingsCollection, {
             vector: embedding,
             limit,
             with_payload: true,
@@ -553,14 +637,7 @@ export class QdrantDatabase {
           const { maxChars = 2000, direction = "both" } = options || {};
 
           const points = await scrollAll(client, chunksCollection, {
-            filter: {
-              must: [
-                {
-                  key: "docId",
-                  match: { value: docId },
-                },
-              ],
-            },
+            filter: docIdFilter(docId),
             with_payload: true,
             with_vector: false,
           });
@@ -613,21 +690,13 @@ export class QdrantDatabase {
 
       getStats: () =>
         withDb(async () => {
-          const [documents, chunks, embeddings] = await Promise.all([
+          const [documents, chunks] = await Promise.all([
             client.count(documentsCollection, { exact: true }),
             client.count(chunksCollection, { exact: true }),
-            client.count(chunksCollection, {
-              exact: true,
-              filter: {
-                must: [
-                  {
-                    key: "hasEmbedding",
-                    match: { value: true },
-                  },
-                ],
-              },
-            }),
           ]);
+          const embeddings = (await embeddingCollectionExists())
+            ? await client.count(embeddingsCollection, { exact: true })
+            : { count: 0 };
 
           return {
             documents: documents.count,
@@ -644,14 +713,7 @@ export class QdrantDatabase {
           for (const docId of docIds) {
             const result = await client.count(chunksCollection, {
               exact: true,
-              filter: {
-                must: [
-                  {
-                    key: "docId",
-                    match: { value: docId },
-                  },
-                ],
-              },
+              filter: docIdFilter(docId),
             });
             counts[docId] = result.count;
           }
@@ -673,38 +735,71 @@ export class QdrantDatabase {
 
           const chunks = await scrollAll(client, chunksCollection, {
             with_payload: true,
-            with_vector: true,
+            with_vector: false,
           });
+          const chunksById = new Map(chunks.map((chunk) => [chunk.id, chunk]));
+          const chunkIds = new Set(chunksById.keys());
 
           const orphanedEmbeddingIds: Array<string | number> = [];
+          const staleEmbeddingOnlyIds: Array<string | number> = [];
           const orphanedChunkIds: Array<string | number> = [];
           let zeroVectorEmbeddings = 0;
+          const hasEmbeddingCollection = await embeddingCollectionExists();
 
           for (const point of chunks) {
             const payload = point.payload ?? {};
-            const hasEmbedding = asBoolean(payload.hasEmbedding);
-            const isEmbeddingOnly = asBoolean(payload.embeddingOnly);
-
-            if (hasEmbedding && isZeroVector(point.vector)) {
-              zeroVectorEmbeddings += 1;
-            }
-
-            if (isEmbeddingOnly) {
-              orphanedEmbeddingIds.push(point.id);
-              continue;
-            }
-
             const docId = asString(payload.docId);
             if (docId.length > 0 && !docIds.has(docId)) {
               orphanedChunkIds.push(point.id);
             }
           }
 
-          if (orphanedEmbeddingIds.length > 0) {
-            await client.delete(chunksCollection, {
+          if (hasEmbeddingCollection) {
+            const embeddings = await scrollAll(client, embeddingsCollection, {
+              with_payload: true,
+              with_vector: true,
+            });
+
+            for (const point of embeddings) {
+              const payload = point.payload ?? {};
+              const isEmbeddingOnly = asBoolean(payload.embeddingOnly);
+
+              if (isZeroVector(point.vector)) {
+                zeroVectorEmbeddings += 1;
+              }
+
+              if (!chunkIds.has(point.id)) {
+                orphanedEmbeddingIds.push(point.id);
+              } else if (isEmbeddingOnly) {
+                staleEmbeddingOnlyIds.push(point.id);
+              }
+            }
+          }
+
+          if (orphanedEmbeddingIds.length > 0 && hasEmbeddingCollection) {
+            await client.delete(embeddingsCollection, {
               wait: true,
               points: orphanedEmbeddingIds,
             });
+          }
+
+          if (staleEmbeddingOnlyIds.length > 0 && hasEmbeddingCollection) {
+            for (const id of staleEmbeddingOnlyIds) {
+              const chunk = chunksById.get(id);
+              if (!chunk?.payload) continue;
+              await client.setPayload(embeddingsCollection, {
+                points: [id],
+                payload: {
+                  ...chunk.payload,
+                  hasEmbedding: true,
+                  embeddingOnly: false,
+                },
+              });
+              await client.setPayload(chunksCollection, {
+                points: [id],
+                payload: { hasEmbedding: true, embeddingOnly: false },
+              });
+            }
           }
 
           if (orphanedChunkIds.length > 0) {
@@ -712,6 +807,12 @@ export class QdrantDatabase {
               wait: true,
               points: orphanedChunkIds,
             });
+            if (hasEmbeddingCollection) {
+              await client.delete(embeddingsCollection, {
+                wait: true,
+                points: orphanedChunkIds,
+              });
+            }
           }
 
           return {
@@ -726,24 +827,17 @@ export class QdrantDatabase {
       dumpDataDir: () => withDb(async () => new Blob([])),
 
       streamEmbeddings: async function* (batchSize: number) {
-        await ensureCollections();
+        await ensureMetadataCollections();
+        if (!(await embeddingCollectionExists())) return;
 
         let offset: string | number | Record<string, unknown> | null | undefined;
 
         while (true) {
-          const page = await client.scroll(chunksCollection, {
+          const page = await client.scroll(embeddingsCollection, {
             limit: batchSize,
             offset,
             with_payload: true,
             with_vector: true,
-            filter: {
-              must: [
-                {
-                  key: "hasEmbedding",
-                  match: { value: true },
-                },
-              ],
-            },
           });
 
           const points = ((page.points ?? []) as unknown as QdrantPoint[])
@@ -772,6 +866,15 @@ export class QdrantDatabase {
                 clusterDistance: assignment.distance,
               },
             });
+            if (await embeddingCollectionExists()) {
+              await client.setPayload(embeddingsCollection, {
+                points: [toPointId(assignment.chunkId)],
+                payload: {
+                  clusterId: assignment.clusterId,
+                  clusterDistance: assignment.distance,
+                },
+              });
+            }
           }
         }),
     });
@@ -841,6 +944,61 @@ function serializeDocument(doc: Document): QdrantPayload {
   };
 }
 
+function docIdFilter(docId: string): { must: Array<Record<string, unknown>> } {
+  return {
+    must: [
+      {
+        key: "docId",
+        match: { value: docId },
+      },
+    ],
+  };
+}
+
+function serializeChunk(
+  chunk: ChunkInput,
+  source: Document | QdrantPayload | undefined,
+  hasEmbedding: boolean,
+): QdrantPayload {
+  return {
+    id: chunk.id,
+    docId: chunk.docId,
+    page: chunk.page,
+    chunkIndex: chunk.chunkIndex,
+    content: chunk.content,
+    embeddingContent: chunk.embeddingContent ?? chunk.content,
+    title: asString(source?.title),
+    path: asString(source?.path),
+    tags: asStringArray(source?.tags),
+    hasEmbedding,
+    embeddingOnly: false,
+  };
+}
+
+function embeddingOnlyPayload(chunkId: string): QdrantPayload {
+  return {
+    id: chunkId,
+    docId: "",
+    page: 0,
+    chunkIndex: 0,
+    content: "",
+    embeddingContent: "",
+    title: "",
+    path: "",
+    tags: [],
+    hasEmbedding: true,
+    embeddingOnly: true,
+  };
+}
+
+function metadataPoint(payload: QdrantPayload): QdrantUpsertPoint {
+  return {
+    id: toPointId(asString(payload.id)),
+    vector: [0],
+    payload,
+  };
+}
+
 function payloadToDocument(id: string | number, payload: QdrantPayload): Document {
   const rawFileType = asString(payload.fileType);
   const fileType: DocumentFileType =
@@ -897,10 +1055,6 @@ function pointToVectorResult(point: QdrantPoint): SearchResult {
 function resolvePayloadId(id: string | number, payload?: QdrantPayload): string {
   const payloadId = asString(payload?.id);
   return payloadId.length > 0 ? payloadId : String(id);
-}
-
-function zeroVector(length: number): number[] {
-  return Array.from({ length }, () => 0);
 }
 
 function compareChunks(a: PDFChunk, b: PDFChunk): number {

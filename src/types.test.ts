@@ -3,6 +3,9 @@
  */
 
 import { describe, test, expect } from "bun:test";
+import { mkdtempSync, rmSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
 import {
   EntityType,
   ConceptSearchResult,
@@ -230,12 +233,13 @@ describe("Unified Search Types", () => {
 });
 
 describe("LibraryConfig path resolution", () => {
-  test("defaults to .poink when PDF_LIBRARY_PATH is unset", () => {
-    const originalPdfLibraryPath = process.env.PDF_LIBRARY_PATH;
+  test("defaults to .poink when config omits a library path", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "poink-types-"));
+    const originalPoinkConfig = process.env.POINK_CONFIG;
     const originalHome = process.env.HOME;
     const originalUserProfile = process.env.USERPROFILE;
 
-    delete process.env.PDF_LIBRARY_PATH;
+    process.env.POINK_CONFIG = join(tempDir, "config.json");
     delete process.env.HOME;
     process.env.USERPROFILE = "C:\\Users\\tester";
 
@@ -245,10 +249,12 @@ describe("LibraryConfig path resolution", () => {
       expect(config.libraryPath).toBe("C:\\Users\\tester\\.poink");
       expect(config.dbPath).toBe("C:\\Users\\tester\\.poink\\library.db");
     } finally {
-      if (originalPdfLibraryPath === undefined) {
-        delete process.env.PDF_LIBRARY_PATH;
+      rmSync(tempDir, { recursive: true, force: true });
+
+      if (originalPoinkConfig === undefined) {
+        delete process.env.POINK_CONFIG;
       } else {
-        process.env.PDF_LIBRARY_PATH = originalPdfLibraryPath;
+        process.env.POINK_CONFIG = originalPoinkConfig;
       }
 
       if (originalHome === undefined) {

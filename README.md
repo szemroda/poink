@@ -286,25 +286,25 @@ Provider API keys can be set either with `poink config set ...apiKey ...` or wit
 poink config show
 
 # Use local Ollama (default)
-poink config set enrichment.provider ollama
-poink config set enrichment.model llama3.2:3b
+poink config set models.enrichment.provider ollama
+poink config set models.enrichment.model llama3.2:3b
 
 # Use AI Gateway (Anthropic, OpenAI, etc.)
-poink config set enrichment.provider gateway
-poink config set enrichment.model anthropic/claude-haiku-4-5
-poink config set gateway.apiKey your-key
+poink config set models.enrichment.provider gateway
+poink config set models.enrichment.model anthropic/claude-haiku-4-5
+poink config set providers.gateway.apiKey your-key
 export AI_GATEWAY_API_KEY=your-key
 
 # Use OpenAI directly
-poink config set enrichment.provider openai
-poink config set enrichment.model gpt-4o-mini
-poink config set openai.apiKey your-key
+poink config set models.enrichment.provider openai
+poink config set models.enrichment.model gpt-4o-mini
+poink config set providers.openai.apiKey your-key
 export OPENAI_API_KEY=your-key
 
 # Use OpenRouter
-poink config set enrichment.provider openrouter
-poink config set enrichment.model anthropic/claude-3.5-haiku
-poink config set openrouter.apiKey your-key
+poink config set models.enrichment.provider openrouter
+poink config set models.enrichment.model anthropic/claude-3.5-haiku
+poink config set providers.openrouter.apiKey your-key
 export OPENROUTER_API_KEY=your-key
 
 # Provider priority: CLI flag > config
@@ -372,51 +372,68 @@ poink stores configuration in `~/.config/poink/config.json` unless `POINK_CONFIG
 poink config show
 
 # Get a specific value
-poink config get enrichment.provider
+poink config get models.enrichment.provider
 
 # Set a value
-poink config set enrichment.model anthropic/claude-haiku-4-5
+poink config set models.enrichment.model anthropic/claude-haiku-4-5
 ```
 
 ### Config Options
 
 ```json
 {
-  "ollama": {
-    "host": "http://localhost:11434",
-    "autoInstall": true
+  "version": 1,
+  "library": {
+    "path": "~/.poink"
   },
-  "embedding": {
-    "provider": "ollama",
-    "model": "mxbai-embed-large",
-    "openai": {
-      "model": "text-embedding-3-small"
+  "chunking": {
+    "strategy": "text",
+    "size": 2000,
+    "overlap": 200
+  },
+  "models": {
+    "embedding": {
+      "provider": "ollama",
+      "model": "mxbai-embed-large"
+    },
+    "enrichment": {
+      "provider": "gateway",
+      "model": "anthropic/claude-haiku-4-5"
+    },
+    "judge": {
+      "provider": "gateway",
+      "model": "anthropic/claude-haiku-4-5"
     }
   },
-  "enrichment": {
-    "provider": "gateway",
-    "model": "anthropic/claude-haiku-4-5"
+  "providers": {
+    "ollama": {
+      "baseUrl": "http://localhost:11434",
+      "autoPull": true
+    },
+    "gateway": {
+      "apiKey": "...",
+      "apiKeyEnv": "AI_GATEWAY_API_KEY"
+    },
+    "openai": {
+      "apiKey": "...",
+      "apiKeyEnv": "OPENAI_API_KEY",
+      "baseUrl": "https://api.openai.com/v1"
+    },
+    "openrouter": {
+      "apiKey": "...",
+      "apiKeyEnv": "OPENROUTER_API_KEY",
+      "baseUrl": "https://openrouter.ai/api/v1"
+    }
   },
-  "judge": {
-    "provider": "gateway",
-    "model": "anthropic/claude-haiku-4-5"
-  },
-  "gateway": {
-    "apiKey": "..."
-  },
-  "openai": {
-    "apiKey": "...",
-    "baseUrl": "https://api.openai.com/v1"
-  },
-  "openrouter": {
-    "apiKey": "...",
-    "baseUrl": "https://openrouter.ai/api/v1"
-  },
-  "database": {
+  "storage": {
     "backend": "libsql",
+    "libsql": {
+      "url": "file:~/.poink/library.db"
+    },
     "qdrant": {
       "url": "http://localhost:6333",
-      "collection": "poink"
+      "collection": "poink",
+      "apiKeyEnv": "QDRANT_API_KEY"
     }
   },
   "server": {
@@ -431,31 +448,37 @@ poink config set enrichment.model anthropic/claude-haiku-4-5
 
 | Setting               | Default                  | Description                          |
 | --------------------- | ------------------------ | ------------------------------------ |
-| `ollama.host`         | `http://localhost:11434` | Ollama API endpoint                  |
-| `ollama.autoInstall`  | `true`                   | Auto-install missing Ollama models when supported |
-| `embedding.provider`  | `ollama`                 | Embedding provider: `ollama`, `gateway`, `openai`, or `openrouter` |
-| `embedding.model`     | `mxbai-embed-large`      | Embedding model (1024 dims)          |
-| `enrichment.provider` | `ollama`                 | LLM provider: `ollama`, `gateway`, `openai`, or `openrouter` |
-| `enrichment.model`    | `llama3.2:3b`            | Model for document enrichment        |
-| `judge.provider`      | `ollama`                 | Provider for concept deduplication   |
-| `judge.model`         | `llama3.2:3b`            | Model for judging duplicate concepts |
-| `gateway.apiKey`      | -                        | AI Gateway API key                   |
-| `openai.apiKey`       | -                        | OpenAI API key                       |
-| `openai.baseUrl`      | `https://api.openai.com/v1` | Optional OpenAI-compatible base URL |
-| `openrouter.apiKey`   | -                        | OpenRouter API key                   |
-| `openrouter.baseUrl`  | `https://openrouter.ai/api/v1` | Optional OpenRouter API base URL |
-| `database.backend`    | `libsql`                 | Storage backend: `libsql` or `qdrant` |
-| `database.qdrant.url` | `http://localhost:6333`  | Qdrant endpoint when using Qdrant    |
-| `database.qdrant.collection` | `poink`           | Qdrant collection prefix             |
+| `library.path`        | `~/.poink`               | Library storage location             |
+| `chunking.size`       | `2000`                   | Chunk size in characters             |
+| `chunking.overlap`    | `200`                    | Chunk overlap in characters          |
+| `models.embedding.provider` | `ollama`          | Embedding provider                   |
+| `models.embedding.model` | `mxbai-embed-large`   | Embedding model                      |
+| `models.enrichment.provider` | `ollama`         | LLM provider                         |
+| `models.enrichment.model` | `llama3.2:3b`       | Model for document enrichment        |
+| `models.judge.provider` | `ollama`              | Provider for concept deduplication   |
+| `models.judge.model`  | `llama3.2:3b`            | Model for judging duplicate concepts |
+| `providers.ollama.baseUrl` | `http://localhost:11434` | Ollama API endpoint             |
+| `providers.ollama.autoPull` | `true`            | Auto-pull missing Ollama models when supported |
+| `providers.gateway.apiKey` | -                  | AI Gateway API key                   |
+| `providers.openai.apiKey` | -                   | OpenAI API key                       |
+| `providers.openai.baseUrl` | `https://api.openai.com/v1` | Optional OpenAI-compatible base URL |
+| `providers.openrouter.apiKey` | -               | OpenRouter API key                   |
+| `providers.openrouter.baseUrl` | `https://openrouter.ai/api/v1` | Optional OpenRouter API base URL |
+| `storage.backend`     | `libsql`                 | Storage backend: `libsql` or `qdrant` |
+| `storage.qdrant.url`  | `http://localhost:6333`  | Qdrant endpoint when using Qdrant    |
+| `storage.qdrant.collection` | `poink`           | Qdrant collection prefix             |
 | `server.host`         | `127.0.0.1`              | Host/interface for `poink serve` |
 | `server.port`         | `3838`                   | HTTP port for `poink serve`      |
 | `server.auth.enabled` | `false`                  | Require bearer auth on `/mcp`        |
+
+Embedding dimensions are not user configuration. poink derives the vector
+dimension from embeddings returned by the configured provider and records it in
+database metadata, then rejects later embeddings with a different dimension.
 
 ### Environment Variables
 
 | Variable             | Default                    | Description              |
 | -------------------- | -------------------------- | ------------------------ |
-| `PDF_LIBRARY_PATH`   | `~/.poink`                 | Library storage location |
 | `POINK_CONFIG`       | `~/.config/poink/config.json` | Config file path      |
 | `AI_GATEWAY_API_KEY` | -                          | API key for AI Gateway   |
 | `OPENAI_API_KEY`     | -                          | API key for OpenAI       |
@@ -470,12 +493,12 @@ For cloud LLM providers (Anthropic, OpenAI, etc.), use the AI Gateway:
 
 ```bash
 # Set your API key in poink config or via environment
-poink config set gateway.apiKey your-key
+poink config set providers.gateway.apiKey your-key
 export AI_GATEWAY_API_KEY=your-key
 
 # Configure to use gateway
-poink config set enrichment.provider gateway
-poink config set enrichment.model anthropic/claude-haiku-4-5
+poink config set models.enrichment.provider gateway
+poink config set models.enrichment.model anthropic/claude-haiku-4-5
 
 # Other supported models:
 # - anthropic/claude-sonnet-4-20250514
@@ -488,28 +511,28 @@ poink config set enrichment.model anthropic/claude-haiku-4-5
 For OpenRouter, switch the provider and use an OpenRouter model ID. `poink` uses the official `@openrouter/ai-sdk-provider` integration for AI SDK v6.
 
 ```bash
-poink config set openrouter.apiKey your-key
+poink config set providers.openrouter.apiKey your-key
 export OPENROUTER_API_KEY=your-key
 
-poink config set enrichment.provider openrouter
-poink config set enrichment.model anthropic/claude-3.5-haiku
+poink config set models.enrichment.provider openrouter
+poink config set models.enrichment.model anthropic/claude-3.5-haiku
 ```
 
 OpenRouter embeddings also work through the same provider abstraction:
 
 ```bash
-poink config set embedding.provider openrouter
-poink config set embedding.model openai/text-embedding-3-small
+poink config set models.embedding.provider openrouter
+poink config set models.embedding.model openai/text-embedding-3-small
 ```
 
 OpenAI embeddings can be configured directly:
 
 ```bash
-poink config set openai.apiKey your-key
+poink config set providers.openai.apiKey your-key
 export OPENAI_API_KEY=your-key
 
-poink config set embedding.provider openai
-poink config set embedding.model text-embedding-3-small
+poink config set models.embedding.provider openai
+poink config set models.embedding.model text-embedding-3-small
 ```
 
 ## Storage

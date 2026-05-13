@@ -64,7 +64,7 @@ async function generateSummary(
   }
 
   const config = loadConfig();
-  const resolvedModel = getConfiguredLanguageModel(config, "summary");
+  const resolvedModel = getConfiguredLanguageModel(config, "enrichment");
   const maxChunks = options.maxChunks ?? chunks.length;
   const combinedContent = chunks
     .slice(0, maxChunks)

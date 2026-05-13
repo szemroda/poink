@@ -725,7 +725,7 @@ async function enrichWithLLM(
   const resolvedModel = resolveLanguageModel(
     config,
     provider,
-    model ?? config.enrichment.model,
+    model ?? config.models.enrichment.model,
   );
   const truncatedContent = content.slice(0, 6000);
   const conceptsList = formatConceptsForPrompt(availableConcepts);
@@ -957,7 +957,7 @@ async function tagWithLLM(
   const resolvedModel = resolveLanguageModel(
     config,
     provider,
-    model ?? config.enrichment.model,
+    model ?? config.models.enrichment.model,
   );
   const truncatedContent = content.slice(0, 4000);
 
@@ -1106,7 +1106,7 @@ export const AutoTaggerLive = Layer.effect(
               ].slice(0, 10),
               concepts: [],
               confidence: 0.3,
-              provider: config.enrichment.provider,
+              provider: config.models.enrichment.provider,
             };
           }
 
@@ -1132,8 +1132,8 @@ export const AutoTaggerLive = Layer.effect(
             `AutoTagger: RAG context found ${ragConcepts.length} relevant concept(s)`
           );
 
-          const provider: LLMProvider = opts.provider || config.enrichment.provider;
-          const model: string | undefined = opts.model || config.enrichment.model;
+          const provider: LLMProvider = opts.provider || config.models.enrichment.provider;
+          const model: string | undefined = opts.model || config.models.enrichment.model;
 
           const result = yield* Effect.tryPromise({
             try: () =>
@@ -1203,9 +1203,9 @@ export const AutoTaggerLive = Layer.effect(
           // Add LLM tags if not heuristics-only and we have content
           if (!opts.heuristicsOnly && content) {
             const provider: LLMProvider =
-              opts.provider || config.enrichment.provider;
+              opts.provider || config.models.enrichment.provider;
             const model: string | undefined =
-              opts.model || config.enrichment.model;
+              opts.model || config.models.enrichment.model;
 
             const llmResult = yield* Effect.tryPromise({
               try: () => tagWithLLM(filename, content, provider, model),

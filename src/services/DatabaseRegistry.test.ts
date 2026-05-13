@@ -5,7 +5,6 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { Database } from "./Database.js";
 import { DatabaseRegistry } from "./DatabaseRegistry.js";
-import { LibraryConfig } from "../types.js";
 import { removeDirWithRetries } from "../testUtils.js";
 
 function withTempEnv(
@@ -42,6 +41,46 @@ function withTempEnv(
 }
 
 describe("DatabaseRegistry", () => {
+  const makeConfig = (
+    tempDir: string,
+    backend: "libsql" | "qdrant",
+  ) => ({
+    version: 1,
+    library: { path: join(tempDir, "library") },
+    chunking: { strategy: "text", size: 2000, overlap: 200 },
+    models: {
+      embedding: { provider: "ollama", model: "mxbai-embed-large" },
+      enrichment: { provider: "ollama", model: "llama3.2:3b" },
+      judge: { provider: "ollama", model: "llama3.2:3b" },
+    },
+    providers: {
+      ollama: { baseUrl: "http://localhost:11434", autoPull: true },
+      gateway: { apiKeyEnv: "AI_GATEWAY_API_KEY" },
+      openai: {
+        apiKeyEnv: "OPENAI_API_KEY",
+        baseUrl: "https://api.openai.com/v1",
+      },
+      openrouter: {
+        apiKeyEnv: "OPENROUTER_API_KEY",
+        baseUrl: "https://openrouter.ai/api/v1",
+      },
+    },
+    storage: {
+      backend,
+      libsql: { url: `file:${join(tempDir, "library", "library.db")}` },
+      qdrant: {
+        url: "http://localhost:6333",
+        collection: "poink",
+        apiKeyEnv: "QDRANT_API_KEY",
+      },
+    },
+    server: {
+      host: "127.0.0.1",
+      port: 3838,
+      auth: { enabled: false, tokenEnv: "POINK_SERVER_TOKEN" },
+    },
+  });
+
   test("returns a working libsql database layer when backend is libsql", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "poink-db-registry-"));
     const configPath = join(tempDir, "config.json");
@@ -51,27 +90,13 @@ describe("DatabaseRegistry", () => {
       mkdirSync(libraryPath, { recursive: true });
       writeFileSync(
         configPath,
-        JSON.stringify({
-          embedding: { provider: "ollama", model: "mxbai-embed-large" },
-          enrichment: { provider: "ollama", model: "llama3.2" },
-          judge: { provider: "ollama", model: "llama3.2" },
-          ollama: { host: "http://localhost:11434", autoInstall: true },
-          gateway: {},
-          database: {
-            backend: "libsql",
-            qdrant: {
-              url: "http://localhost:6333",
-              collection: "poink",
-            },
-          },
-        }),
+        JSON.stringify(makeConfig(tempDir, "libsql")),
         "utf-8"
       );
 
       await withTempEnv(
         {
           POINK_CONFIG: configPath,
-          PDF_LIBRARY_PATH: libraryPath,
         },
         async () => {
           const program = Effect.gen(function* () {
@@ -102,27 +127,13 @@ describe("DatabaseRegistry", () => {
       mkdirSync(libraryPath, { recursive: true });
       writeFileSync(
         configPath,
-        JSON.stringify({
-          embedding: { provider: "ollama", model: "mxbai-embed-large" },
-          enrichment: { provider: "ollama", model: "llama3.2" },
-          judge: { provider: "ollama", model: "llama3.2" },
-          ollama: { host: "http://localhost:11434", autoInstall: true },
-          gateway: {},
-          database: {
-            backend: "qdrant",
-            qdrant: {
-              url: "http://localhost:6333",
-              collection: "poink",
-            },
-          },
-        }),
+        JSON.stringify(makeConfig(tempDir, "qdrant")),
         "utf-8"
       );
 
       await withTempEnv(
         {
           POINK_CONFIG: configPath,
-          PDF_LIBRARY_PATH: libraryPath,
         },
         async () => {
           const program = Effect.gen(function* () {
@@ -146,18 +157,11 @@ describe("DatabaseRegistry", () => {
     }
   });
 
-  test("applies Config schema defaults when provided config object omits database section", async () => {
+  test("uses provided config object", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "poink-db-registry-"));
-    const dbPath = join(tempDir, "library.db");
 
     try {
-      const legacyShapeConfig = {
-        embedding: { provider: "ollama", model: "mxbai-embed-large" },
-        enrichment: { provider: "ollama", model: "llama3.2" },
-        judge: { provider: "ollama", model: "llama3.2" },
-        ollama: { host: "http://localhost:11434", autoInstall: true },
-        gateway: {},
-      };
+      const config = makeConfig(tempDir, "libsql");
 
       const program = Effect.gen(function* () {
         const db = yield* Database;
@@ -169,15 +173,13 @@ describe("DatabaseRegistry", () => {
           program.pipe(
             Effect.provide(
               DatabaseRegistry.make({
-                config: legacyShapeConfig as any,
-                libraryConfig: new LibraryConfig({
-                  libraryPath: tempDir,
-                  dbPath,
-                  ollamaModel: "mxbai-embed-large",
-                  ollamaHost: "http://localhost:11434",
-                  chunkSize: 512,
-                  chunkOverlap: 50,
-                }),
+                config: {
+                  ...config,
+                  storage: {
+                    ...config.storage,
+                    libsql: { url: ":memory:" },
+                  },
+                } as any,
               })
             )
           )
