@@ -24,7 +24,7 @@ poink started as a fork of the original [pdf-brain](https://github.com/joelhooks
 
 ```bash
 # 1. Install from npm
-npm install -g poink
+npm install -g poink-cli
 
 # 2. Install Ollama (macOS)
 brew install ollama
@@ -78,7 +78,7 @@ ollama serve
 ### Install poink
 
 ```bash
-npm install -g poink
+npm install -g poink-cli
 ```
 
 ## CLI Reference
@@ -582,7 +582,7 @@ poink ships as an MCP server for AI coding assistants:
   "mcpServers": {
     "poink": {
       "command": "npx",
-      "args": ["-y", "poink", "mcp"]
+      "args": ["-y", "poink-cli", "mcp"]
     }
   }
 }
