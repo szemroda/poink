@@ -1192,6 +1192,8 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
         | "gateway"
         | "openai"
         | "openrouter"
+        | "google"
+        | "anthropic"
         | undefined;
       let enrichedTitle = title;
       let enrichedTags = tags || [];
@@ -2159,6 +2161,8 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
         yield* Console.log("");
 	        const hasGatewayKey = config.gatewayApiKey;
 	        const hasOpenRouterKey = config.openrouterApiKey;
+	        const hasGoogleKey = config.googleApiKey;
+	        const hasAnthropicKey = config.anthropicApiKey;
 	        yield* Console.log(
 	          hasGatewayKey
 	            ? `Gateway:     API key configured`
@@ -2169,11 +2173,23 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
             ? `OpenRouter:  API key configured`
             : `OpenRouter:  No API key (set via: poink config set providers.openrouter.apiKey <key>)`
         );
+        yield* Console.log(
+          hasGoogleKey
+            ? `Google:      API key configured`
+            : `Google:      No API key (set via: poink config set providers.google.apiKey <key>)`
+        );
+        yield* Console.log(
+          hasAnthropicKey
+            ? `Anthropic:  API key configured`
+            : `Anthropic:  No API key (set via: poink config set providers.anthropic.apiKey <key>)`
+        );
 	        resultPayload = {
 	          configPath,
 	          config,
 	          gatewayApiKeyConfigured: Boolean(hasGatewayKey),
             openrouterApiKeyConfigured: Boolean(hasOpenRouterKey),
+            googleApiKeyConfigured: Boolean(hasGoogleKey),
+            anthropicApiKeyConfigured: Boolean(hasAnthropicKey),
 	        };
 	      } else if (subcommand === "get") {
 	        const path = args[2];

@@ -8,7 +8,9 @@
 import { embed, embedMany } from "ai";
 import { Effect, Context, Layer } from "effect";
 import {
+  AnthropicError,
   GatewayError,
+  GoogleError,
   loadConfig,
   OllamaError,
   OpenAIError,
@@ -90,6 +92,12 @@ function toEmbeddingError(
   }
   if (provider === "openrouter") {
     return new OpenRouterError({ reason: message });
+  }
+  if (provider === "google") {
+    return new GoogleError({ reason: message });
+  }
+  if (provider === "anthropic") {
+    return new AnthropicError({ reason: message });
   }
   return new OllamaError({ reason: message });
 }

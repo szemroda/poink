@@ -215,6 +215,8 @@ const DEFAULT_LIBRARY_PATH = "~/.poink";
 const DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434";
 const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1";
 const DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
+const DEFAULT_GOOGLE_BASE_URL = "https://generativelanguage.googleapis.com/v1beta";
+const DEFAULT_ANTHROPIC_BASE_URL = "https://api.anthropic.com/v1";
 const DEFAULT_LIBSQL_URL = "file:~/.poink/library.db";
 
 function getLibraryConfigProps(libraryPath: string) {
@@ -254,17 +256,40 @@ export class LibraryConfig extends Schema.Class<LibraryConfig>("LibraryConfig")(
 }
 
 export type ModelRole = "embedding" | "enrichment" | "judge";
-export type ProviderName = "ollama" | "gateway" | "openai" | "openrouter";
+export type ProviderName =
+  | "ollama"
+  | "gateway"
+  | "openai"
+  | "openrouter"
+  | "google"
+  | "anthropic";
 
-const ProviderNameSchema = Schema.Literal(
+export type EmbeddingProviderName = Exclude<ProviderName, "anthropic">;
+
+const EmbeddingProviderNameSchema = Schema.Literal(
   "ollama",
   "gateway",
   "openai",
   "openrouter",
+  "google",
 );
 
-const ModelRefSchema = Schema.Struct({
-  provider: ProviderNameSchema,
+const LanguageProviderNameSchema = Schema.Literal(
+  "ollama",
+  "gateway",
+  "openai",
+  "openrouter",
+  "google",
+  "anthropic",
+);
+
+const EmbeddingModelRefSchema = Schema.Struct({
+  provider: EmbeddingProviderNameSchema,
+  model: Schema.String,
+});
+
+const LanguageModelRefSchema = Schema.Struct({
+  provider: LanguageProviderNameSchema,
   model: Schema.String,
 });
 
@@ -303,9 +328,9 @@ export class Config extends Schema.Class<Config>("Config")({
     }),
   }),
   models: Schema.Struct({
-    embedding: ModelRefSchema,
-    enrichment: ModelRefSchema,
-    judge: ModelRefSchema,
+    embedding: EmbeddingModelRefSchema,
+    enrichment: LanguageModelRefSchema,
+    judge: LanguageModelRefSchema,
   }),
   providers: Schema.optionalWith(Schema.Struct({
     ollama: Schema.optionalWith(Schema.Struct({
@@ -352,6 +377,34 @@ export class Config extends Schema.Class<Config>("Config")({
         baseUrl: DEFAULT_OPENROUTER_BASE_URL,
       }),
     }),
+    google: Schema.optionalWith(Schema.Struct({
+      apiKey: Schema.optional(Schema.String),
+      apiKeyEnv: Schema.optionalWith(Schema.String, {
+        default: () => "GOOGLE_GENERATIVE_AI_API_KEY",
+      }),
+      baseUrl: Schema.optionalWith(Schema.String, {
+        default: () => DEFAULT_GOOGLE_BASE_URL,
+      }),
+    }), {
+      default: () => ({
+        apiKeyEnv: "GOOGLE_GENERATIVE_AI_API_KEY",
+        baseUrl: DEFAULT_GOOGLE_BASE_URL,
+      }),
+    }),
+    anthropic: Schema.optionalWith(Schema.Struct({
+      apiKey: Schema.optional(Schema.String),
+      apiKeyEnv: Schema.optionalWith(Schema.String, {
+        default: () => "ANTHROPIC_API_KEY",
+      }),
+      baseUrl: Schema.optionalWith(Schema.String, {
+        default: () => DEFAULT_ANTHROPIC_BASE_URL,
+      }),
+    }), {
+      default: () => ({
+        apiKeyEnv: "ANTHROPIC_API_KEY",
+        baseUrl: DEFAULT_ANTHROPIC_BASE_URL,
+      }),
+    }),
   }), {
     default: () => ({
       ollama: { baseUrl: DEFAULT_OLLAMA_BASE_URL, autoPull: true },
@@ -363,6 +416,14 @@ export class Config extends Schema.Class<Config>("Config")({
       openrouter: {
         apiKeyEnv: "OPENROUTER_API_KEY",
         baseUrl: DEFAULT_OPENROUTER_BASE_URL,
+      },
+      google: {
+        apiKeyEnv: "GOOGLE_GENERATIVE_AI_API_KEY",
+        baseUrl: DEFAULT_GOOGLE_BASE_URL,
+      },
+      anthropic: {
+        apiKeyEnv: "ANTHROPIC_API_KEY",
+        baseUrl: DEFAULT_ANTHROPIC_BASE_URL,
       },
     }),
   }),
@@ -498,6 +559,14 @@ export class Config extends Schema.Class<Config>("Config")({
         apiKeyEnv: "OPENROUTER_API_KEY",
         baseUrl: DEFAULT_OPENROUTER_BASE_URL,
       },
+      google: {
+        apiKeyEnv: "GOOGLE_GENERATIVE_AI_API_KEY",
+        baseUrl: DEFAULT_GOOGLE_BASE_URL,
+      },
+      anthropic: {
+        apiKeyEnv: "ANTHROPIC_API_KEY",
+        baseUrl: DEFAULT_ANTHROPIC_BASE_URL,
+      },
     },
     storage: {
       backend: "libsql",
@@ -557,6 +626,24 @@ export class Config extends Schema.Class<Config>("Config")({
       return configured;
     }
     return process.env.OPENROUTER_BASE_URL ?? configured;
+  }
+
+  /**
+   * Resolve the Google Generative AI API key: config takes precedence over env var.
+   */
+  get googleApiKey(): string | undefined {
+    return this.providers.google.apiKey ??
+      readConfiguredEnv(this.providers.google.apiKeyEnv) ??
+      process.env.GOOGLE_GENERATIVE_AI_API_KEY;
+  }
+
+  /**
+   * Resolve the Anthropic API key: config takes precedence over env var.
+   */
+  get anthropicApiKey(): string | undefined {
+    return this.providers.anthropic.apiKey ??
+      readConfiguredEnv(this.providers.anthropic.apiKeyEnv) ??
+      process.env.ANTHROPIC_API_KEY;
   }
 }
 
@@ -750,6 +837,16 @@ export class OpenAIError extends Schema.TaggedError<OpenAIError>()(
 
 export class OpenRouterError extends Schema.TaggedError<OpenRouterError>()(
   "OpenRouterError",
+  { reason: Schema.String }
+) {}
+
+export class GoogleError extends Schema.TaggedError<GoogleError>()(
+  "GoogleError",
+  { reason: Schema.String }
+) {}
+
+export class AnthropicError extends Schema.TaggedError<AnthropicError>()(
+  "AnthropicError",
   { reason: Schema.String }
 ) {}
 

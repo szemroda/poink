@@ -1,9 +1,13 @@
 import { createGateway } from "ai";
+import { createAnthropic } from "@ai-sdk/anthropic";
+import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import { createOpenAI } from "@ai-sdk/openai";
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 import { createOllama } from "ollama-ai-provider-v2";
 import {
+  AnthropicError,
   GatewayError,
+  GoogleError,
   type Config,
   OllamaError,
   OpenAIError,
@@ -11,9 +15,17 @@ import {
   getModelConfig,
 } from "../types.js";
 
-export type SupportedProvider = "ollama" | "openai" | "gateway" | "openrouter";
+export type SupportedProvider =
+  | "ollama"
+  | "openai"
+  | "gateway"
+  | "openrouter"
+  | "google"
+  | "anthropic";
 export type ProviderError =
+  | AnthropicError
   | GatewayError
+  | GoogleError
   | OllamaError
   | OpenAIError
   | OpenRouterError;
@@ -125,6 +137,28 @@ function requireOpenRouterApiKey(config: Config): string {
   return apiKey;
 }
 
+function requireGoogleApiKey(config: Config): string {
+  const apiKey = config.googleApiKey;
+  if (!apiKey) {
+    throw new GoogleError({
+      reason:
+        "Google Generative AI API key not set. Use providers.google.apiKey or GOOGLE_GENERATIVE_AI_API_KEY.",
+    });
+  }
+  return apiKey;
+}
+
+function requireAnthropicApiKey(config: Config): string {
+  const apiKey = config.anthropicApiKey;
+  if (!apiKey) {
+    throw new AnthropicError({
+      reason:
+        "Anthropic API key not set. Use providers.anthropic.apiKey or ANTHROPIC_API_KEY.",
+    });
+  }
+  return apiKey;
+}
+
 function createConfiguredGatewayProvider(config: Config) {
   return createGateway({
     apiKey: requireGatewayApiKey(config),
@@ -143,6 +177,20 @@ function createConfiguredOpenRouterProvider(config: Config) {
     apiKey: requireOpenRouterApiKey(config),
     baseURL: normalizeBaseUrl(config.openrouterBaseUrl),
     compatibility: "strict",
+  });
+}
+
+function createConfiguredGoogleProvider(config: Config) {
+  return createGoogleGenerativeAI({
+    apiKey: requireGoogleApiKey(config),
+    baseURL: normalizeBaseUrl(config.providers.google.baseUrl),
+  });
+}
+
+function createConfiguredAnthropicProvider(config: Config) {
+  return createAnthropic({
+    apiKey: requireAnthropicApiKey(config),
+    baseURL: normalizeBaseUrl(config.providers.anthropic.baseUrl),
   });
 }
 
@@ -184,6 +232,21 @@ export function getConfiguredEmbeddingModel(
     };
   }
 
+  if (provider === "google") {
+    return {
+      provider,
+      modelId,
+      model: createConfiguredGoogleProvider(config).embedding(modelId),
+    };
+  }
+
+  if (provider === "anthropic") {
+    throw new AnthropicError({
+      reason:
+        "Anthropic does not support embeddings. Configure models.embedding.provider to google, openai, openrouter, gateway, or ollama.",
+    });
+  }
+
   return {
     provider,
     modelId,
@@ -221,6 +284,22 @@ export function resolveLanguageModel(
       provider,
       modelId,
       model: createConfiguredOpenRouterProvider(config).languageModel(modelId),
+    };
+  }
+
+  if (provider === "google") {
+    return {
+      provider,
+      modelId,
+      model: createConfiguredGoogleProvider(config).languageModel(modelId),
+    };
+  }
+
+  if (provider === "anthropic") {
+    return {
+      provider,
+      modelId,
+      model: createConfiguredAnthropicProvider(config).languageModel(modelId),
     };
   }
 

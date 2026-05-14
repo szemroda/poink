@@ -37,6 +37,8 @@
     "prepack": "npm run build"
   },
   "dependencies": {
+    "@ai-sdk/anthropic": "^3.0.77",
+    "@ai-sdk/google": "^3.0.73",
     "@ai-sdk/openai": "^3.0.63",
     "@effect/platform": "^0.96.1",
     "@effect/schema": "^0.75.0",

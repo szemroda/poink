@@ -307,6 +307,18 @@ poink config set models.enrichment.model anthropic/claude-3.5-haiku
 poink config set providers.openrouter.apiKey your-key
 export OPENROUTER_API_KEY=your-key
 
+# Use Google Generative AI
+poink config set models.enrichment.provider google
+poink config set models.enrichment.model gemini-2.5-flash
+poink config set providers.google.apiKey your-key
+export GOOGLE_GENERATIVE_AI_API_KEY=your-key
+
+# Use Anthropic directly
+poink config set models.enrichment.provider anthropic
+poink config set models.enrichment.model claude-3-5-haiku-20241022
+poink config set providers.anthropic.apiKey your-key
+export ANTHROPIC_API_KEY=your-key
+
 # Provider priority: CLI flag > config
 poink add paper.pdf --enrich              # uses config
 poink add paper.pdf --enrich --provider ollama  # override
@@ -423,6 +435,16 @@ poink config set models.enrichment.model anthropic/claude-haiku-4-5
       "apiKey": "...",
       "apiKeyEnv": "OPENROUTER_API_KEY",
       "baseUrl": "https://openrouter.ai/api/v1"
+    },
+    "google": {
+      "apiKey": "...",
+      "apiKeyEnv": "GOOGLE_GENERATIVE_AI_API_KEY",
+      "baseUrl": "https://generativelanguage.googleapis.com/v1beta"
+    },
+    "anthropic": {
+      "apiKey": "...",
+      "apiKeyEnv": "ANTHROPIC_API_KEY",
+      "baseUrl": "https://api.anthropic.com/v1"
     }
   },
   "storage": {
@@ -464,6 +486,10 @@ poink config set models.enrichment.model anthropic/claude-haiku-4-5
 | `providers.openai.baseUrl` | `https://api.openai.com/v1` | Optional OpenAI-compatible base URL |
 | `providers.openrouter.apiKey` | -               | OpenRouter API key                   |
 | `providers.openrouter.baseUrl` | `https://openrouter.ai/api/v1` | Optional OpenRouter API base URL |
+| `providers.google.apiKey` | -                   | Google Generative AI API key         |
+| `providers.google.baseUrl` | `https://generativelanguage.googleapis.com/v1beta` | Optional Google Generative AI base URL |
+| `providers.anthropic.apiKey` | -                | Anthropic API key                    |
+| `providers.anthropic.baseUrl` | `https://api.anthropic.com/v1` | Optional Anthropic API base URL |
 | `storage.backend`     | `libsql`                 | Storage backend: `libsql` or `qdrant` |
 | `storage.qdrant.url`  | `http://localhost:6333`  | Qdrant endpoint when using Qdrant    |
 | `storage.qdrant.collection` | `poink`           | Qdrant collection prefix             |
@@ -484,6 +510,8 @@ database metadata, then rejects later embeddings with a different dimension.
 | `OPENAI_API_KEY`     | -                          | API key for OpenAI       |
 | `OPENROUTER_API_KEY` | -                          | API key for OpenRouter   |
 | `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | Optional OpenRouter base URL |
+| `GOOGLE_GENERATIVE_AI_API_KEY` | -              | API key for Google Generative AI |
+| `ANTHROPIC_API_KEY`  | -                          | API key for Anthropic    |
 | `POINK_LOG_LEVEL` | `silent`                  | stderr logging verbosity |
 | `POINK_QUERY_EMBED_CACHE_SIZE` | `256`        | Query embedding LRU cache size (0 disables) |
 
@@ -533,6 +561,29 @@ export OPENAI_API_KEY=your-key
 
 poink config set models.embedding.provider openai
 poink config set models.embedding.model text-embedding-3-small
+```
+
+Google language and embedding models can be configured directly:
+
+```bash
+poink config set providers.google.apiKey your-key
+export GOOGLE_GENERATIVE_AI_API_KEY=your-key
+
+poink config set models.enrichment.provider google
+poink config set models.enrichment.model gemini-2.5-flash
+
+poink config set models.embedding.provider google
+poink config set models.embedding.model gemini-embedding-001
+```
+
+Anthropic can be configured directly for enrichment and judge models. Anthropic does not provide embeddings, so keep `models.embedding.provider` on `ollama`, `openai`, `openrouter`, `gateway`, or `google`.
+
+```bash
+poink config set providers.anthropic.apiKey your-key
+export ANTHROPIC_API_KEY=your-key
+
+poink config set models.enrichment.provider anthropic
+poink config set models.enrichment.model claude-3-5-haiku-20241022
 ```
 
 ## Storage

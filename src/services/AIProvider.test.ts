@@ -100,4 +100,66 @@ describe("AIProvider", () => {
     expect(resolved.modelId).toBe("openai/text-embedding-3-small");
     expect(resolved.model.modelId).toBe("openai/text-embedding-3-small");
   });
+
+  test("resolves Google language models through the provider abstraction", () => {
+    const config = makeTestConfig({
+      providers: {
+        google: {
+          apiKey: "test-google-key",
+        },
+      },
+    });
+
+    const resolved = resolveLanguageModel(config, "google", "gemini-2.5-flash");
+
+    expect(resolved.provider).toBe("google");
+    expect(resolved.modelId).toBe("gemini-2.5-flash");
+    expect(resolved.model.provider).toBe("google.generative-ai");
+    expect(resolved.model.modelId).toBe("gemini-2.5-flash");
+  });
+
+  test("resolves Google embedding models through the provider abstraction", () => {
+    const config = makeTestConfig({
+      models: {
+        embedding: {
+          provider: "google",
+          model: "gemini-embedding-001",
+        },
+      },
+      providers: {
+        google: {
+          apiKey: "test-google-key",
+        },
+      },
+    });
+
+    const resolved = getConfiguredEmbeddingModel(config);
+
+    expect(resolved.provider).toBe("google");
+    expect(resolved.model.provider).toBe("google.generative-ai");
+    expect(resolved.modelId).toBe("gemini-embedding-001");
+    expect(resolved.model.modelId).toBe("gemini-embedding-001");
+  });
+
+  test("resolves Anthropic language models through the provider abstraction", () => {
+    const config = makeTestConfig({
+      providers: {
+        anthropic: {
+          apiKey: "test-anthropic-key",
+        },
+      },
+    });
+
+    const resolved = resolveLanguageModel(
+      config,
+      "anthropic",
+      "claude-3-5-haiku-20241022",
+    );
+
+    expect(resolved.provider).toBe("anthropic");
+    expect(resolved.modelId).toBe("claude-3-5-haiku-20241022");
+    expect(resolved.model.provider).toBe("anthropic.messages");
+    expect(resolved.model.modelId).toBe("claude-3-5-haiku-20241022");
+  });
+
 });

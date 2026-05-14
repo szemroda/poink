@@ -7,6 +7,9 @@ import { Config, LibraryConfig, loadConfig } from "./types.js";
 const ORIGINAL_POINK_CONFIG = process.env.POINK_CONFIG;
 const ORIGINAL_OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
 const ORIGINAL_OPENROUTER_BASE_URL = process.env.OPENROUTER_BASE_URL;
+const ORIGINAL_GOOGLE_GENERATIVE_AI_API_KEY =
+  process.env.GOOGLE_GENERATIVE_AI_API_KEY;
+const ORIGINAL_ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 
 function makeTempDir(): string {
   return mkdtempSync(join(tmpdir(), "poink-config-"));
@@ -29,6 +32,18 @@ afterEach(() => {
     delete process.env.OPENROUTER_BASE_URL;
   } else {
     process.env.OPENROUTER_BASE_URL = ORIGINAL_OPENROUTER_BASE_URL;
+  }
+
+  if (ORIGINAL_GOOGLE_GENERATIVE_AI_API_KEY === undefined) {
+    delete process.env.GOOGLE_GENERATIVE_AI_API_KEY;
+  } else {
+    process.env.GOOGLE_GENERATIVE_AI_API_KEY = ORIGINAL_GOOGLE_GENERATIVE_AI_API_KEY;
+  }
+
+  if (ORIGINAL_ANTHROPIC_API_KEY === undefined) {
+    delete process.env.ANTHROPIC_API_KEY;
+  } else {
+    process.env.ANTHROPIC_API_KEY = ORIGINAL_ANTHROPIC_API_KEY;
   }
 });
 
@@ -57,6 +72,18 @@ describe("loadConfig path and database defaults", () => {
       expect(config.models.judge.model).toBe("llama3.2:3b");
       expect(config.providers.openrouter.apiKey).toBeUndefined();
       expect(config.providers.openrouter.baseUrl).toBe("https://openrouter.ai/api/v1");
+      expect(config.providers.google.apiKey).toBeUndefined();
+      expect(config.providers.google.apiKeyEnv).toBe(
+        "GOOGLE_GENERATIVE_AI_API_KEY",
+      );
+      expect(config.providers.google.baseUrl).toBe(
+        "https://generativelanguage.googleapis.com/v1beta",
+      );
+      expect(config.providers.anthropic.apiKey).toBeUndefined();
+      expect(config.providers.anthropic.apiKeyEnv).toBe("ANTHROPIC_API_KEY");
+      expect(config.providers.anthropic.baseUrl).toBe(
+        "https://api.anthropic.com/v1",
+      );
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }
@@ -95,6 +122,44 @@ describe("loadConfig path and database defaults", () => {
       expect(loadConfig().openrouterBaseUrl).toBe(
         "https://configured.example/api/v1",
       );
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  test("resolves Google and Anthropic config from environment variables", () => {
+    const tempDir = makeTempDir();
+
+    try {
+      const configPath = join(tempDir, "config.json");
+      process.env.POINK_CONFIG = configPath;
+      process.env.GOOGLE_GENERATIVE_AI_API_KEY = "env-google-key";
+      process.env.ANTHROPIC_API_KEY = "env-anthropic-key";
+
+      const config = loadConfig();
+
+      expect(config.googleApiKey).toBe("env-google-key");
+      expect(config.anthropicApiKey).toBe("env-anthropic-key");
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects Anthropic as an embedding provider", () => {
+    const tempDir = makeTempDir();
+
+    try {
+      const configPath = join(tempDir, "config.json");
+      const config = JSON.parse(JSON.stringify(Config.Default));
+      config.models.embedding.provider = "anthropic";
+      config.models.embedding.model = "claude-3-5-haiku-20241022";
+      config.models.enrichment.provider = "anthropic";
+      config.models.enrichment.model = "claude-3-5-haiku-20241022";
+
+      process.env.POINK_CONFIG = configPath;
+      writeFileSync(configPath, JSON.stringify(config), "utf-8");
+
+      expect(() => loadConfig()).toThrow();
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }
