@@ -41,7 +41,6 @@
     "@ai-sdk/google": "^3.0.73",
     "@ai-sdk/openai": "^3.0.63",
     "@effect/platform": "^0.96.1",
-    "@effect/schema": "^0.75.0",
     "@libsql/client": "^0.17.3",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@openrouter/ai-sdk-provider": "^2.9.0",

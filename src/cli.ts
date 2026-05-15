@@ -3,8 +3,7 @@
  * Poink CLI
  */
 
-import { Effect, Console as EffectConsole, Exit, Layer, Runtime, Scope, Logger } from "effect";
-import { JSONSchema } from "@effect/schema";
+import { Effect, Console as EffectConsole, Exit, JSONSchema, Layer, Runtime, Scope, Logger } from "effect";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
