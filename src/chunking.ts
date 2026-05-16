@@ -15,8 +15,8 @@ export const CURRENT_CHUNKER: Record<
   DocumentFileType,
   { id: string; version: number }
 > = {
-  // v4: shared chunking + PDF cleanup/title heuristics + enriched embedding text
-  pdf: { id: "pdf-extractor:shared-context-v4", version: 4 },
+  // v5: shared chunking + PDF cleanup/title heuristics + hyperlink/table-aware extraction
+  pdf: { id: "pdf-extractor:shared-context-v5", version: 5 },
   // v3: shared chunking + heading ancestry/table preservation + enriched embedding text
   markdown: { id: "markdown-extractor:shared-context-v3", version: 3 },
   // v3: shared chunking + mammoth HTML heading/table sections + enriched embedding text

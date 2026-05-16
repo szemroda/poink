@@ -5,6 +5,8 @@
 import { describe, expect, test } from "vitest";
 import {
   cleanPDFPageArtifacts,
+  enhancePDFPageText,
+  renderPDFTableAsMarkdown,
   sanitizeText,
   chunkText,
 } from "./PDFExtractor.js";
@@ -169,6 +171,40 @@ describe("cleanPDFPageArtifacts", () => {
   });
 });
 
+describe("PDF table extraction helpers", () => {
+  test("renders pdf-parse table arrays as Markdown tables", () => {
+    const markdown = renderPDFTableAsMarkdown([
+      ["Metric", "2026", "2025"],
+      ["Revenue", "1 094 018", "580 294"],
+      ["Net profit", "535 042", "193 923"],
+    ]);
+
+    expect(markdown).toBe(
+      [
+        "| Metric | 2026 | 2025 |",
+        "| --- | ---: | ---: |",
+        "| Revenue | 1 094 018 | 580 294 |",
+        "| Net profit | 535 042 | 193 923 |",
+      ].join("\n"),
+    );
+  });
+
+  test("appends usable explicit pdf-parse tables and ignores one-cell detections", () => {
+    const text = enhancePDFPageText("Body text", [
+      [["chart-like noise only"]],
+      [
+        ["Name", "Value"],
+        ["A", "1"],
+      ],
+    ]);
+
+    expect(text).toContain("Body text");
+    expect(text).toContain("## Detected PDF tables");
+    expect(text).toContain("| Name | Value |");
+    expect(text).not.toContain("chart-like noise only");
+  });
+});
+
 // ============================================================================
 // chunkText() Tests
 // ============================================================================
@@ -212,6 +248,21 @@ describe("chunkText", () => {
     expect(chunks).toHaveLength(1);
     expect(chunks[0]).toContain("# Executive Summary");
     expect(chunks[0]).toContain("# FINDINGS");
+  });
+
+  test("preserves Markdown tables generated from PDF tables", () => {
+    const input = [
+      "| Pozycja | 31.03.2026 | 31.03.2025 |",
+      "| --- | ---: | ---: |",
+      "| Przychody | 1 094 018 | 580 294 |",
+      "| Zysk netto | 535 042 | 193 923 |",
+    ].join("\n");
+
+    const chunks = chunkText(input, 10_000, 0);
+
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0]).toContain("| Pozycja | 31.03.2026 | 31.03.2025 |");
+    expect(chunks[0]).toContain("| Zysk netto | 535 042 | 193 923 |");
   });
 
   test("filters tiny chunks (<20 chars)", () => {

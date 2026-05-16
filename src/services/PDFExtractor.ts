@@ -3,6 +3,7 @@
  */
 
 import { Context, Effect, Layer } from "effect";
+import type { TableArray } from "pdf-parse";
 import { getData } from "pdf-parse/worker";
 import {
   assertValidChunking,
@@ -66,6 +67,84 @@ const pdfParseModulePromise = (async () => {
   return PDFParse;
 })();
 
+function normalizeInlineWhitespace(text: string): string {
+  return sanitizeText(text).replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function escapeMarkdownTableCell(value: string): string {
+  return normalizeInlineWhitespace(value).replace(/\|/g, "\\|");
+}
+
+function renderMarkdownRow(cells: string[]): string {
+  return `| ${cells.map(escapeMarkdownTableCell).join(" | ")} |`;
+}
+
+function markdownSeparator(width: number): string {
+  return renderMarkdownRow([
+    "---",
+    ...Array.from({ length: Math.max(0, width - 1) }, () => "---:"),
+  ]);
+}
+
+function normalizeTableRows(rows: TableArray): TableArray {
+  const trimmedRows = rows
+    .map((row) => row.map((cell) => normalizeInlineWhitespace(cell)))
+    .filter((row) => row.some(Boolean));
+
+  if (trimmedRows.length === 0) return [];
+
+  const width = Math.max(...trimmedRows.map((row) => row.length));
+  return trimmedRows.map((row) => [
+    ...row,
+    ...Array.from({ length: width - row.length }, () => ""),
+  ]);
+}
+
+export function renderPDFTableAsMarkdown(rows: TableArray): string {
+  const normalized = normalizeTableRows(rows);
+  if (normalized.length === 0) return "";
+
+  const width = normalized[0]?.length ?? 0;
+  return [
+    renderMarkdownRow(normalized[0] ?? []),
+    markdownSeparator(width),
+    ...normalized.slice(1).map(renderMarkdownRow),
+  ].join("\n");
+}
+
+function isUsablePDFParseTable(rows: TableArray): boolean {
+  const normalized = normalizeTableRows(rows);
+  if (normalized.length < 2) return false;
+
+  const width = Math.max(...normalized.map((row) => row.length));
+  if (width < 2) return false;
+
+  const nonEmptyCells = normalized.flat().filter(Boolean).length;
+  return nonEmptyCells >= Math.max(4, normalized.length);
+}
+
+function explicitTablesMarkdown(tables: TableArray[]): string {
+  const markdownTables = tables
+    .filter(isUsablePDFParseTable)
+    .map(renderPDFTableAsMarkdown)
+    .filter(Boolean);
+
+  if (markdownTables.length === 0) return "";
+
+  return [
+    "## Detected PDF tables",
+    ...markdownTables.map((table, index) => `Table ${index + 1}\n\n${table}`),
+  ].join("\n\n");
+}
+
+export function enhancePDFPageText(
+  text: string,
+  explicitTables: TableArray[] = [],
+): string {
+  const explicit = explicitTablesMarkdown(explicitTables);
+  return [text.trim(), explicit].filter(Boolean).join("\n\n").trim();
+}
+
 async function extractFromResolvedPath(path: string): Promise<ExtractedPDF> {
   // Local buffers are more reliable than URL loading for pdf-parse.
   const data = await readFileBytes(path);
@@ -73,12 +152,25 @@ async function extractFromResolvedPath(path: string): Promise<ExtractedPDF> {
   const parser = new PDFParse({ data });
 
   try {
-    const result = await parser.getText({ pageJoiner: "" });
+    const result = await parser.getText({
+      pageJoiner: "",
+      parseHyperlinks: true,
+      lineEnforce: true,
+      cellSeparator: "\t",
+    });
+    const tableResult = await parser.getTable().catch(() => null);
+    const tablesByPage = new Map<number, TableArray[]>(
+      (tableResult?.pages ?? []).map((page) => [
+        page.num,
+        page.tables,
+      ]),
+    );
+
     return {
       pageCount: result.total,
       pages: result.pages.map(({ num, text }) => ({
         page: num,
-        text,
+        text: enhancePDFPageText(text, tablesByPage.get(num) ?? []),
       })),
     };
   } finally {
@@ -195,6 +287,7 @@ function isLikelyPDFSectionTitle(line: string): boolean {
   if (
     trimmed.length < 3 ||
     trimmed.length > 120 ||
+    trimmed.startsWith("|") ||
     isPageNumberLine(trimmed) ||
     /[.!?:;]$/.test(trimmed)
   ) {
