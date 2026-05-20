@@ -583,6 +583,7 @@ async function llmJudgeDuplicate(
 
   const result = await generateText({
     model: resolved.model,
+    ...(resolved.providerOptions ? { providerOptions: resolved.providerOptions } : {}),
     prompt,
   });
   const answer = result.text.trim().toUpperCase();
@@ -726,6 +727,7 @@ async function enrichWithLLM(
     config,
     provider,
     model ?? config.models.enrichment.model,
+    config.models.enrichment.reasoning,
   );
   const truncatedContent = content.slice(0, 6000);
   const conceptsList = formatConceptsForPrompt(availableConcepts);
@@ -733,6 +735,9 @@ async function enrichWithLLM(
   if (provider !== "ollama") {
     const { output } = await generateText({
       model: resolvedModel.model,
+      ...(resolvedModel.providerOptions
+        ? { providerOptions: resolvedModel.providerOptions }
+        : {}),
       output: Output.object({ schema: EnrichmentSchema }),
       prompt: dedent`
         Analyze this document and extract metadata for a personal knowledge library.
@@ -778,6 +783,9 @@ async function enrichWithLLM(
   // Ollama remains on prompted JSON because local structured output is less reliable.
   const { text } = await generateText({
     model: resolvedModel.model,
+    ...(resolvedModel.providerOptions
+      ? { providerOptions: resolvedModel.providerOptions }
+      : {}),
     prompt: dedent`
       <role>You are a librarian cataloging documents for a personal knowledge library.</role>
 
@@ -958,12 +966,16 @@ async function tagWithLLM(
     config,
     provider,
     model ?? config.models.enrichment.model,
+    config.models.enrichment.reasoning,
   );
   const truncatedContent = content.slice(0, 4000);
 
   if (provider !== "ollama") {
     const { output } = await generateText({
       model: resolvedModel.model,
+      ...(resolvedModel.providerOptions
+        ? { providerOptions: resolvedModel.providerOptions }
+        : {}),
       output: Output.object({ schema: TagSchema }),
       prompt: dedent`
         Generate tags for this document.
@@ -985,6 +997,9 @@ async function tagWithLLM(
   // Ollama remains on prompted JSON because local structured output is less reliable.
   const { text } = await generateText({
     model: resolvedModel.model,
+    ...(resolvedModel.providerOptions
+      ? { providerOptions: resolvedModel.providerOptions }
+      : {}),
     prompt: dedent`
       Generate tags for this document. Return ONLY a JSON object.
 

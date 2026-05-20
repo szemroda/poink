@@ -265,6 +265,7 @@ export type ProviderName =
   | "anthropic";
 
 export type EmbeddingProviderName = Exclude<ProviderName, "anthropic">;
+export type ReasoningLevel = "low" | "medium" | "high" | "none";
 
 const EmbeddingProviderNameSchema = Schema.Literal(
   "ollama",
@@ -283,6 +284,8 @@ const LanguageProviderNameSchema = Schema.Literal(
   "anthropic",
 );
 
+const ReasoningLevelSchema = Schema.Literal("low", "medium", "high", "none");
+
 const EmbeddingModelRefSchema = Schema.Struct({
   provider: EmbeddingProviderNameSchema,
   model: Schema.String,
@@ -291,6 +294,7 @@ const EmbeddingModelRefSchema = Schema.Struct({
 const LanguageModelRefSchema = Schema.Struct({
   provider: LanguageProviderNameSchema,
   model: Schema.String,
+  reasoning: Schema.optional(Schema.NullOr(ReasoningLevelSchema)),
 });
 
 const SecretRefSchema = Schema.Struct({

@@ -734,6 +734,8 @@ class CLIError extends Error {
 type JsonSchemaNode = {
   type?: string | string[];
   properties?: Record<string, JsonSchemaNode>;
+  anyOf?: JsonSchemaNode[];
+  enum?: unknown[];
 };
 
 const CONFIG_JSON_SCHEMA = JSONSchema.make(Config as any) as JsonSchemaNode;
@@ -757,6 +759,11 @@ function getConfigSchemaNode(path: string): JsonSchemaNode | undefined {
 }
 
 function parseConfigValue(path: string, rawValue: string, schemaNode: JsonSchemaNode): unknown {
+  const trimmedValue = rawValue.trim();
+  if (trimmedValue.toLowerCase() === "null" && schemaAcceptsNull(schemaNode)) {
+    return null;
+  }
+
   const types =
     typeof schemaNode.type === "string"
       ? [schemaNode.type]
@@ -796,6 +803,19 @@ function parseConfigValue(path: string, rawValue: string, schemaNode: JsonSchema
   }
 
   return rawValue;
+}
+
+function schemaAcceptsNull(schemaNode: JsonSchemaNode): boolean {
+  const types =
+    typeof schemaNode.type === "string"
+      ? [schemaNode.type]
+      : Array.isArray(schemaNode.type)
+        ? schemaNode.type
+        : [];
+  return (
+    types.includes("null") ||
+    Boolean(schemaNode.anyOf?.some((node) => schemaAcceptsNull(node)))
+  );
 }
 
 function describeCliFailure(error: unknown): string {
@@ -2134,10 +2154,14 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
           `Embedding:   ${config.models.embedding.provider} / ${config.models.embedding.model}`
         );
         yield* Console.log(
-          `Enrichment:  ${config.models.enrichment.provider} / ${config.models.enrichment.model}`
+          `Enrichment:  ${config.models.enrichment.provider} / ${config.models.enrichment.model} (reasoning: ${
+            config.models.enrichment.reasoning ?? "provider default"
+          })`
         );
         yield* Console.log(
-          `Judge:       ${config.models.judge.provider} / ${config.models.judge.model}`
+          `Judge:       ${config.models.judge.provider} / ${config.models.judge.model} (reasoning: ${
+            config.models.judge.reasoning ?? "provider default"
+          })`
         );
         yield* Console.log("");
         yield* Console.log(

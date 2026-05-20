@@ -477,8 +477,10 @@ poink config set models.enrichment.model anthropic/claude-haiku-4-5
 | `models.embedding.model` | `mxbai-embed-large`   | Embedding model                      |
 | `models.enrichment.provider` | `ollama`         | LLM provider                         |
 | `models.enrichment.model` | `llama3.2:3b`       | Model for document enrichment        |
+| `models.enrichment.reasoning` | -              | Optional reasoning level: `low`, `medium`, `high`, `none`, or `null` for provider default |
 | `models.judge.provider` | `ollama`              | Provider for concept deduplication   |
 | `models.judge.model`  | `llama3.2:3b`            | Model for judging duplicate concepts |
+| `models.judge.reasoning` | -                   | Optional reasoning level: `low`, `medium`, `high`, `none`, or `null` for provider default |
 | `providers.ollama.baseUrl` | `http://localhost:11434` | Ollama API endpoint             |
 | `providers.ollama.autoPull` | `true`            | Auto-pull missing Ollama models when supported |
 | `providers.gateway.apiKey` | -                  | AI Gateway API key                   |
@@ -500,6 +502,13 @@ poink config set models.enrichment.model anthropic/claude-haiku-4-5
 Embedding dimensions are not user configuration. poink derives the vector
 dimension from embeddings returned by the configured provider and records it in
 database metadata, then rejects later embeddings with a different dimension.
+
+For language models that support configurable reasoning or thinking, set
+`models.enrichment.reasoning` or `models.judge.reasoning` to `low`, `medium`, or
+`high`. Set it to `none` to request an instant/non-reasoning mode when the
+provider supports one. Leave it unset or set it to `null` to use the provider's
+default. poink passes configured reasoning through to the selected provider;
+unsupported combinations are left for the provider to accept, ignore, or reject.
 
 ### Environment Variables
 

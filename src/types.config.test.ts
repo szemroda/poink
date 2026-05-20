@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "vitest";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-import { Config, LibraryConfig, loadConfig } from "./types.js";
+import { Config, LibraryConfig, loadConfig, normalizeConfig } from "./types.js";
 
 const ORIGINAL_POINK_CONFIG = process.env.POINK_CONFIG;
 const ORIGINAL_OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
@@ -69,7 +69,9 @@ describe("loadConfig path and database defaults", () => {
       expect(config.server.auth.enabled).toBe(false);
       expect(config.server.auth.token).toBeUndefined();
       expect(config.models.enrichment.model).toBe("llama3.2:3b");
+      expect(config.models.enrichment.reasoning).toBeUndefined();
       expect(config.models.judge.model).toBe("llama3.2:3b");
+      expect(config.models.judge.reasoning).toBeUndefined();
       expect(config.providers.openrouter.apiKey).toBeUndefined();
       expect(config.providers.openrouter.baseUrl).toBe("https://openrouter.ai/api/v1");
       expect(config.providers.google.apiKey).toBeUndefined();
@@ -163,6 +165,35 @@ describe("loadConfig path and database defaults", () => {
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }
+  });
+
+  test("accepts optional reasoning levels for language model roles", () => {
+    const config = JSON.parse(JSON.stringify(Config.Default));
+    config.models.enrichment.reasoning = "high";
+    config.models.judge.reasoning = "none";
+
+    const normalized = normalizeConfig(config);
+
+    expect(normalized.models.enrichment.reasoning).toBe("high");
+    expect(normalized.models.judge.reasoning).toBe("none");
+  });
+
+  test("accepts null reasoning as provider default", () => {
+    const config = JSON.parse(JSON.stringify(Config.Default));
+    config.models.enrichment.reasoning = null;
+    config.models.judge.reasoning = null;
+
+    const normalized = normalizeConfig(config);
+
+    expect(normalized.models.enrichment.reasoning).toBeNull();
+    expect(normalized.models.judge.reasoning).toBeNull();
+  });
+
+  test("rejects invalid reasoning levels", () => {
+    const config = JSON.parse(JSON.stringify(Config.Default));
+    config.models.enrichment.reasoning = "max";
+
+    expect(() => normalizeConfig(config)).toThrow();
   });
 
   test("rejects invalid chunking instead of falling back to defaults", () => {

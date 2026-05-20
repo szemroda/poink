@@ -390,6 +390,65 @@ describe("CLI JSON Envelope Contract", () => {
       expect(saved.providers.openrouter.apiKey).toBe("test-openrouter-key");
     }));
 
+  test("config set accepts language model reasoning levels and null", () =>
+    withTempLibraryPath((libraryRoot) => {
+      const libraryPath = join(libraryRoot, "library");
+      const configPath = join(libraryRoot, "config.json");
+      writeTestConfig(configPath, libraryPath);
+
+      const highRes = runCli(
+        ["config", "set", "models.enrichment.reasoning", "high"],
+        {
+          env: envForConfig(configPath),
+        },
+      );
+
+      expect(highRes.exitCode).toBe(0);
+      const highObj = JSON.parse(highRes.stdout);
+      expect(highObj.ok).toBe(true);
+      expect(highObj.result.path).toBe("models.enrichment.reasoning");
+      expect(highObj.result.value).toBe("high");
+
+      const nullRes = runCli(
+        ["config", "set", "models.judge.reasoning", "null"],
+        {
+          env: envForConfig(configPath),
+        },
+      );
+
+      expect(nullRes.exitCode).toBe(0);
+      const nullObj = JSON.parse(nullRes.stdout);
+      expect(nullObj.ok).toBe(true);
+      expect(nullObj.result.path).toBe("models.judge.reasoning");
+      expect(nullObj.result.value).toBeNull();
+
+      const saved = JSON.parse(readFileSync(configPath, "utf-8"));
+      expect(saved.models.enrichment.reasoning).toBe("high");
+      expect(saved.models.judge.reasoning).toBeNull();
+    }));
+
+  test("config set rejects invalid language model reasoning levels", () =>
+    withTempLibraryPath((libraryRoot) => {
+      const libraryPath = join(libraryRoot, "library");
+      const configPath = join(libraryRoot, "config.json");
+      writeTestConfig(configPath, libraryPath);
+
+      const res = runCli(
+        ["config", "set", "models.enrichment.reasoning", "max"],
+        {
+          env: envForConfig(configPath),
+        },
+      );
+
+      expect(res.exitCode).not.toBe(0);
+      const obj = JSON.parse(res.stdout);
+      expect(obj.ok).toBe(false);
+      expect(obj.error.code).toBe("INVALID_ARGS");
+
+      const saved = JSON.parse(readFileSync(configPath, "utf-8"));
+      expect(saved.models.enrichment.reasoning).toBeUndefined();
+    }));
+
   test("config set rejects invalid config keys and does not persist them", () =>
     withTempLibraryPath((libraryRoot) => {
       const libraryPath = join(libraryRoot, "library");

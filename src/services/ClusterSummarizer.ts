@@ -73,6 +73,9 @@ async function generateSummary(
 
   const { output } = await generateText({
     model: resolvedModel.model,
+    ...(resolvedModel.providerOptions
+      ? { providerOptions: resolvedModel.providerOptions }
+      : {}),
     output: Output.object({ schema: SummarySchema }),
     prompt: dedent`
       Analyze these document chunks from a knowledge library cluster and create an abstractive summary.

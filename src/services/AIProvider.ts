@@ -1,9 +1,25 @@
 import { createGateway } from "ai";
-import { createAnthropic } from "@ai-sdk/anthropic";
-import { createGoogleGenerativeAI } from "@ai-sdk/google";
-import { createOpenAI } from "@ai-sdk/openai";
-import { createOpenRouter } from "@openrouter/ai-sdk-provider";
-import { createOllama } from "ollama-ai-provider-v2";
+import type { LanguageModelV3CallOptions } from "@ai-sdk/provider";
+import {
+  createAnthropic,
+  type AnthropicLanguageModelOptions,
+} from "@ai-sdk/anthropic";
+import {
+  createGoogleGenerativeAI,
+  type GoogleLanguageModelOptions,
+} from "@ai-sdk/google";
+import {
+  createOpenAI,
+  type OpenAILanguageModelResponsesOptions,
+} from "@ai-sdk/openai";
+import {
+  createOpenRouter,
+  type OpenRouterProviderOptions,
+} from "@openrouter/ai-sdk-provider";
+import {
+  createOllama,
+  type OllamaCompletionProviderOptions,
+} from "ollama-ai-provider-v2";
 import {
   AnthropicError,
   GatewayError,
@@ -12,6 +28,7 @@ import {
   OllamaError,
   OpenAIError,
   OpenRouterError,
+  type ReasoningLevel,
   getModelConfig,
 } from "../types.js";
 
@@ -30,6 +47,8 @@ export type ProviderError =
   | OpenAIError
   | OpenRouterError;
 export type ConfiguredLanguageRole = "enrichment" | "judge";
+type ReasoningTargetProvider = Exclude<SupportedProvider, "gateway">;
+type ProviderOptions = NonNullable<LanguageModelV3CallOptions["providerOptions"]>;
 
 export interface ResolvedEmbeddingModel {
   readonly provider: SupportedProvider;
@@ -41,6 +60,7 @@ export interface ResolvedLanguageModel {
   readonly provider: SupportedProvider;
   readonly modelId: string;
   readonly model: any;
+  readonly providerOptions?: ProviderOptions;
 }
 
 const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1";
@@ -201,6 +221,88 @@ function createConfiguredOllamaProvider(config: Config) {
   });
 }
 
+function normalizeModelId(modelId: string): string {
+  return modelId.toLowerCase();
+}
+
+function inferGatewayTargetProvider(
+  modelId: string,
+): ReasoningTargetProvider | undefined {
+  const prefix = normalizeModelId(modelId).split("/")[0];
+  if (
+    prefix === "openai" ||
+    prefix === "anthropic" ||
+    prefix === "google" ||
+    prefix === "openrouter" ||
+    prefix === "ollama"
+  ) {
+    return prefix;
+  }
+  return undefined;
+}
+
+export function getReasoningProviderOptions(
+  provider: SupportedProvider,
+  modelId: string,
+  reasoning: ReasoningLevel | null | undefined,
+): ProviderOptions | undefined {
+  if (reasoning == null) return undefined;
+
+  const targetProvider =
+    provider === "gateway" ? inferGatewayTargetProvider(modelId) : provider;
+
+  if (targetProvider === "openai") {
+    const openai = {
+      reasoningEffort: reasoning,
+    } satisfies OpenAILanguageModelResponsesOptions;
+    return {
+      openai,
+    };
+  }
+
+  if (targetProvider === "openrouter") {
+    const openrouter = {
+      reasoning: {
+        effort: reasoning,
+      },
+    } satisfies OpenRouterProviderOptions;
+    return {
+      openrouter,
+    };
+  }
+
+  if (targetProvider === "google") {
+    const google = (
+      reasoning === "none"
+        ? { thinkingConfig: { thinkingBudget: 0 } }
+        : { thinkingConfig: { thinkingLevel: reasoning } }
+    ) satisfies GoogleLanguageModelOptions;
+    return {
+      google,
+    };
+  }
+
+  if (targetProvider === "anthropic") {
+    const anthropic = (
+      reasoning === "none"
+        ? { thinking: { type: "disabled" } }
+        : { effort: reasoning }
+    ) satisfies AnthropicLanguageModelOptions;
+    return {
+      anthropic,
+    };
+  }
+
+  if (targetProvider === "ollama") {
+    const ollama = {
+      think: reasoning !== "none",
+    } satisfies OllamaCompletionProviderOptions;
+    return { ollama };
+  }
+
+  return undefined;
+}
+
 export function getConfiguredEmbeddingModel(
   config: Config,
 ): ResolvedEmbeddingModel {
@@ -254,7 +356,10 @@ export function getConfiguredEmbeddingModel(
   };
 }
 
-function getConfiguredLanguageConfig(config: Config, role: ConfiguredLanguageRole) {
+function getConfiguredLanguageConfig(
+  config: Config,
+  role: ConfiguredLanguageRole,
+): Config["models"][ConfiguredLanguageRole] {
   return getModelConfig(config, role);
 }
 
@@ -262,12 +367,16 @@ export function resolveLanguageModel(
   config: Config,
   provider: SupportedProvider,
   modelId: string,
+  reasoning?: ReasoningLevel | null,
 ): ResolvedLanguageModel {
+  const providerOptions = getReasoningProviderOptions(provider, modelId, reasoning);
+
   if (provider === "gateway") {
     return {
       provider,
       modelId,
       model: createConfiguredGatewayProvider(config).languageModel(modelId),
+      providerOptions,
     };
   }
 
@@ -276,6 +385,7 @@ export function resolveLanguageModel(
       provider,
       modelId,
       model: createConfiguredOpenAIProvider(config).languageModel(modelId),
+      providerOptions,
     };
   }
 
@@ -284,6 +394,7 @@ export function resolveLanguageModel(
       provider,
       modelId,
       model: createConfiguredOpenRouterProvider(config).languageModel(modelId),
+      providerOptions,
     };
   }
 
@@ -292,6 +403,7 @@ export function resolveLanguageModel(
       provider,
       modelId,
       model: createConfiguredGoogleProvider(config).languageModel(modelId),
+      providerOptions,
     };
   }
 
@@ -300,6 +412,7 @@ export function resolveLanguageModel(
       provider,
       modelId,
       model: createConfiguredAnthropicProvider(config).languageModel(modelId),
+      providerOptions,
     };
   }
 
@@ -307,6 +420,7 @@ export function resolveLanguageModel(
     provider,
     modelId,
     model: createConfiguredOllamaProvider(config).languageModel(modelId),
+    providerOptions,
   };
 }
 
@@ -318,5 +432,5 @@ export function getConfiguredLanguageModel(
   const roleConfig = getConfiguredLanguageConfig(config, role);
   const provider = override?.provider ?? roleConfig.provider;
   const modelId = override?.modelId ?? roleConfig.model;
-  return resolveLanguageModel(config, provider, modelId);
+  return resolveLanguageModel(config, provider, modelId, roleConfig.reasoning);
 }
