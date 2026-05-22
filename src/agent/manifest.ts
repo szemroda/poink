@@ -55,6 +55,7 @@ export function renderHelp(stats?: {
       poink doctor [--fix]
       poink repair
       poink config show|get|set
+      poink --format text providers login --provider openai-codex [--device-auth]
       poink reindex [--clean]
       poink rechunk [--dry-run] [--include-missing] [--max-docs N] [--max-chunks N]
 

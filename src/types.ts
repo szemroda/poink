@@ -260,11 +260,15 @@ export type ProviderName =
   | "ollama"
   | "gateway"
   | "openai"
+  | "openai-codex"
   | "openrouter"
   | "google"
   | "anthropic";
 
-export type EmbeddingProviderName = Exclude<ProviderName, "anthropic">;
+export type EmbeddingProviderName = Exclude<
+  ProviderName,
+  "anthropic" | "openai-codex"
+>;
 export type ReasoningLevel = "low" | "medium" | "high" | "none";
 
 const EmbeddingProviderNameSchema = Schema.Literal(
@@ -279,6 +283,7 @@ const LanguageProviderNameSchema = Schema.Literal(
   "ollama",
   "gateway",
   "openai",
+  "openai-codex",
   "openrouter",
   "google",
   "anthropic",
@@ -367,6 +372,14 @@ export class Config extends Schema.Class<Config>("Config")({
         baseUrl: DEFAULT_OPENAI_BASE_URL,
       }),
     }),
+    "openai-codex": Schema.optionalWith(Schema.Struct({}).pipe(
+      Schema.filter((value) => Object.keys(value).length === 0, {
+        message: () =>
+          "OpenAI Codex provider does not accept configuration in this release.",
+      }),
+    ), {
+      default: () => ({}),
+    }),
     openrouter: Schema.optionalWith(Schema.Struct({
       apiKey: Schema.optional(Schema.String),
       apiKeyEnv: Schema.optionalWith(Schema.String, {
@@ -417,6 +430,7 @@ export class Config extends Schema.Class<Config>("Config")({
         apiKeyEnv: "OPENAI_API_KEY",
         baseUrl: DEFAULT_OPENAI_BASE_URL,
       },
+      "openai-codex": {},
       openrouter: {
         apiKeyEnv: "OPENROUTER_API_KEY",
         baseUrl: DEFAULT_OPENROUTER_BASE_URL,
@@ -559,6 +573,7 @@ export class Config extends Schema.Class<Config>("Config")({
         apiKeyEnv: "OPENAI_API_KEY",
         baseUrl: DEFAULT_OPENAI_BASE_URL,
       },
+      "openai-codex": {},
       openrouter: {
         apiKeyEnv: "OPENROUTER_API_KEY",
         baseUrl: DEFAULT_OPENROUTER_BASE_URL,
@@ -836,6 +851,11 @@ export class GatewayError extends Schema.TaggedError<GatewayError>()(
 
 export class OpenAIError extends Schema.TaggedError<OpenAIError>()(
   "OpenAIError",
+  { reason: Schema.String }
+) {}
+
+export class OpenAICodexError extends Schema.TaggedError<OpenAICodexError>()(
+  "OpenAICodexError",
   { reason: Schema.String }
 ) {}
 

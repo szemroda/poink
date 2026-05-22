@@ -27,10 +27,12 @@ import {
   type Config,
   OllamaError,
   OpenAIError,
+  OpenAICodexError,
   OpenRouterError,
   type ReasoningLevel,
   getModelConfig,
 } from "../types.js";
+import { getOpenAICodexProviderManager } from "./OpenAICodexProvider.js";
 
 export type SupportedProvider =
   | "ollama"
@@ -38,13 +40,15 @@ export type SupportedProvider =
   | "gateway"
   | "openrouter"
   | "google"
-  | "anthropic";
+  | "anthropic"
+  | "openai-codex";
 export type ProviderError =
   | AnthropicError
   | GatewayError
   | GoogleError
   | OllamaError
   | OpenAIError
+  | OpenAICodexError
   | OpenRouterError;
 export type ConfiguredLanguageRole = "enrichment" | "judge";
 type ReasoningTargetProvider = Exclude<SupportedProvider, "gateway">;
@@ -234,7 +238,8 @@ function inferGatewayTargetProvider(
     prefix === "anthropic" ||
     prefix === "google" ||
     prefix === "openrouter" ||
-    prefix === "ollama"
+    prefix === "ollama" ||
+    prefix === "openai-codex"
   ) {
     return prefix;
   }
@@ -298,6 +303,14 @@ export function getReasoningProviderOptions(
       think: reasoning !== "none",
     } satisfies OllamaCompletionProviderOptions;
     return { ollama };
+  }
+
+  if (targetProvider === "openai-codex") {
+    return {
+      "codex-app-server": {
+        effort: reasoning,
+      },
+    };
   }
 
   return undefined;
@@ -385,6 +398,15 @@ export function resolveLanguageModel(
       provider,
       modelId,
       model: createConfiguredOpenAIProvider(config).languageModel(modelId),
+      providerOptions,
+    };
+  }
+
+  if (provider === "openai-codex") {
+    return {
+      provider,
+      modelId,
+      model: getOpenAICodexProviderManager().getLanguageModel(modelId),
       providerOptions,
     };
   }

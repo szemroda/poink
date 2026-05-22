@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test } from "vitest";
 
 import { Config, normalizeConfig } from "../types.js";
 import {
@@ -9,6 +9,11 @@ import {
   normalizeOllamaBaseUrl,
   resolveLanguageModel,
 } from "./AIProvider.js";
+import { closeOpenAICodexProviderManager } from "./OpenAICodexProvider.js";
+
+afterEach(async () => {
+  await closeOpenAICodexProviderManager();
+});
 
 function makeTestConfig(overrides: Record<string, unknown>) {
   const { models, providers, ...rest } = overrides;
@@ -208,6 +213,24 @@ describe("AIProvider", () => {
     });
   });
 
+  test("resolves OpenAI Codex language models through the app-server provider", () => {
+    const config = makeTestConfig({
+      models: {
+        enrichment: {
+          provider: "openai-codex",
+          model: "gpt-5.5",
+        },
+      },
+    });
+
+    const resolved = getConfiguredLanguageModel(config, "enrichment");
+
+    expect(resolved.provider).toBe("openai-codex");
+    expect(resolved.modelId).toBe("gpt-5.5");
+    expect(resolved.model.provider).toBe("codex-app-server");
+    expect(resolved.model.modelId).toBe("gpt-5.5");
+  });
+
   test("maps reasoning none to instant or non-thinking provider options", () => {
     expect(getReasoningProviderOptions("openai", "gpt-5.2", "none")).toEqual({
       openai: { reasoningEffort: "none" },
@@ -217,6 +240,9 @@ describe("AIProvider", () => {
     });
     expect(getReasoningProviderOptions("ollama", "qwen3:8b", "none")).toEqual({
       ollama: { think: false },
+    });
+    expect(getReasoningProviderOptions("openai-codex", "gpt-5.5", "high")).toEqual({
+      "codex-app-server": { effort: "high" },
     });
   });
 

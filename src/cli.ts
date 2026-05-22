@@ -74,6 +74,14 @@ import {
   EmbeddingProvider,
   EmbeddingProviderFullLive,
 } from "./services/EmbeddingProvider.js";
+import {
+  checkOpenAICodexRuntime,
+  closeOpenAICodexProviderManager,
+  getOpenAICodexConfiguredRoles,
+  type OpenAICodexRuntimeStatus,
+  runOpenAICodexLogin,
+  withOpenAICodexProviderScope,
+} from "./services/OpenAICodexProvider.js";
 import { type CommandResult, generateHints, generateNextActions } from "./agent/hints.js";
 import { formatHintBlock } from "./agent/format.js";
 import { renderHelp } from "./agent/manifest.js";
@@ -456,6 +464,48 @@ export function assessDoctorHealth(data: {
   return {
     healthy: checks.every((c) => c.healthy),
     checks,
+  };
+}
+
+function healthCheckSeverity(check: HealthCheck): "ok" | "warning" | "error" {
+  return check.severity ?? (check.healthy ? "ok" : "error");
+}
+
+function hasDoctorWarnings(checks: HealthCheck[]): boolean {
+  return checks.some((check) => healthCheckSeverity(check) === "warning");
+}
+
+function renderDoctorCheckLines(checks: HealthCheck[]): string[] {
+  const lines: string[] = [];
+  for (const check of checks) {
+    const severity = healthCheckSeverity(check);
+    const icon = severity === "ok" ? "✓" : severity === "warning" ? "!" : "✗";
+    const status = severity === "ok" ? "ok" : severity === "warning" ? "WARNING" : "ISSUE";
+    lines.push(`${icon} ${check.name}: ${status}`);
+    if (check.details) {
+      lines.push(`  ${check.details}`);
+    }
+  }
+  return lines;
+}
+
+function buildOpenAICodexHealthCheck(
+  status: OpenAICodexRuntimeStatus,
+): HealthCheck | null {
+  if (!status.configured) return null;
+
+  const healthy = status.canStart && status.authenticated;
+  return {
+    name: "OpenAI Codex",
+    healthy,
+    severity: healthy ? "ok" : "error",
+    details: [
+      `configured for ${status.roles.join(", ")}`,
+      "bundled Codex runtime",
+      status.error ?? null,
+    ]
+      .filter(Boolean)
+      .join("; "),
   };
 }
 
@@ -1022,7 +1072,9 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
     });
 
   if (args.length === 0 || args.includes("--help") || args.includes("-h")) {
-    const stats = yield* Effect.either(library.stats());
+    const stats = isServiceFreeCommand(args[0])
+      ? ({ _tag: "Left" } as const)
+      : yield* Effect.either(library.stats());
     const statsData = stats._tag === "Right" ? stats.right : undefined;
     if (format === "text") {
       yield* Console.log(renderHelp(statsData));
@@ -1127,6 +1179,19 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
               "Re-embed existing chunks in-place (updates embeddings only; does NOT remove/re-add documents)",
           },
           { name: "config", argv: ["config", "<subcommand>"], description: "Config show/get/set" },
+          {
+            name: "providers",
+            argv: [
+              "--format",
+              "text",
+              "providers",
+              "login",
+              "--provider",
+              "openai-codex",
+              "[--device-auth]",
+            ],
+            description: "Provider authentication helpers",
+          },
           { name: "mcp", argv: ["mcp"], description: "Start MCP server (stdio)" },
           {
             name: "serve",
@@ -1210,6 +1275,7 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
         | "ollama"
         | "gateway"
         | "openai"
+        | "openai-codex"
         | "openrouter"
         | "google"
         | "anthropic"
@@ -2146,6 +2212,7 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
 
 	      if (!subcommand || subcommand === "show") {
 	        // Show all config
+        const openAICodexRoles = getOpenAICodexConfiguredRoles(config);
 	        yield* Console.log(`PDF Library Config (${configPath})`);
         yield* Console.log(
           `───────────────────────────────────────────────────────────────────`
@@ -2162,6 +2229,9 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
           `Judge:       ${config.models.judge.provider} / ${config.models.judge.model} (reasoning: ${
             config.models.judge.reasoning ?? "provider default"
           })`
+        );
+        yield* Console.log(
+          `OpenAI Codex:${openAICodexRoles.length > 0 ? ` configured for ${openAICodexRoles.join(", ")}` : " not configured for language roles"}`
         );
         yield* Console.log("");
         yield* Console.log(
@@ -2213,6 +2283,10 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
             openrouterApiKeyConfigured: Boolean(hasOpenRouterKey),
             googleApiKeyConfigured: Boolean(hasGoogleKey),
             anthropicApiKeyConfigured: Boolean(hasAnthropicKey),
+            openAICodex: {
+              roles: openAICodexRoles,
+              runtime: "bundled",
+            },
 	        };
 	      } else if (subcommand === "get") {
 	        const path = args[2];
@@ -2326,10 +2400,93 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
 	      break;
 	    }
 
+    case "providers": {
+      const subcommand = args[1];
+      if (subcommand !== "login") {
+        yield* Console.error(`Unknown providers subcommand: ${subcommand ?? ""}`);
+        yield* Console.error("Available: login --provider openai-codex");
+        return yield* Effect.fail(
+          new CLIError(
+            "INVALID_ARGS",
+            `Unknown providers subcommand: ${subcommand ?? ""}`,
+            {
+              subcommand,
+              available: ["login"],
+            },
+          ),
+        );
+      }
+
+      const opts = parseArgs(args.slice(2));
+      const allowedProviderLoginFlags = new Set(["provider", "device-auth"]);
+      const unsupportedFlag = Object.keys(opts).find(
+        (flag) => !allowedProviderLoginFlags.has(flag),
+      );
+      if (unsupportedFlag) {
+        return yield* Effect.fail(
+          new CLIError(
+            "INVALID_ARGS",
+            `Unsupported providers login flag: --${unsupportedFlag}`,
+            {
+              flag: `--${unsupportedFlag}`,
+              available: ["--provider openai-codex", "--device-auth"],
+            },
+          ),
+        );
+      }
+
+      if (opts.provider !== "openai-codex") {
+        return yield* Effect.fail(
+          new CLIError(
+            "INVALID_ARGS",
+            "providers login currently supports only --provider openai-codex",
+            {
+              provider: opts.provider,
+              hint: "poink providers login --provider openai-codex",
+            },
+          ),
+        );
+      }
+
+      if (format !== "text") {
+        return yield* Effect.fail(
+          new CLIError(
+            "INVALID_ARGS",
+            "providers login is interactive and requires --format text",
+            {
+              hint: "poink --format text providers login --provider openai-codex",
+            },
+          ),
+        );
+      }
+
+      yield* Console.log("Starting OpenAI Codex login...");
+      yield* Effect.tryPromise({
+        try: () =>
+          runOpenAICodexLogin({
+            stdio: "inherit",
+            deviceAuth: opts["device-auth"] === true,
+          }),
+        catch: (error) => error,
+      });
+      yield* Console.log("OpenAI Codex login complete");
+      resultPayload = {
+        provider: "openai-codex",
+        authenticated: true,
+      };
+      agentResult = { _tag: "config", subcommand: "providers login" };
+      break;
+    }
+
 	    case "doctor": {
 	      const opts = parseArgs(args.slice(1));
 	      const shouldFix = opts.fix === true;
 	      const config = LibraryConfig.fromEnv();
+      const appConfig = loadConfig();
+      const openAICodexStatus = yield* Effect.promise(() =>
+        checkOpenAICodexRuntime(appConfig),
+      );
+      const openAICodexCheck = buildOpenAICodexHealthCheck(openAICodexStatus);
 	      const dbPath = config.dbPath;
 	      const walPath = `${dbPath}-wal`;
 
@@ -2338,13 +2495,31 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
 	      // Check if library exists
 	      if (!existsSync(dbPath)) {
 	        yield* Console.log("✓ Library not initialized yet (nothing to check)");
+        if (openAICodexCheck) {
+          yield* Console.log("");
+          yield* Console.log("📊 Provider Health Checks:\n");
+          for (const line of renderDoctorCheckLines([openAICodexCheck])) {
+            yield* Console.log(line);
+          }
+          if (!openAICodexCheck.healthy) {
+            yield* Console.log("");
+            yield* Console.log("⚠️  Issues detected.\n");
+            yield* Console.log(
+              `  OpenAI Codex: ${openAICodexStatus.error ?? "run poink providers login --provider openai-codex"}`
+            );
+          }
+        }
 	        resultPayload = {
-	          healthy: true,
-	          checks: [],
+	          healthy: openAICodexCheck ? openAICodexCheck.healthy : true,
+	          checks: openAICodexCheck ? [openAICodexCheck] : [],
 	          dbPath,
+            openAICodex: openAICodexStatus,
 	          didFix: shouldFix,
 	        };
-	        agentResult = { _tag: "doctor", healthy: true };
+	        agentResult = {
+            _tag: "doctor",
+            healthy: openAICodexCheck ? openAICodexCheck.healthy : true,
+          };
 	        break;
 	      }
 
@@ -2368,31 +2543,26 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
 
       // 2. Check Ollama connectivity
       let ollamaReachable = false;
-      try {
-        yield* library.checkReady();
-        ollamaReachable = true;
-      } catch {
-        ollamaReachable = false;
-      }
+      const readyResult = yield* Effect.either(library.checkReady());
+      ollamaReachable = readyResult._tag === "Right";
 
       // 3. Check for orphaned data
       let orphanedData = { chunks: 0, embeddings: 0 };
-      try {
-        const repairResult = yield* library.repair();
+      const repairResult = yield* Effect.either(library.repair());
+      if (repairResult._tag === "Right") {
         orphanedData = {
-          chunks: repairResult.orphanedChunks,
-          embeddings: repairResult.orphanedEmbeddings,
+          chunks: repairResult.right.orphanedChunks,
+          embeddings: repairResult.right.orphanedEmbeddings,
         };
-	      } catch {
-	        // If repair fails, assume no orphans (database might not exist)
-	      }
+      }
 
 	      // 4. Check chunker metadata freshness (agent usefulness depends on this)
 	      let chunkerMissing = 0;
 	      let chunkerMismatch = 0;
 	      const chunkerSample: Array<{ id: string; title: string; reason: string; code: string }> = [];
-	      try {
-	        const docs = yield* library.list();
+      const docsResult = yield* Effect.either(library.list());
+      if (docsResult._tag === "Right") {
+	        const docs = docsResult.right;
 	        for (const doc of docs) {
 	          const assessment = assessDocChunker(doc, config);
 	          if (assessment.needsRechunk) {
@@ -2408,8 +2578,6 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
 	            }
 	          }
 	        }
-	      } catch {
-	        // ignore
 	      }
 	
 	      const chunkerOutdated = chunkerMissing + chunkerMismatch;
@@ -2421,12 +2589,17 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
 	        orphanedData,
 	        chunker: { missing: chunkerMissing, mismatch: chunkerMismatch },
 	      });
+      const checks = openAICodexCheck
+        ? [...doctorHealth.checks, openAICodexCheck]
+        : doctorHealth.checks;
+      const healthy = checks.every((check) => check.healthy);
 
 	      resultPayload = {
-	        healthy: doctorHealth.healthy,
-	        checks: doctorHealth.checks,
+	        healthy,
+	        checks,
 	        walHealth,
 	        ollamaReachable,
+        openAICodex: openAICodexStatus,
 	        orphanedData,
 	        chunker: {
 	          outdated: chunkerOutdated,
@@ -2442,26 +2615,17 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
 
       // Display results
       yield* Console.log("📊 Health Check Results:\n");
-      for (const check of doctorHealth.checks) {
-        const severity =
-          check.severity ?? (check.healthy ? ("ok" as const) : ("error" as const));
-        const icon = severity === "ok" ? "✓" : severity === "warning" ? "!" : "✗";
-        const status = severity === "ok" ? "ok" : severity === "warning" ? "WARNING" : "ISSUE";
-        yield* Console.log(`${icon} ${check.name}: ${status}`);
-        if (check.details) {
-          yield* Console.log(`  ${check.details}`);
-        }
+	      for (const line of renderDoctorCheckLines(checks)) {
+        yield* Console.log(line);
       }
 
       yield* Console.log("");
 
-      const hasWarnings = doctorHealth.checks.some(
-        (c) => (c.severity ?? (c.healthy ? "ok" : "error")) === "warning",
-      );
+	      const hasWarnings = hasDoctorWarnings(checks);
 
-      if (doctorHealth.healthy && !hasWarnings) {
+	      if (healthy && !hasWarnings) {
         yield* Console.log("✅ All checks passed! Database is healthy.");
-      } else if (doctorHealth.healthy && hasWarnings) {
+	      } else if (healthy && hasWarnings) {
         yield* Console.log("✅ All checks passed (with warnings).");
       } else {
         yield* Console.log("⚠️  Issues detected.\n");
@@ -2502,6 +2666,12 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
             );
           }
 
+          if (openAICodexCheck && !openAICodexCheck.healthy) {
+            yield* Console.log(
+              `  OpenAI Codex: ${openAICodexStatus.error ?? "run poink providers login --provider openai-codex"}`
+            );
+          }
+
 	          if (orphanedData.chunks > 0 || orphanedData.embeddings > 0) {
 	            yield* Console.log(
 	              "  Orphaned data: Already cleaned automatically"
@@ -2527,7 +2697,7 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
 	      }
 	      agentResult = {
 	        _tag: "doctor",
-	        healthy: doctorHealth.healthy,
+	        healthy,
 	        chunkerOutdated,
 	        chunkerMissing,
 	        chunkerMismatch,
@@ -3710,12 +3880,14 @@ async function connectMcpServer<ROut, E>(
       format: "json",
     };
 
-    const outEither: any = await Runtime.runPromise(
-      runtime as any,
-      withConfiguredLogging(
-        makeProgram(argv, cmdGlobals).pipe(Effect.either),
-        cmdGlobals.logLevel,
-      ) as any,
+    const outEither: any = await withOpenAICodexProviderScope(() =>
+      Runtime.runPromise(
+        runtime as any,
+        withConfiguredLogging(
+          makeProgram(argv, cmdGlobals).pipe(Effect.either),
+          cmdGlobals.logLevel,
+        ) as any,
+      ),
     );
 
     if (outEither._tag === "Right") {
@@ -4014,6 +4186,11 @@ async function connectMcpServer<ROut, E>(
       // ignore
     }
     try {
+      await closeOpenAICodexProviderManager();
+    } catch {
+      // ignore
+    }
+    try {
       await Effect.runPromise(Scope.close(scope, Exit.succeed(undefined)));
     } catch {
       // ignore
@@ -4165,7 +4342,7 @@ function buildCliAppLayer() {
 }
 
 function isServiceFreeCommand(command: string | undefined): boolean {
-  return command === "config";
+  return command === "config" || command === "providers";
 }
 
 // ============================================================================
@@ -4185,6 +4362,28 @@ function isMainModule(): boolean {
   } catch {
     return modulePath === argvPath;
   }
+}
+
+function installOpenAICodexShutdownHandlers(): () => void {
+  let shuttingDown = false;
+  const shutdown = async (signal: NodeJS.Signals) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    removeHandlers();
+    try {
+      await closeOpenAICodexProviderManager();
+    } catch {
+      // ignore cleanup errors during signal shutdown
+    }
+    process.exit(signal === "SIGINT" ? 130 : 143);
+  };
+  const removeHandlers = () => {
+    process.off("SIGINT", shutdown);
+    process.off("SIGTERM", shutdown);
+  };
+  process.once("SIGINT", shutdown);
+  process.once("SIGTERM", shutdown);
+  return removeHandlers;
 }
 
 if (isMainModule()) {
@@ -4247,6 +4446,8 @@ if (isMainModule()) {
       return;
     }
 
+    const removeOpenAICodexShutdownHandlers = installOpenAICodexShutdownHandlers();
+
     const toCLIError = (e: unknown): CLIError => {
       if (e instanceof CLIError) return e;
       const tag =
@@ -4263,27 +4464,37 @@ if (isMainModule()) {
       const program = makeProgram(args, globals);
 
       if (isServiceFreeCommand(command)) {
-        outEither = await Effect.runPromise(
+        outEither = await withOpenAICodexProviderScope(() =>
+          Effect.runPromise(
           // `makeProgram` is typed with the union of all command requirements.
           // Pure commands like `config` do not need runtime services.
-          withConfiguredLogging(
-            (program as Effect.Effect<any, any, never>).pipe(Effect.either),
-            globals.logLevel,
+            withConfiguredLogging(
+              (program as Effect.Effect<any, any, never>).pipe(Effect.either),
+              globals.logLevel,
+            )
           )
         );
       } else {
-        outEither = await Effect.runPromise(
-          withConfiguredLogging(
-            program.pipe(
-              Effect.provide(buildCliAppLayer()),
-              Effect.scoped,
-              Effect.either
+        outEither = await withOpenAICodexProviderScope(() =>
+          Effect.runPromise(
+            withConfiguredLogging(
+              program.pipe(
+                Effect.provide(buildCliAppLayer()),
+                Effect.scoped,
+                Effect.either
+              ),
+              globals.logLevel,
             ),
-            globals.logLevel,
           )
         );
       }
     } catch (e) {
+      removeOpenAICodexShutdownHandlers();
+      try {
+        await closeOpenAICodexProviderManager();
+      } catch {
+        // ignore cleanup errors while reporting the original failure
+      }
       // Defect / unexpected exception (not an Effect "failure").
       const err = toCLIError(e);
       if (globals.format === "text") {
@@ -4309,6 +4520,13 @@ if (isMainModule()) {
       );
       process.exit(1);
       return;
+    }
+
+    removeOpenAICodexShutdownHandlers();
+    try {
+      await closeOpenAICodexProviderManager();
+    } catch {
+      // ignore cleanup errors after command completion
     }
 
     if (outEither._tag === "Right") {

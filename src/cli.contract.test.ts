@@ -317,6 +317,19 @@ describe("CLI JSON Envelope Contract", () => {
       expect(commandNames.has("reindex")).toBe(true);
       expect(commandNames.has("mcp")).toBe(true);
       expect(commandNames.has("serve")).toBe(true);
+      expect(commandNames.has("providers")).toBe(true);
+      const providersCommand = (result.commands as Array<any>).find(
+        (c) => c.name === "providers",
+      );
+      expect(providersCommand?.argv).toEqual([
+        "--format",
+        "text",
+        "providers",
+        "login",
+        "--provider",
+        "openai-codex",
+        "[--device-auth]",
+      ]);
 
       // Schema invariants (agents can validate/parses these)
       expect(result.schemas).toBeDefined();
@@ -335,6 +348,73 @@ describe("CLI JSON Envelope Contract", () => {
       expect(docSchema.required).toContain("tags");
     }));
 
+  test("providers login requires text format because it is interactive", () =>
+    withTempLibraryPath((libraryPath) => {
+      const configPath = join(libraryPath, "config.json");
+      writeTestConfig(configPath, libraryPath);
+
+      const res = runCli(["providers", "login", "--provider", "openai-codex"], {
+        env: envForConfig(configPath),
+      });
+
+      expect(res.exitCode).not.toBe(0);
+      const obj = JSON.parse(res.stdout);
+      expect(obj.ok).toBe(false);
+      expect(obj.command).toBe("providers");
+      expect(obj.error.code).toBe("INVALID_ARGS");
+      expect(String(obj.error.message)).toContain("--format text");
+      expect(obj.error.details.hint).toBe(
+        "poink --format text providers login --provider openai-codex",
+      );
+    }));
+
+  test("providers login rejects unsupported provider login flags", () =>
+    withTempLibraryPath((libraryPath) => {
+      const configPath = join(libraryPath, "config.json");
+      writeTestConfig(configPath, libraryPath);
+
+      const res = runCli(
+        [
+          "providers",
+          "login",
+          "--provider",
+          "openai-codex",
+          "--device-code",
+        ],
+        {
+          env: envForConfig(configPath),
+        },
+      );
+
+      expect(res.exitCode).not.toBe(0);
+      const obj = JSON.parse(res.stdout);
+      expect(obj.ok).toBe(false);
+      expect(obj.command).toBe("providers");
+      expect(obj.error.code).toBe("INVALID_ARGS");
+      expect(String(obj.error.message)).toContain("--device-code");
+      expect(obj.error.details.available).toContain("--device-auth");
+    }));
+
+  test("service-free command help does not require runtime services", () =>
+    withTempLibraryPath((libraryPath) => {
+      const configPath = join(libraryPath, "config.json");
+      writeTestConfig(configPath, libraryPath);
+
+      for (const command of ["config", "providers"]) {
+        const res = runCli([command, "--help", "--format", "json"], {
+          env: envForConfig(configPath),
+        });
+
+        expect(res.exitCode).toBe(0);
+        const obj = JSON.parse(res.stdout);
+        expect(obj.ok).toBe(true);
+        expect(obj.command).toBe("help");
+        expect(obj.result.help).toContain(
+          "poink --format text providers login --provider openai-codex",
+        );
+      }
+    }));
+
   test("config show text output includes database backend details", () =>
     withTempLibraryPath((libraryPath) => {
       const configPath = join(libraryPath, "config.json");
@@ -348,6 +428,7 @@ describe("CLI JSON Envelope Contract", () => {
       expect(res.stdout).toContain("Storage:");
       expect(res.stdout).toContain("libsql");
       expect(res.stdout).toContain("Qdrant:");
+      expect(res.stdout).toContain("OpenAI Codex:");
     }));
 
   test("config show succeeds when configured library path does not exist yet", () =>

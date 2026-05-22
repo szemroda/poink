@@ -301,6 +301,15 @@ poink config set models.enrichment.model gpt-4o-mini
 poink config set providers.openai.apiKey your-key
 export OPENAI_API_KEY=your-key
 
+# Use OpenAI Codex through your Codex/ChatGPT login
+poink config set models.enrichment.provider openai-codex
+poink config set models.enrichment.model gpt-5.5
+poink config set models.judge.provider openai-codex
+poink config set models.judge.model gpt-5.5
+poink --format text providers login --provider openai-codex
+# For headless devices, use Codex device authorization:
+poink --format text providers login --provider openai-codex --device-auth
+
 # Use OpenRouter
 poink config set models.enrichment.provider openrouter
 poink config set models.enrichment.model anthropic/claude-3.5-haiku
@@ -570,6 +579,23 @@ export OPENAI_API_KEY=your-key
 
 poink config set models.embedding.provider openai
 poink config set models.embedding.model text-embedding-3-small
+```
+
+### OpenAI Codex
+
+OpenAI Codex can be configured for enrichment and judge language-model calls. It uses the managed Codex runtime installed with poink and authenticates through Codex, not through an OpenAI API key. It is not an embedding provider.
+
+```bash
+poink config set models.enrichment.provider openai-codex
+poink config set models.enrichment.model gpt-5.5
+
+poink config set models.judge.provider openai-codex
+poink config set models.judge.model gpt-5.5
+
+poink --format text providers login --provider openai-codex
+# For headless devices, use Codex device authorization:
+poink --format text providers login --provider openai-codex --device-auth
+poink doctor
 ```
 
 Google language and embedding models can be configured directly:

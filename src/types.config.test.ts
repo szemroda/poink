@@ -86,6 +86,7 @@ describe("loadConfig path and database defaults", () => {
       expect(config.providers.anthropic.baseUrl).toBe(
         "https://api.anthropic.com/v1",
       );
+      expect(config.providers["openai-codex"]).toEqual({});
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }
@@ -165,6 +166,33 @@ describe("loadConfig path and database defaults", () => {
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }
+  });
+
+  test("accepts OpenAI Codex for language roles and rejects it for embeddings", () => {
+    const config = JSON.parse(JSON.stringify(Config.Default));
+    config.models.enrichment.provider = "openai-codex";
+    config.models.enrichment.model = "gpt-5.5";
+    config.models.judge.provider = "openai-codex";
+    config.models.judge.model = "gpt-5.5";
+    const normalized = normalizeConfig(config);
+
+    expect(normalized.models.enrichment.provider).toBe("openai-codex");
+    expect(normalized.models.judge.provider).toBe("openai-codex");
+    expect(normalized.providers["openai-codex"]).toEqual({});
+
+    config.models.embedding.provider = "openai-codex";
+    config.models.embedding.model = "gpt-5.5";
+
+    expect(() => normalizeConfig(config)).toThrow();
+  });
+
+  test("rejects OpenAI Codex provider configuration in bundled-only mode", () => {
+    const config = JSON.parse(JSON.stringify(Config.Default));
+    config.providers["openai-codex"] = { codexPath: "C:\\tools\\codex.cmd" };
+
+    expect(() => normalizeConfig(config)).toThrow(
+      /does not accept configuration/,
+    );
   });
 
   test("accepts optional reasoning levels for language model roles", () => {
