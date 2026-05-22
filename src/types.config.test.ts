@@ -64,6 +64,7 @@ describe("loadConfig path and database defaults", () => {
       expect(config.storage.qdrant.collection).toBe("poink");
       expect(config.chunking.size).toBe(2000);
       expect(config.chunking.overlap).toBe(200);
+      expect(config.cli.globalFlags.format).toBe("text");
       expect(config.server.host).toBe("127.0.0.1");
       expect(config.server.port).toBe(3838);
       expect(config.server.auth.enabled).toBe(false);
@@ -204,6 +205,22 @@ describe("loadConfig path and database defaults", () => {
 
     expect(normalized.models.enrichment.reasoning).toBe("high");
     expect(normalized.models.judge.reasoning).toBe("none");
+  });
+
+  test("normalizes legacy configs without CLI settings to text output", () => {
+    const config = JSON.parse(JSON.stringify(Config.Default));
+    delete config.cli;
+
+    const normalized = normalizeConfig(config);
+
+    expect(normalized.cli.globalFlags.format).toBe("text");
+  });
+
+  test("rejects invalid CLI default format values", () => {
+    const config = JSON.parse(JSON.stringify(Config.Default));
+    config.cli.globalFlags.format = "xml";
+
+    expect(() => normalizeConfig(config)).toThrow();
   });
 
   test("accepts null reasoning as provider default", () => {

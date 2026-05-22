@@ -2,14 +2,17 @@
  * Agent-first output protocol for poink.
  *
  * Design goals:
- * - stdout is machine-readable (JSON by default)
+ * - stdout is human-readable by default; JSON/NDJSON use a stable envelope
  * - stderr is diagnostics only (opt-in via log-level)
  * - stable envelope so agents can reliably parse responses and chain next actions
  */
 
 export const POINK_PROTOCOL_VERSION = 1 as const;
 
-export type OutputFormat = "json" | "ndjson" | "text";
+export const DEFAULT_CLI_OUTPUT_FORMAT = "text" as const;
+export const OUTPUT_FORMATS = [DEFAULT_CLI_OUTPUT_FORMAT, "json", "ndjson"] as const;
+
+export type OutputFormat = (typeof OUTPUT_FORMATS)[number];
 export type LogLevel = "silent" | "error" | "info" | "debug";
 
 export interface NextAction {

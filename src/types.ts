@@ -6,6 +6,11 @@ import { Schema } from "effect";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
 import { homedir } from "os";
 import { dirname, join, win32 } from "path";
+import {
+  DEFAULT_CLI_OUTPUT_FORMAT,
+  OUTPUT_FORMATS,
+  type OutputFormat,
+} from "./agent/protocol.js";
 import { assertValidChunking } from "./chunking.js";
 
 // ============================================================================
@@ -270,6 +275,7 @@ export type EmbeddingProviderName = Exclude<
   "anthropic" | "openai-codex"
 >;
 export type ReasoningLevel = "low" | "medium" | "high" | "none";
+export type CLIOutputFormat = OutputFormat;
 
 const EmbeddingProviderNameSchema = Schema.Literal(
   "ollama",
@@ -290,6 +296,7 @@ const LanguageProviderNameSchema = Schema.Literal(
 );
 
 const ReasoningLevelSchema = Schema.Literal("low", "medium", "high", "none");
+const CLIOutputFormatSchema = Schema.Literal(...OUTPUT_FORMATS);
 
 const EmbeddingModelRefSchema = Schema.Struct({
   provider: EmbeddingProviderNameSchema,
@@ -334,6 +341,21 @@ export class Config extends Schema.Class<Config>("Config")({
       strategy: "text" as const,
       size: DEFAULT_CHUNK_SIZE,
       overlap: DEFAULT_CHUNK_OVERLAP,
+    }),
+  }),
+  cli: Schema.optionalWith(Schema.Struct({
+    globalFlags: Schema.optionalWith(Schema.Struct({
+      format: Schema.optionalWith(CLIOutputFormatSchema, {
+        default: () => DEFAULT_CLI_OUTPUT_FORMAT,
+      }),
+    }), {
+      default: () => ({ format: DEFAULT_CLI_OUTPUT_FORMAT }),
+    }),
+  }), {
+    default: () => ({
+      globalFlags: {
+        format: DEFAULT_CLI_OUTPUT_FORMAT,
+      },
     }),
   }),
   models: Schema.Struct({
@@ -546,6 +568,11 @@ export class Config extends Schema.Class<Config>("Config")({
       strategy: "text",
       size: DEFAULT_CHUNK_SIZE,
       overlap: DEFAULT_CHUNK_OVERLAP,
+    },
+    cli: {
+      globalFlags: {
+        format: DEFAULT_CLI_OUTPUT_FORMAT,
+      },
     },
     models: {
       embedding: {

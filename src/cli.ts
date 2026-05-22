@@ -86,7 +86,9 @@ import { type CommandResult, generateHints, generateNextActions } from "./agent/
 import { formatHintBlock } from "./agent/format.js";
 import { renderHelp } from "./agent/manifest.js";
 import {
+  DEFAULT_CLI_OUTPUT_FORMAT,
   DEFAULT_SERVER_CONFIG,
+  OUTPUT_FORMATS,
   POINK_PROTOCOL_VERSION,
   type AgentEnvelope,
   type LogLevel,
@@ -885,6 +887,7 @@ function describeCliFailure(error: unknown): string {
 
 type GlobalCLIOptions = {
   format: OutputFormat;
+  configuredDefaultFormat: OutputFormat;
   pretty: boolean;
   logLevel: LogLevel;
   quiet: boolean;
@@ -896,11 +899,21 @@ type ServeCommandOverrides = {
   authToken?: string;
 };
 
-function parseGlobalCLIOptions(rawArgs: string[]): {
+function isOutputFormat(value: unknown): value is OutputFormat {
+  return (
+    typeof value === "string" &&
+    OUTPUT_FORMATS.includes(value as OutputFormat)
+  );
+}
+
+function parseGlobalCLIOptions(
+  rawArgs: string[],
+  configuredDefaultFormat: OutputFormat = DEFAULT_CLI_OUTPUT_FORMAT,
+): {
   options: GlobalCLIOptions;
   args: string[];
 } {
-  let format: OutputFormat = "json";
+  let format: OutputFormat = configuredDefaultFormat;
   let pretty = false;
   let quiet = false;
   let logLevel: LogLevel = getLogLevel();
@@ -925,7 +938,7 @@ function parseGlobalCLIOptions(rawArgs: string[]): {
         arg === "--format" ? rawArgs[i + 1] : arg.split("=", 2)[1];
       if (arg === "--format") i++;
 
-      if (value === "json" || value === "ndjson" || value === "text") {
+      if (isOutputFormat(value)) {
         format = value;
         continue;
       }
@@ -965,12 +978,21 @@ function parseGlobalCLIOptions(rawArgs: string[]): {
   return {
     options: {
       format,
+      configuredDefaultFormat,
       pretty,
       logLevel,
       quiet,
     },
     args,
   };
+}
+
+function resolveConfiguredDefaultFormat(): OutputFormat {
+  try {
+    return loadConfig().cli.globalFlags.format;
+  } catch {
+    return DEFAULT_CLI_OUTPUT_FORMAT;
+  }
 }
 
 export function parseServeCommandOptions(args: string[]): ServeCommandOverrides {
@@ -1112,10 +1134,12 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
       const result = {
         protocolVersion: POINK_PROTOCOL_VERSION,
         poinkVersion: VERSION,
-        defaultFormat: "json" as const,
-        outputFormats: ["json", "ndjson", "text"] as const,
+        defaultFormat: globals.configuredDefaultFormat,
+        factoryDefaultFormat: DEFAULT_CLI_OUTPUT_FORMAT,
+        configurableDefaultFormat: "cli.globalFlags.format" as const,
+        outputFormats: OUTPUT_FORMATS,
         globalFlags: {
-          "--format": ["json", "ndjson", "text"] as const,
+          "--format": OUTPUT_FORMATS,
           "--pretty": { type: "boolean", default: false },
           "--quiet": { type: "boolean", default: false },
           "--log-level": ["silent", "error", "info", "debug"] as const,
@@ -2245,6 +2269,8 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
           `Qdrant:      ${config.storage.qdrant.url} / ${config.storage.qdrant.collection}`
         );
         yield* Console.log("");
+        yield* Console.log(`CLI Format:  ${config.cli.globalFlags.format}`);
+        yield* Console.log("");
         yield* Console.log(`Server:      ${config.server.host}:${config.server.port}`);
         yield* Console.log(
           `Auth:        ${
@@ -2286,6 +2312,9 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
             openAICodex: {
               roles: openAICodexRoles,
               runtime: "bundled",
+            },
+            cli: {
+              defaultFormat: config.cli.globalFlags.format,
             },
 	        };
 	      } else if (subcommand === "get") {
@@ -4392,8 +4421,9 @@ if (isMainModule()) {
 
     let globals: GlobalCLIOptions;
     let args: string[];
+    const configuredDefaultFormat = resolveConfiguredDefaultFormat();
     try {
-      const parsed = parseGlobalCLIOptions(rawArgs);
+      const parsed = parseGlobalCLIOptions(rawArgs, configuredDefaultFormat);
       globals = parsed.options;
       args = parsed.args;
     } catch (e) {
@@ -4401,9 +4431,17 @@ if (isMainModule()) {
         e instanceof CLIError
           ? e
           : new CLIError("INVALID_ARGS", String(e), { rawArgs });
-      // Default to JSON on parse errors (agent-first).
+      if (configuredDefaultFormat === DEFAULT_CLI_OUTPUT_FORMAT) {
+        try {
+          process.stderr.write(`${err.code}: ${err.message}\n`);
+        } catch {
+          // ignore
+        }
+        process.exit(1);
+        return;
+      }
       writeEnvelope(
-        "json",
+        configuredDefaultFormat,
         {
           ok: false,
           command: "cli",

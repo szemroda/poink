@@ -22,6 +22,7 @@ function sleep(delayMs: number): Promise<void> {
 function makeTestConfig(
   libraryPath: string,
   modelProvider: "ollama" | "openrouter" = "ollama",
+  cliFormat: "json" | "ndjson" | "text" = "text",
 ) {
   const models =
     modelProvider === "openrouter"
@@ -58,6 +59,7 @@ function makeTestConfig(
     version: 1,
     library: { path: libraryPath },
     chunking: { strategy: "text", size: 2000, overlap: 200 },
+    cli: { globalFlags: { format: cliFormat } },
     models,
     providers: {
       ollama: {
@@ -98,10 +100,11 @@ function writeTestConfig(
   configPath: string,
   libraryPath: string,
   modelProvider?: "ollama" | "openrouter",
+  cliFormat?: "json" | "ndjson" | "text",
 ): void {
   writeFileSync(
     configPath,
-    JSON.stringify(makeTestConfig(libraryPath, modelProvider), null, 2),
+    JSON.stringify(makeTestConfig(libraryPath, modelProvider, cliFormat), null, 2),
     "utf-8",
   );
 }
@@ -189,7 +192,7 @@ describe("Node Build Smoke", () => {
           throw new Error(build.stderr || build.stdout);
         }
 
-        const proc = spawnSync(process.execPath, ["dist/cli.js", "--help"], {
+        const proc = spawnSync(process.execPath, ["dist/cli.js", "--format", "json", "--help"], {
           env: {
             ...process.env,
             ...envForConfig(configPath),
@@ -207,6 +210,20 @@ describe("Node Build Smoke", () => {
 });
 
 describe("CLI JSON Envelope Contract", () => {
+  test("stats emits text output by default", () =>
+    withTempLibraryPath((libraryPath) => {
+      const configPath = join(libraryPath, "config.json");
+      writeTestConfig(configPath, libraryPath);
+
+      const res = runCli(["stats"], {
+        env: envForConfig(configPath),
+      });
+
+      expect(res.exitCode).toBe(0);
+      expect(res.stdout).toContain("PDF Library Stats");
+      expect(res.stdout).toContain("Documents:  0");
+    }));
+
   test("stats emits a single JSON envelope with nextActions when not --quiet", () =>
     withTempLibraryPath((libraryPath) => {
       const configPath = join(libraryPath, "config.json");
@@ -250,10 +267,54 @@ describe("CLI JSON Envelope Contract", () => {
       expect("nextActions" in obj).toBe(false);
     }));
 
-  test("invalid --format returns a structured error envelope and non-zero exit code", () =>
+  test("configured default format is used when --format is omitted", () =>
+    withTempLibraryPath((libraryPath) => {
+      const configPath = join(libraryPath, "config.json");
+      writeTestConfig(configPath, libraryPath, "ollama", "json");
+
+      const res = runCli(["stats"], {
+        env: envForConfig(configPath),
+      });
+
+      expect(res.exitCode).toBe(0);
+      const obj = JSON.parse(res.stdout);
+      expect(obj.ok).toBe(true);
+      expect(obj.command).toBe("stats");
+    }));
+
+  test("--format overrides the configured default format", () =>
+    withTempLibraryPath((libraryPath) => {
+      const configPath = join(libraryPath, "config.json");
+      writeTestConfig(configPath, libraryPath, "ollama", "json");
+
+      const res = runCli(["stats", "--format", "text"], {
+        env: envForConfig(configPath),
+      });
+
+      expect(res.exitCode).toBe(0);
+      expect(res.stdout).toContain("PDF Library Stats");
+      expect(() => JSON.parse(res.stdout)).toThrow();
+    }));
+
+  test("invalid --format returns a text error by default", () =>
     withTempLibraryPath((libraryPath) => {
       const configPath = join(libraryPath, "config.json");
       writeTestConfig(configPath, libraryPath);
+
+      const res = runCli(["--format", "wat", "stats"], {
+        env: envForConfig(configPath),
+      });
+
+      expect(res.exitCode).not.toBe(0);
+      expect(res.stdout).toBe("");
+      expect(res.stderr).toContain("INVALID_FLAG");
+      expect(res.stderr).toContain("Invalid --format value");
+    }));
+
+  test("invalid --format returns a structured error envelope when configured for JSON", () =>
+    withTempLibraryPath((libraryPath) => {
+      const configPath = join(libraryPath, "config.json");
+      writeTestConfig(configPath, libraryPath, "ollama", "json");
 
       const res = runCli(["--format", "wat", "stats"], {
         env: envForConfig(configPath),
@@ -302,6 +363,9 @@ describe("CLI JSON Envelope Contract", () => {
       expect(result).toBeDefined();
       expect(result.protocolVersion).toBe(1);
       expect(typeof result.poinkVersion).toBe("string");
+      expect(result.defaultFormat).toBe("text");
+      expect(result.factoryDefaultFormat).toBe("text");
+      expect(result.configurableDefaultFormat).toBe("cli.globalFlags.format");
 
       // Command list invariants (agent discovery depends on these names)
       const commandNames = new Set(
@@ -348,12 +412,29 @@ describe("CLI JSON Envelope Contract", () => {
       expect(docSchema.required).toContain("tags");
     }));
 
+  test("capabilities reports configured default format separately from --format", () =>
+    withTempLibraryPath((libraryPath) => {
+      const configPath = join(libraryPath, "config.json");
+      writeTestConfig(configPath, libraryPath, "ollama", "ndjson");
+
+      const res = runCli(["capabilities", "--format", "json", "--quiet"], {
+        env: envForConfig(configPath),
+      });
+
+      expect(res.exitCode).toBe(0);
+      const obj = JSON.parse(res.stdout);
+      expect(obj.ok).toBe(true);
+      expect(obj.result.defaultFormat).toBe("ndjson");
+      expect(obj.result.factoryDefaultFormat).toBe("text");
+      expect(obj.result.configurableDefaultFormat).toBe("cli.globalFlags.format");
+    }));
+
   test("providers login requires text format because it is interactive", () =>
     withTempLibraryPath((libraryPath) => {
       const configPath = join(libraryPath, "config.json");
       writeTestConfig(configPath, libraryPath);
 
-      const res = runCli(["providers", "login", "--provider", "openai-codex"], {
+      const res = runCli(["providers", "login", "--provider", "openai-codex", "--format", "json"], {
         env: envForConfig(configPath),
       });
 
@@ -380,6 +461,8 @@ describe("CLI JSON Envelope Contract", () => {
           "--provider",
           "openai-codex",
           "--device-code",
+          "--format",
+          "json",
         ],
         {
           env: envForConfig(configPath),
@@ -454,7 +537,14 @@ describe("CLI JSON Envelope Contract", () => {
       writeTestConfig(configPath, libraryPath, "openrouter");
 
       const res = runCli(
-        ["config", "set", "providers.openrouter.apiKey", "test-openrouter-key"],
+        [
+          "config",
+          "set",
+          "providers.openrouter.apiKey",
+          "test-openrouter-key",
+          "--format",
+          "json",
+        ],
         {
           env: envForConfig(configPath),
         },
@@ -478,7 +568,7 @@ describe("CLI JSON Envelope Contract", () => {
       writeTestConfig(configPath, libraryPath);
 
       const highRes = runCli(
-        ["config", "set", "models.enrichment.reasoning", "high"],
+        ["config", "set", "models.enrichment.reasoning", "high", "--format", "json"],
         {
           env: envForConfig(configPath),
         },
@@ -491,7 +581,7 @@ describe("CLI JSON Envelope Contract", () => {
       expect(highObj.result.value).toBe("high");
 
       const nullRes = runCli(
-        ["config", "set", "models.judge.reasoning", "null"],
+        ["config", "set", "models.judge.reasoning", "null", "--format", "json"],
         {
           env: envForConfig(configPath),
         },
@@ -508,6 +598,51 @@ describe("CLI JSON Envelope Contract", () => {
       expect(saved.models.judge.reasoning).toBeNull();
     }));
 
+  test("config set accepts CLI default format values", () =>
+    withTempLibraryPath((libraryRoot) => {
+      const libraryPath = join(libraryRoot, "library");
+      const configPath = join(libraryRoot, "config.json");
+      writeTestConfig(configPath, libraryPath);
+
+      const res = runCli(
+        ["config", "set", "cli.globalFlags.format", "json", "--format", "json"],
+        {
+          env: envForConfig(configPath),
+        },
+      );
+
+      expect(res.exitCode).toBe(0);
+      const obj = JSON.parse(res.stdout);
+      expect(obj.ok).toBe(true);
+      expect(obj.result.path).toBe("cli.globalFlags.format");
+      expect(obj.result.value).toBe("json");
+
+      const saved = JSON.parse(readFileSync(configPath, "utf-8"));
+      expect(saved.cli.globalFlags.format).toBe("json");
+    }));
+
+  test("config set rejects invalid CLI default format values", () =>
+    withTempLibraryPath((libraryRoot) => {
+      const libraryPath = join(libraryRoot, "library");
+      const configPath = join(libraryRoot, "config.json");
+      writeTestConfig(configPath, libraryPath);
+
+      const res = runCli(
+        ["config", "set", "cli.globalFlags.format", "xml", "--format", "json"],
+        {
+          env: envForConfig(configPath),
+        },
+      );
+
+      expect(res.exitCode).not.toBe(0);
+      const obj = JSON.parse(res.stdout);
+      expect(obj.ok).toBe(false);
+      expect(obj.error.code).toBe("INVALID_ARGS");
+
+      const saved = JSON.parse(readFileSync(configPath, "utf-8"));
+      expect(saved.cli.globalFlags.format).toBe("text");
+    }));
+
   test("config set rejects invalid language model reasoning levels", () =>
     withTempLibraryPath((libraryRoot) => {
       const libraryPath = join(libraryRoot, "library");
@@ -515,7 +650,7 @@ describe("CLI JSON Envelope Contract", () => {
       writeTestConfig(configPath, libraryPath);
 
       const res = runCli(
-        ["config", "set", "models.enrichment.reasoning", "max"],
+        ["config", "set", "models.enrichment.reasoning", "max", "--format", "json"],
         {
           env: envForConfig(configPath),
         },
@@ -537,7 +672,7 @@ describe("CLI JSON Envelope Contract", () => {
       writeTestConfig(configPath, libraryPath);
 
       const res = runCli(
-        ["config", "set", "providers.openrouter.apiKeyyyyy", "123"],
+        ["config", "set", "providers.openrouter.apiKeyyyyy", "123", "--format", "json"],
         {
           env: envForConfig(configPath),
         },
@@ -559,7 +694,7 @@ describe("CLI JSON Envelope Contract", () => {
       const configPath = join(libraryRoot, "config.json");
       writeTestConfig(configPath, libraryPath);
 
-      const res = runCli(["config", "set", "chunking.overlap", "2000"], {
+      const res = runCli(["config", "set", "chunking.overlap", "2000", "--format", "json"], {
         env: envForConfig(configPath),
       });
 
@@ -629,6 +764,13 @@ describe("MCP Tool Output Contract", () => {
           const call = await client.callTool({ name: "stats", arguments: {} });
           expect(Boolean(call.isError)).toBe(false);
           expect(call.structuredContent).toBeDefined();
+          expect(call.content).toBeDefined();
+
+          const textContent = (call.content as Array<any>).find(
+            (item) => item.type === "text",
+          );
+          expect(textContent).toBeDefined();
+          expect(JSON.parse(textContent.text).ok).toBe(true);
 
           const envelope: any = call.structuredContent;
           expect(envelope.ok).toBe(true);

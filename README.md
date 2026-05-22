@@ -19,8 +19,8 @@ poink started as a fork of the original [pdf-brain](https://github.com/joelhooks
 
 ## Quick Start
 
-> Note: `poink` is agent-first and emits a single JSON envelope to stdout by default.  
-> Use `--format text` for human-readable output (and TUI/progress rendering), or inspect the machine contract via `poink capabilities`.
+> Note: `poink` emits human-readable text by default.  
+> Use `--format json` for a single machine-readable envelope, or inspect the machine contract via `poink capabilities`.
 
 ```bash
 # 1. Install from npm
@@ -83,14 +83,21 @@ npm install -g poink-cli
 
 ## CLI Reference
 
-### Agent Output (Default)
+### Output Format
 
-`poink` is optimized for agentic workflows: stdout is machine-readable by default.
+`poink` uses human-readable text by default. JSON and NDJSON remain available for scripts and agents.
 
-- `--format json|ndjson|text` (default: `json`)
+- `--format text|json|ndjson` (default: `text`)
 - `--pretty` pretty-print JSON
 - `--quiet` (alias: `--no-hints`) omit `nextActions`
 - `--log-level silent|error|info|debug` (logs go to stderr)
+
+You can change the CLI default format in config:
+
+```bash
+poink config set cli.globalFlags.format json
+poink config set cli.globalFlags.format text
+```
 
 Discover the full command/tool contract (including JSON Schemas) at runtime:
 
@@ -412,6 +419,11 @@ poink config set models.enrichment.model anthropic/claude-haiku-4-5
     "size": 2000,
     "overlap": 200
   },
+  "cli": {
+    "globalFlags": {
+      "format": "text"
+    }
+  },
   "models": {
     "embedding": {
       "provider": "ollama",
@@ -482,6 +494,7 @@ poink config set models.enrichment.model anthropic/claude-haiku-4-5
 | `library.path`        | `~/.poink`               | Library storage location             |
 | `chunking.size`       | `2000`                   | Chunk size in characters             |
 | `chunking.overlap`    | `200`                    | Chunk overlap in characters          |
+| `cli.globalFlags.format` | `text`                | Default CLI output format: `text`, `json`, or `ndjson` |
 | `models.embedding.provider` | `ollama`          | Embedding provider                   |
 | `models.embedding.model` | `mxbai-embed-large`   | Embedding model                      |
 | `models.enrichment.provider` | `ollama`         | LLM provider                         |
@@ -662,6 +675,9 @@ SELECT COUNT(chunk_id) FROM embeddings  -- correct
 ## MCP Integration
 
 poink ships as an MCP server for AI coding assistants:
+
+MCP tool responses remain JSON-friendly regardless of the CLI default format:
+tools return a JSON envelope in `structuredContent` and in their text content.
 
 ```json
 {

@@ -3,6 +3,13 @@
  */
 
 import dedent from "dedent";
+import { DEFAULT_CLI_OUTPUT_FORMAT, OUTPUT_FORMATS } from "./protocol.js";
+
+const OUTPUT_FORMAT_HELP = OUTPUT_FORMATS
+  .map((format) =>
+    format === DEFAULT_CLI_OUTPUT_FORMAT ? `${format} (default)` : format,
+  )
+  .join(", ");
 
 export function renderHelp(stats?: {
   documents: number;
@@ -62,7 +69,7 @@ export function renderHelp(stats?: {
     ## Options
       --help, -h
       --version, -v
-      --format <mode>       json (default), ndjson, text
+      --format <mode>       ${OUTPUT_FORMAT_HELP}
       --pretty
       --log-level <level>   silent (default), error, info, debug
       --quiet, --no-hints
