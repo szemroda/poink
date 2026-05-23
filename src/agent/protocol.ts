@@ -7,10 +7,13 @@
  * - stable envelope so agents can reliably parse responses and chain next actions
  */
 
+import { isIP } from "node:net";
+
 export const POINK_PROTOCOL_VERSION = 1 as const;
 
 export const DEFAULT_CLI_OUTPUT_FORMAT = "text" as const;
 export const OUTPUT_FORMATS = [DEFAULT_CLI_OUTPUT_FORMAT, "json", "ndjson"] as const;
+export const DEFAULT_SERVER_AUTH_TOKEN_ENV = "POINK_SERVER_TOKEN" as const;
 
 export type OutputFormat = (typeof OUTPUT_FORMATS)[number];
 export type LogLevel = "silent" | "error" | "info" | "debug";
@@ -30,6 +33,7 @@ export interface AgentErrorShape {
 export interface ServerAuthConfig {
   enabled: boolean;
   token?: string;
+  tokenEnv?: string;
 }
 
 export interface ServerConfigShape {
@@ -49,6 +53,7 @@ export const DEFAULT_SERVER_CONFIG: ServerConfigShape = {
   port: 3838,
   auth: {
     enabled: false,
+    tokenEnv: DEFAULT_SERVER_AUTH_TOKEN_ENV,
   },
 };
 
@@ -90,6 +95,8 @@ export function resolveServerConfig(
       ? true
       : config?.auth?.enabled ?? DEFAULT_SERVER_CONFIG.auth.enabled;
   const authToken = overrides?.authToken ?? config?.auth?.token;
+  const authTokenEnv =
+    config?.auth?.tokenEnv ?? DEFAULT_SERVER_CONFIG.auth.tokenEnv;
 
   return {
     host,
@@ -97,8 +104,43 @@ export function resolveServerConfig(
     auth: {
       enabled: authEnabled,
       token: authToken,
+      tokenEnv: authTokenEnv,
     },
   };
+}
+
+function normalizeBindHost(host: string): string {
+  const trimmed = host.trim().toLowerCase();
+  if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+    return trimmed.slice(1, -1);
+  }
+  return trimmed;
+}
+
+export function isLoopbackBindHost(host: string): boolean {
+  const normalized = normalizeBindHost(host);
+  if (normalized === "localhost") return true;
+
+  const ipVersion = isIP(normalized);
+  if (ipVersion === 4) {
+    return normalized.split(".")[0] === "127";
+  }
+  if (ipVersion === 6) {
+    return normalized === "::1" || normalized === "0:0:0:0:0:0:0:1";
+  }
+
+  return false;
+}
+
+export function requiresServerAuthForHost(host: string): boolean {
+  return !isLoopbackBindHost(host);
+}
+
+export function resolveServerAuthToken(
+  auth: ServerAuthConfig,
+  env: Record<string, string | undefined> = process.env
+): string | undefined {
+  return auth.token ?? (auth.tokenEnv ? env[auth.tokenEnv] : undefined);
 }
 
 export function isBearerTokenAuthorized(

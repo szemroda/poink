@@ -132,9 +132,12 @@ poink serve --host 127.0.0.1 --port 3838
 
 # Require a bearer token for /mcp
 poink serve --auth-token your-token
+
+# Bind outside loopback with bearer auth
+POINK_SERVER_TOKEN=your-token poink serve --host 0.0.0.0
 ```
 
-`poink serve` exposes `/health` for readiness checks and `/mcp` for the HTTP MCP endpoint. The default bind is `127.0.0.1:3838`.
+`poink serve` exposes `/health` for readiness checks and `/mcp` for the HTTP MCP endpoint. The default bind is `127.0.0.1:3838`. Non-loopback binds, including `0.0.0.0`, `::`, LAN IPs, and named hosts, require bearer auth and fail at startup unless a token is available from `--auth-token`, `server.auth.token`, or `server.auth.tokenEnv` (default: `POINK_SERVER_TOKEN`).
 
 ### Adding Documents
 
@@ -520,6 +523,8 @@ poink config set models.enrichment.model anthropic/claude-haiku-4-5
 | `server.host`         | `127.0.0.1`              | Host/interface for `poink serve` |
 | `server.port`         | `3838`                   | HTTP port for `poink serve`      |
 | `server.auth.enabled` | `false`                  | Require bearer auth on `/mcp`        |
+| `server.auth.token`   | -                        | Bearer token for `/mcp`              |
+| `server.auth.tokenEnv` | `POINK_SERVER_TOKEN`    | Environment variable for bearer token |
 
 Embedding dimensions are not user configuration. poink derives the vector
 dimension from embeddings returned by the configured provider and records it in

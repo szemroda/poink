@@ -87,6 +87,7 @@ import { formatHintBlock } from "./agent/format.js";
 import { renderHelp } from "./agent/manifest.js";
 import {
   DEFAULT_CLI_OUTPUT_FORMAT,
+  DEFAULT_SERVER_AUTH_TOKEN_ENV,
   DEFAULT_SERVER_CONFIG,
   OUTPUT_FORMATS,
   POINK_PROTOCOL_VERSION,
@@ -94,7 +95,10 @@ import {
   type LogLevel,
   type NextAction,
   type OutputFormat,
+  type ServerConfigShape,
   isBearerTokenAuthorized,
+  requiresServerAuthForHost,
+  resolveServerAuthToken,
   resolveServerConfig,
   toJsonLine,
 } from "./agent/protocol.js";
@@ -1043,6 +1047,44 @@ export function parseServeCommandOptions(args: string[]): ServeCommandOverrides 
   return overrides;
 }
 
+function resolveServeSecurityConfig(serverConfig: ServerConfigShape): ServerConfigShape {
+  const token = resolveServerAuthToken(serverConfig.auth);
+  const tokenEnv = serverConfig.auth.tokenEnv ?? DEFAULT_SERVER_AUTH_TOKEN_ENV;
+  const requiresAuth = requiresServerAuthForHost(serverConfig.host);
+
+  if (serverConfig.auth.enabled && !token) {
+    throw new CLIError(
+      "INVALID_CONFIG",
+      `Auth is enabled but no token is configured. Set config.server.auth.token, set ${tokenEnv}, or pass --auth-token.`,
+      {
+        configPath: resolveConfigPath(),
+        tokenEnv,
+      }
+    );
+  }
+
+  if (requiresAuth && !token) {
+    throw new CLIError(
+      "INVALID_CONFIG",
+      `Refusing to bind HTTP MCP server to non-loopback host ${serverConfig.host} without bearer auth. Pass --auth-token, set config.server.auth.token, or set ${tokenEnv}.`,
+      {
+        host: serverConfig.host,
+        configPath: resolveConfigPath(),
+        tokenEnv,
+      }
+    );
+  }
+
+  return {
+    ...serverConfig,
+    auth: {
+      ...serverConfig.auth,
+      enabled: serverConfig.auth.enabled || requiresAuth,
+      token,
+    },
+  };
+}
+
 function writeEnvelope<T>(
   format: OutputFormat,
   envelope: AgentEnvelope<T>,
@@ -1226,7 +1268,7 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
               "[--auth-token <token>]",
             ],
             description:
-              `Start MCP server over HTTP for remote access (default ${DEFAULT_SERVER_CONFIG.host}:${DEFAULT_SERVER_CONFIG.port})`,
+              `Start MCP server over HTTP (default ${DEFAULT_SERVER_CONFIG.host}:${DEFAULT_SERVER_CONFIG.port}; non-loopback hosts require bearer auth)`,
           },
         ],
         schemas: {
@@ -2234,9 +2276,10 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
 	      const config = loadConfig();
       const configPath = resolveConfigPath();
 
-	      if (!subcommand || subcommand === "show") {
-	        // Show all config
+      if (!subcommand || subcommand === "show") {
+        // Show all config
         const openAICodexRoles = getOpenAICodexConfiguredRoles(config);
+        const hasResolvedServerAuthToken = Boolean(resolveServerAuthToken(config.server.auth));
 	        yield* Console.log(`PDF Library Config (${configPath})`);
         yield* Console.log(
           `───────────────────────────────────────────────────────────────────`
@@ -2275,8 +2318,9 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
         yield* Console.log(
           `Auth:        ${
             config.server.auth.enabled ? "enabled" : "disabled"
-          }${config.server.auth.token ? " (token set)" : ""}`
+          }${hasResolvedServerAuthToken ? " (token set)" : ""}`
         );
+        yield* Console.log(`Auth Env:    ${config.server.auth.tokenEnv}`);
         yield* Console.log("");
 	        const hasGatewayKey = config.gatewayApiKey;
 	        const hasOpenRouterKey = config.openrouterApiKey;
@@ -4252,17 +4296,9 @@ async function runServeCommand<ROut, E>(
 ): Promise<void> {
   const config = loadConfig();
   const overrides = parseServeCommandOptions(serveArgs);
-  const serverConfig = resolveServerConfig(config.server, overrides);
-
-  if (serverConfig.auth.enabled && !serverConfig.auth.token) {
-    throw new CLIError(
-      "INVALID_CONFIG",
-      "Auth is enabled but no token is configured. Set config.server.auth.token or pass --auth-token.",
-      {
-        configPath: resolveConfigPath(),
-      },
-    );
-  }
+  const serverConfig = resolveServeSecurityConfig(
+    resolveServerConfig(config.server, overrides)
+  );
 
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: () => crypto.randomUUID(),

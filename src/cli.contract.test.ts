@@ -797,6 +797,62 @@ describe("MCP Tool Output Contract", () => {
 
 describe("HTTP MCP Server", () => {
   test(
+    "serve refuses non-loopback binds without bearer auth",
+    async () =>
+      withTempLibraryPathAsync(async (libraryPath) => {
+        const configPath = join(libraryPath, "config.json");
+        writeTestConfig(configPath, libraryPath);
+
+        const port = await getAvailablePort();
+        const env = {
+          ...process.env,
+          ...envForConfig(configPath),
+        } as Record<string, string>;
+        delete env.POINK_SERVER_TOKEN;
+
+        const proc = spawn(
+          process.execPath,
+          nodeTsxArgs([
+            "serve",
+            "--host",
+            "0.0.0.0",
+            "--port",
+            String(port),
+            "--quiet",
+          ]),
+          {
+            cwd: process.cwd(),
+            stdio: ["ignore", "pipe", "pipe"],
+            env,
+          },
+        );
+
+        let stderr = "";
+        proc.stderr.on("data", (chunk) => {
+          stderr += String(chunk);
+        });
+
+        const exit = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
+          (resolve, reject) => {
+            const timeout = setTimeout(() => {
+              proc.kill();
+              reject(new Error("serve did not reject unauthenticated remote bind"));
+            }, 3000);
+            proc.once("exit", (code, signal) => {
+              clearTimeout(timeout);
+              resolve({ code, signal });
+            });
+          },
+        );
+
+        expect(exit.code).toBe(1);
+        expect(exit.signal).toBeNull();
+        expect(stderr).toContain("Refusing to bind HTTP MCP server");
+      }),
+    10000,
+  );
+
+  test(
     "serve starts the HTTP MCP server and exposes /health",
     async () =>
       withTempLibraryPathAsync(async (libraryPath) => {
@@ -846,6 +902,74 @@ describe("HTTP MCP Server", () => {
             port,
             auth: { enabled: false },
           });
+        } finally {
+          proc.kill();
+          await new Promise<void>((resolve) => {
+            if (proc.exitCode !== null || proc.signalCode !== null) {
+              resolve();
+              return;
+            }
+            proc.once("exit", () => resolve());
+          });
+        }
+      }),
+    20000,
+  );
+
+  test(
+    "serve enables bearer auth for non-loopback binds with env token",
+    async () =>
+      withTempLibraryPathAsync(async (libraryPath) => {
+        const configPath = join(libraryPath, "config.json");
+        writeTestConfig(configPath, libraryPath);
+
+        const port = await getAvailablePort();
+        const proc = spawn(
+          process.execPath,
+          nodeTsxArgs([
+            "serve",
+            "--host",
+            "0.0.0.0",
+            "--port",
+            String(port),
+            "--quiet",
+          ]),
+          {
+            cwd: process.cwd(),
+            stdio: ["ignore", "pipe", "pipe"],
+            env: {
+              ...process.env,
+              ...envForConfig(configPath),
+              POINK_SERVER_TOKEN: "env-token",
+            } as any,
+          },
+        );
+
+        try {
+          let health: Response | undefined;
+          for (let i = 0; i < 40; i++) {
+            try {
+              health = await fetch(`http://127.0.0.1:${port}/health`);
+              if (health.ok) break;
+            } catch {
+              // server not ready yet
+            }
+            await sleep(100);
+          }
+
+          expect(health).toBeDefined();
+          expect(health?.ok).toBe(true);
+
+          const body = await health!.json();
+          expect(body).toEqual({
+            ok: true,
+            host: "0.0.0.0",
+            port,
+            auth: { enabled: true },
+          });
+
+          const unauthorized = await fetch(`http://127.0.0.1:${port}/mcp`);
+          expect(unauthorized.status).toBe(401);
         } finally {
           proc.kill();
           await new Promise<void>((resolve) => {

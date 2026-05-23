@@ -8,6 +8,7 @@ import { homedir } from "os";
 import { dirname, join, win32 } from "path";
 import {
   DEFAULT_CLI_OUTPUT_FORMAT,
+  DEFAULT_SERVER_AUTH_TOKEN_ENV,
   OUTPUT_FORMATS,
   type OutputFormat,
 } from "./agent/protocol.js";
@@ -533,13 +534,13 @@ export class Config extends Schema.Class<Config>("Config")({
           }),
           token: Schema.optional(Schema.String),
           tokenEnv: Schema.optionalWith(Schema.String, {
-            default: () => "POINK_SERVER_TOKEN",
+            default: () => DEFAULT_SERVER_AUTH_TOKEN_ENV,
           }),
         }),
         {
           default: () => ({
             enabled: false,
-            tokenEnv: "POINK_SERVER_TOKEN",
+            tokenEnv: DEFAULT_SERVER_AUTH_TOKEN_ENV,
           }),
         }
       ),
@@ -550,7 +551,7 @@ export class Config extends Schema.Class<Config>("Config")({
         port: 3838,
         auth: {
           enabled: false,
-          tokenEnv: "POINK_SERVER_TOKEN",
+          tokenEnv: DEFAULT_SERVER_AUTH_TOKEN_ENV,
         },
       }),
     }
@@ -630,7 +631,7 @@ export class Config extends Schema.Class<Config>("Config")({
       port: 3838,
       auth: {
         enabled: false,
-        tokenEnv: "POINK_SERVER_TOKEN",
+        tokenEnv: DEFAULT_SERVER_AUTH_TOKEN_ENV,
       },
     },
   });

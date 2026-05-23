@@ -59,6 +59,7 @@ export function renderHelp(stats?: {
       poink capabilities
       poink mcp
       poink serve [--host <host>] [--port <port>] [--auth-token <token>]
+      # Non-loopback HTTP binds require --auth-token, server.auth.token, or POINK_SERVER_TOKEN.
       poink doctor [--fix]
       poink repair
       poink config show|get|set
