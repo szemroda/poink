@@ -539,6 +539,116 @@ describe("CLI JSON Envelope Contract", () => {
       expect(res.stdout).toContain("Storage:");
     }));
 
+  test("config show redacts stored secrets in JSON output by default", () =>
+    withTempLibraryPath((libraryPath) => {
+      const configPath = join(libraryPath, "config.json");
+      const config: any = makeTestConfig(libraryPath);
+      config.providers.openrouter.apiKey = "openrouter-secret";
+      config.storage.libsql.authToken = "libsql-secret";
+      config.storage.qdrant.apiKey = "qdrant-secret";
+      config.server.auth.token = "server-secret";
+      writeFileSync(configPath, JSON.stringify(config, null, 2), "utf-8");
+
+      const res = runCli(["config", "show", "--format", "json"], {
+        env: envForConfig(configPath),
+      });
+
+      expect(res.exitCode).toBe(0);
+      expect(res.stdout).not.toContain("openrouter-secret");
+      expect(res.stdout).not.toContain("libsql-secret");
+      expect(res.stdout).not.toContain("qdrant-secret");
+      expect(res.stdout).not.toContain("server-secret");
+
+      const obj = JSON.parse(res.stdout);
+      expect(obj.result.config.providers.openrouter.apiKey).toBe("[redacted]");
+      expect(obj.result.config.storage.libsql.authToken).toBe("[redacted]");
+      expect(obj.result.config.storage.qdrant.apiKey).toBe("[redacted]");
+      expect(obj.result.config.server.auth.token).toBe("[redacted]");
+      expect(obj.result.config.providers.openrouter.apiKeyEnv).toBe("OPENROUTER_API_KEY");
+      expect(obj.result.config.server.auth.tokenEnv).toBe("POINK_SERVER_TOKEN");
+    }));
+
+  test("config show returns stored secrets when explicitly requested", () =>
+    withTempLibraryPath((libraryPath) => {
+      const configPath = join(libraryPath, "config.json");
+      const config: any = makeTestConfig(libraryPath);
+      config.providers.openrouter.apiKey = "openrouter-secret";
+      config.server.auth.token = "server-secret";
+      writeFileSync(configPath, JSON.stringify(config, null, 2), "utf-8");
+
+      const res = runCli(
+        ["config", "show", "--show-secrets", "--format", "json"],
+        {
+          env: envForConfig(configPath),
+        },
+      );
+
+      expect(res.exitCode).toBe(0);
+      const obj = JSON.parse(res.stdout);
+      expect(obj.result.config.providers.openrouter.apiKey).toBe("openrouter-secret");
+      expect(obj.result.config.server.auth.token).toBe("server-secret");
+    }));
+
+  test("config get redacts stored secrets unless explicitly requested", () =>
+    withTempLibraryPath((libraryPath) => {
+      const configPath = join(libraryPath, "config.json");
+      const config: any = makeTestConfig(libraryPath);
+      config.providers.openrouter.apiKey = "openrouter-secret";
+      writeFileSync(configPath, JSON.stringify(config, null, 2), "utf-8");
+
+      const redacted = runCli(
+        ["config", "get", "providers.openrouter.apiKey", "--format", "json"],
+        {
+          env: envForConfig(configPath),
+        },
+      );
+      expect(redacted.exitCode).toBe(0);
+      expect(redacted.stdout).not.toContain("openrouter-secret");
+      expect(JSON.parse(redacted.stdout).result.value).toBe("[redacted]");
+
+      const raw = runCli(
+        [
+          "config",
+          "get",
+          "providers.openrouter.apiKey",
+          "--show-secrets",
+          "--format",
+          "json",
+        ],
+        {
+          env: envForConfig(configPath),
+        },
+      );
+      expect(raw.exitCode).toBe(0);
+      expect(JSON.parse(raw.stdout).result.value).toBe("openrouter-secret");
+    }));
+
+  test("config get redacts secrets inside parent object paths", () =>
+    withTempLibraryPath((libraryPath) => {
+      const configPath = join(libraryPath, "config.json");
+      const config: any = makeTestConfig(libraryPath);
+      config.providers.openrouter.apiKey = "openrouter-secret";
+      config.server.auth.token = "server-secret";
+      writeFileSync(configPath, JSON.stringify(config, null, 2), "utf-8");
+
+      const provider = runCli(
+        ["config", "get", "providers.openrouter", "--format", "json"],
+        {
+          env: envForConfig(configPath),
+        },
+      );
+      expect(provider.exitCode).toBe(0);
+      expect(provider.stdout).not.toContain("openrouter-secret");
+      expect(JSON.parse(provider.stdout).result.value.apiKey).toBe("[redacted]");
+
+      const auth = runCli(["config", "get", "server.auth", "--format", "json"], {
+        env: envForConfig(configPath),
+      });
+      expect(auth.exitCode).toBe(0);
+      expect(auth.stdout).not.toContain("server-secret");
+      expect(JSON.parse(auth.stdout).result.value.token).toBe("[redacted]");
+    }));
+
   test("config set providers.openrouter.apiKey succeeds even when current config uses openrouter without a key", () =>
     withTempLibraryPath((libraryRoot) => {
       const libraryPath = join(libraryRoot, "library");
@@ -565,10 +675,57 @@ describe("CLI JSON Envelope Contract", () => {
       expect(obj.ok).toBe(true);
       expect(obj.command).toBe("config");
       expect(obj.result.path).toBe("providers.openrouter.apiKey");
-      expect(obj.result.value).toBe("test-openrouter-key");
+      expect(obj.result.value).toBe("[redacted]");
 
       const saved = JSON.parse(readFileSync(configPath, "utf-8"));
       expect(saved.providers.openrouter.apiKey).toBe("test-openrouter-key");
+    }));
+
+  test("config set redacts stored secrets in output but persists raw values", () =>
+    withTempLibraryPath((libraryRoot) => {
+      const libraryPath = join(libraryRoot, "library");
+      const configPath = join(libraryRoot, "config.json");
+      writeTestConfig(configPath, libraryPath, "openrouter");
+
+      const redacted = runCli(
+        [
+          "config",
+          "set",
+          "providers.openrouter.apiKey",
+          "test-openrouter-key",
+          "--format",
+          "json",
+        ],
+        {
+          env: envForConfig(configPath),
+        },
+      );
+
+      expect(redacted.exitCode).toBe(0);
+      expect(redacted.stdout).not.toContain("test-openrouter-key");
+      expect(JSON.parse(redacted.stdout).result.value).toBe("[redacted]");
+      let saved = JSON.parse(readFileSync(configPath, "utf-8"));
+      expect(saved.providers.openrouter.apiKey).toBe("test-openrouter-key");
+
+      const raw = runCli(
+        [
+          "config",
+          "set",
+          "providers.openrouter.apiKey",
+          "replacement-openrouter-key",
+          "--show-secrets",
+          "--format",
+          "json",
+        ],
+        {
+          env: envForConfig(configPath),
+        },
+      );
+
+      expect(raw.exitCode).toBe(0);
+      expect(JSON.parse(raw.stdout).result.value).toBe("replacement-openrouter-key");
+      saved = JSON.parse(readFileSync(configPath, "utf-8"));
+      expect(saved.providers.openrouter.apiKey).toBe("replacement-openrouter-key");
     }));
 
   test("config set accepts language model reasoning levels and null", () =>

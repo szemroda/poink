@@ -682,6 +682,79 @@ function parseConfigValue(path: string, rawValue: string, schemaNode: JsonSchema
   return rawValue;
 }
 
+const REDACTED_CONFIG_SECRET = "[redacted]";
+const SECRET_CONFIG_KEYS = new Set([
+  "apiKey",
+  "authToken",
+  "token",
+  "password",
+  "secret",
+  "clientSecret",
+]);
+
+function parseConfigOutputOptions(args: string[]): {
+  args: string[];
+  showSecrets: boolean;
+} {
+  let showSecrets = false;
+  const filteredArgs: string[] = [];
+
+  for (const arg of args) {
+    if (arg === "--show-secrets" || arg === "--show-secrets=true") {
+      showSecrets = true;
+      continue;
+    }
+    if (arg === "--show-secrets=false") {
+      continue;
+    }
+    filteredArgs.push(arg);
+  }
+
+  return { args: filteredArgs, showSecrets };
+}
+
+function isSecretConfigPath(path: string): boolean {
+  const parts = path.split(".");
+  const leaf = parts[parts.length - 1];
+  return SECRET_CONFIG_KEYS.has(leaf);
+}
+
+function redactConfigValue(
+  path: string,
+  value: unknown,
+  showSecrets: boolean,
+): unknown {
+  if (showSecrets || value === undefined) {
+    return value;
+  }
+  if (isSecretConfigPath(path)) {
+    return REDACTED_CONFIG_SECRET;
+  }
+  if (value && typeof value === "object") {
+    return redactConfigObject(value);
+  }
+  return value;
+}
+
+function redactConfigObject(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item) => redactConfigObject(item));
+  }
+
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>).map(([key, child]) => [
+      key,
+      SECRET_CONFIG_KEYS.has(key) && child !== undefined
+        ? REDACTED_CONFIG_SECRET
+        : redactConfigObject(child),
+    ]),
+  );
+}
+
 function schemaAcceptsNull(schemaNode: JsonSchemaNode): boolean {
   const types =
     typeof schemaNode.type === "string"
@@ -2131,7 +2204,10 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
     }
 
 	    case "config": {
-	      const subcommand = args[1];
+      const configOutputOptions = parseConfigOutputOptions(args.slice(1));
+      const configArgs = ["config", ...configOutputOptions.args];
+      const subcommand = configArgs[1];
+      const showSecrets = configOutputOptions.showSecrets;
 	      const config = loadConfig();
       const configPath = resolveConfigPath();
 
@@ -2210,7 +2286,7 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
         );
 	        resultPayload = {
 	          configPath,
-	          config,
+          config: showSecrets ? config : redactConfigObject(config),
 	          gatewayApiKeyConfigured: Boolean(hasGatewayKey),
             openrouterApiKeyConfigured: Boolean(hasOpenRouterKey),
             googleApiKeyConfigured: Boolean(hasGoogleKey),
@@ -2224,7 +2300,7 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
             },
 	        };
 	      } else if (subcommand === "get") {
-	        const path = args[2];
+	        const path = configArgs[2];
 	        if (!path) {
 	          yield* Console.error("Error: Path required");
 	          yield* Console.error("Usage: poink config get <path>");
@@ -2253,13 +2329,14 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
 	          }
 	        }
 
+        const outputValue = redactConfigValue(path, value, showSecrets);
 	        yield* Console.log(
-	          typeof value === "object" ? JSON.stringify(value) : String(value)
+	          typeof outputValue === "object" ? JSON.stringify(outputValue) : String(outputValue)
 	        );
-	        resultPayload = { path, value };
+	        resultPayload = { path, value: outputValue };
 	      } else if (subcommand === "set") {
-	        const path = args[2];
-	        const newValue = args[3];
+	        const path = configArgs[2];
+	        const newValue = configArgs[3];
 
 	        if (!path || newValue === undefined) {
           yield* Console.error("Error: Path and value required");
@@ -2319,8 +2396,9 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
         }
 
         saveConfig(validatedConfig);
-        yield* Console.log(`Updated ${path}: ${parsedValue}`);
-        resultPayload = { path, value: parsedValue };
+        const outputValue = redactConfigValue(path, parsedValue, showSecrets);
+        yield* Console.log(`Updated ${path}: ${outputValue}`);
+        resultPayload = { path, value: outputValue };
 	      } else {
 	        yield* Console.error(`Unknown config subcommand: ${subcommand}`);
 	        yield* Console.error("Available: show, get, set");
