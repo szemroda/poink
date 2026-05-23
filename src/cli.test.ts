@@ -1,16 +1,51 @@
 import { describe, expect, test } from "vitest";
+import { Effect } from "effect";
+import { mkdtempSync, rmSync } from "node:fs";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
+import {
+  assessWALHealth,
+  getCheckpointInterval,
+  shouldCheckpoint,
+  parseArgs,
+} from "./cli.js";
 import {
   filenameFromURL,
   getDownloadTargetPath,
   looksLikeMarkdown,
   hasMarkdownExtension,
-  assessWALHealth,
   MARKDOWN_INDICATORS,
-  getCheckpointInterval,
-  shouldCheckpoint,
-  parseArgs,
-} from "./cli.js";
+  parseSizeString,
+  parseDurationString,
+  isPrivateNetworkAddress,
+  assertURLDownloadAllowed,
+  downloadFile,
+  readResponseBufferWithLimit,
+  resolveURLDownloadOptions,
+} from "./urlDownloads.js";
+import { Config } from "./types.js";
+
+async function waitForServerClose(server: ReturnType<typeof createServer>) {
+  await new Promise<void>((resolve, reject) => {
+    server.close((error) => (error ? reject(error) : resolve()));
+  });
+}
+
+function eventually<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout>;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeout = setTimeout(
+      () => reject(new Error(`Timed out after ${timeoutMs}ms`)),
+      timeoutMs,
+    );
+  });
+
+  return Promise.race([promise, timeoutPromise]).finally(() =>
+    clearTimeout(timeout),
+  );
+}
 
 describe("filenameFromURL", () => {
   test("preserves .pdf extension", () => {
@@ -294,6 +329,178 @@ describe("Markdown MIME type detection (conceptual)", () => {
     expect(
       shouldTreatAsPdf("https://example.com/readme.pdf", "text/plain")
     ).toBe(false);
+  });
+});
+
+describe("secure URL download options", () => {
+  test("parses size strings with required unit suffixes", () => {
+    expect(parseSizeString("500kb")).toBe(500 * 1024);
+    expect(parseSizeString("100mb")).toBe(100 * 1024 * 1024);
+    expect(parseSizeString("1.5gb")).toBe(Math.floor(1.5 * 1024 * 1024 * 1024));
+    expect(() => parseSizeString("100")).toThrow(/unit suffix/);
+  });
+
+  test("parses duration strings with required unit suffixes", () => {
+    expect(parseDurationString("500ms")).toBe(500);
+    expect(parseDurationString("30s")).toBe(30_000);
+    expect(parseDurationString("2m")).toBe(120_000);
+    expect(() => parseDurationString("30")).toThrow(/unit suffix/);
+  });
+
+  test("detects private and reserved network addresses", () => {
+    expect(isPrivateNetworkAddress("127.0.0.1")).toBe(true);
+    expect(isPrivateNetworkAddress("10.1.2.3")).toBe(true);
+    expect(isPrivateNetworkAddress("169.254.169.254")).toBe(true);
+    expect(isPrivateNetworkAddress("::1")).toBe(true);
+    expect(isPrivateNetworkAddress("fc00::1")).toBe(true);
+    expect(isPrivateNetworkAddress("8.8.8.8")).toBe(false);
+  });
+
+  test("detects private IPv4 addresses mapped into IPv6", () => {
+    expect(isPrivateNetworkAddress("::ffff:127.0.0.1")).toBe(true);
+    expect(isPrivateNetworkAddress("::ffff:7f00:1")).toBe(true);
+    expect(isPrivateNetworkAddress("::ffff:10.1.2.3")).toBe(true);
+    expect(isPrivateNetworkAddress("::ffff:a01:203")).toBe(true);
+    expect(isPrivateNetworkAddress("::ffff:169.254.169.254")).toBe(true);
+    expect(isPrivateNetworkAddress("::ffff:a9fe:a9fe")).toBe(true);
+    expect(isPrivateNetworkAddress("::ffff:8.8.8.8")).toBe(false);
+    expect(isPrivateNetworkAddress("::ffff:808:808")).toBe(false);
+  });
+
+  test("blocks DNS targets that resolve to private addresses by default", async () => {
+    const options = resolveURLDownloadOptions(Config.Default, {});
+
+    await expect(
+      assertURLDownloadAllowed(
+        new URL("https://docs.example.test/file.pdf"),
+        options,
+        async () => [{ address: "10.0.0.5", family: 4 }],
+      ),
+    ).rejects.toThrow(/Blocked private/);
+  });
+
+  test("blocks DNS targets that resolve to private IPv4-mapped IPv6 addresses", async () => {
+    const options = resolveURLDownloadOptions(Config.Default, {});
+
+    await expect(
+      assertURLDownloadAllowed(
+        new URL("https://docs.example.test/file.pdf"),
+        options,
+        async () => [{ address: "::ffff:7f00:1", family: 6 }],
+      ),
+    ).rejects.toThrow(/Blocked private/);
+  });
+
+  test("allows configured private-network host exceptions", async () => {
+    const options = resolveURLDownloadOptions(Config.Default, {
+      "allowed-private-network-hosts": "docs.internal.test",
+    });
+
+    await expect(
+      assertURLDownloadAllowed(
+        new URL("https://docs.internal.test/file.pdf"),
+        options,
+        async () => [{ address: "10.0.0.5", family: 4 }],
+      ),
+    ).resolves.toBeUndefined();
+  });
+
+  test("rejects responses whose content-length exceeds the cap", async () => {
+    const response = new Response("ok", {
+      headers: { "content-length": "1024" },
+    });
+
+    await expect(readResponseBufferWithLimit(response, 10)).rejects.toThrow(
+      /max file size/,
+    );
+  });
+
+  test("rejects streamed responses that exceed the cap without content-length", async () => {
+    const response = new Response(new Uint8Array([1, 2, 3, 4, 5]));
+
+    await expect(readResponseBufferWithLimit(response, 4)).rejects.toThrow(
+      /max file size/,
+    );
+  });
+
+  test("closes non-success URL download responses without reading the body", async () => {
+    let markClosed!: () => void;
+    const responseClosed = new Promise<void>((resolve) => {
+      markClosed = resolve;
+    });
+    const server = createServer((_req, res) => {
+      res.on("close", markClosed);
+      res.writeHead(500, { "content-type": "application/pdf" });
+      res.write(Buffer.alloc(1024));
+    });
+
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const downloadsDir = mkdtempSync(join(tmpdir(), "poink-url-downloads-"));
+    try {
+      const { port } = server.address() as AddressInfo;
+      const options = resolveURLDownloadOptions(Config.Default, {
+        "allow-private-network": true,
+        "download-timeout": "5s",
+      });
+
+      await expect(
+        eventually(
+          Effect.runPromise(
+            downloadFile(
+              `http://127.0.0.1:${port}/error.pdf`,
+              downloadsDir,
+              options,
+              "poink-test",
+            ),
+          ),
+          1_000,
+        ),
+      ).rejects.toThrow(/HTTP 500/);
+      await expect(eventually(responseClosed, 1_000)).resolves.toBeUndefined();
+    } finally {
+      rmSync(downloadsDir, { recursive: true, force: true });
+      await waitForServerClose(server);
+    }
+  });
+
+  test("closes unsupported URL download responses without draining them", async () => {
+    let markClosed!: () => void;
+    const responseClosed = new Promise<void>((resolve) => {
+      markClosed = resolve;
+    });
+    const server = createServer((_req, res) => {
+      res.on("close", markClosed);
+      res.writeHead(200, { "content-type": "text/html" });
+      res.write("<!doctype html>");
+    });
+
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const downloadsDir = mkdtempSync(join(tmpdir(), "poink-url-downloads-"));
+    try {
+      const { port } = server.address() as AddressInfo;
+      const options = resolveURLDownloadOptions(Config.Default, {
+        "allow-private-network": true,
+        "download-timeout": "5s",
+      });
+
+      await expect(
+        eventually(
+          Effect.runPromise(
+            downloadFile(
+              `http://127.0.0.1:${port}/index.html`,
+              downloadsDir,
+              options,
+              "poink-test",
+            ),
+          ),
+          1_000,
+        ),
+      ).rejects.toThrow(/Unsupported content type: text\/html/);
+      await expect(eventually(responseClosed, 1_000)).resolves.toBeUndefined();
+    } finally {
+      rmSync(downloadsDir, { recursive: true, force: true });
+      await waitForServerClose(server);
+    }
   });
 });
 

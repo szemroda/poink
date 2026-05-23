@@ -60,6 +60,15 @@ function makeTestConfig(
     library: { path: libraryPath },
     chunking: { strategy: "text", size: 2000, overlap: 200 },
     cli: { globalFlags: { format: cliFormat } },
+    ingest: {
+      urlDownloads: {
+        maxFileSize: "100mb",
+        timeout: "30s",
+        maxRedirects: 5,
+        allowPrivateNetwork: false,
+        allowedPrivateNetworkHosts: [],
+      },
+    },
     models,
     providers: {
       ollama: {
@@ -376,6 +385,7 @@ describe("CLI JSON Envelope Contract", () => {
       expect(commandNames.has("chunk")).toBe(true);
       expect(commandNames.has("doc")).toBe(true);
       expect(commandNames.has("page")).toBe(true);
+      expect(commandNames.has("add")).toBe(true);
       expect(commandNames.has("stats")).toBe(true);
       expect(commandNames.has("rechunk")).toBe(true);
       expect(commandNames.has("reindex")).toBe(true);
@@ -619,6 +629,65 @@ describe("CLI JSON Envelope Contract", () => {
 
       const saved = JSON.parse(readFileSync(configPath, "utf-8"));
       expect(saved.cli.globalFlags.format).toBe("json");
+    }));
+
+  test("config set accepts URL download settings", () =>
+    withTempLibraryPath((libraryRoot) => {
+      const libraryPath = join(libraryRoot, "library");
+      const configPath = join(libraryRoot, "config.json");
+      writeTestConfig(configPath, libraryPath);
+
+      const sizeRes = runCli(
+        ["config", "set", "ingest.urlDownloads.maxFileSize", "250mb", "--format", "json"],
+        {
+          env: envForConfig(configPath),
+        },
+      );
+      expect(sizeRes.exitCode).toBe(0);
+
+      const hostsRes = runCli(
+        [
+          "config",
+          "set",
+          "ingest.urlDownloads.allowedPrivateNetworkHosts",
+          "docs.internal,repo.internal",
+          "--format",
+          "json",
+        ],
+        {
+          env: envForConfig(configPath),
+        },
+      );
+      expect(hostsRes.exitCode).toBe(0);
+      const hostsObj = JSON.parse(hostsRes.stdout);
+      expect(hostsObj.ok).toBe(true);
+      expect(hostsObj.result.value).toEqual(["docs.internal", "repo.internal"]);
+
+      const saved = JSON.parse(readFileSync(configPath, "utf-8"));
+      expect(saved.ingest.urlDownloads.maxFileSize).toBe("250mb");
+      expect(saved.ingest.urlDownloads.allowedPrivateNetworkHosts).toEqual([
+        "docs.internal",
+        "repo.internal",
+      ]);
+    }));
+
+  test("config set rejects unitless URL download max file size", () =>
+    withTempLibraryPath((libraryRoot) => {
+      const libraryPath = join(libraryRoot, "library");
+      const configPath = join(libraryRoot, "config.json");
+      writeTestConfig(configPath, libraryPath);
+
+      const res = runCli(
+        ["config", "set", "ingest.urlDownloads.maxFileSize", "100", "--format", "json"],
+        {
+          env: envForConfig(configPath),
+        },
+      );
+
+      expect(res.exitCode).not.toBe(0);
+      const obj = JSON.parse(res.stdout);
+      expect(obj.ok).toBe(false);
+      expect(obj.error.code).toBe("INVALID_ARGS");
     }));
 
   test("config set rejects invalid CLI default format values", () =>

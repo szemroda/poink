@@ -49,12 +49,10 @@ import {
   SearchOptions,
   AddOptions,
   LibraryConfig,
-  URLFetchError,
 } from "./index.js";
 import {
   Config,
   Document,
-  type DocumentFileType,
   PDFChunk,
   SearchResult,
   loadConfig,
@@ -103,7 +101,38 @@ import {
   toJsonLine,
 } from "./agent/protocol.js";
 import { getLogLevel, setLogLevel, toEffectLogLevel } from "./logger.js";
-import { readFileText, serveFetch, writeFileData } from "./runtime.js";
+import { readFileText, serveFetch } from "./runtime.js";
+import {
+  downloadFile,
+  fileTypeFromExtension,
+  filenameFromURL,
+  getDownloadTargetPath,
+  hasMarkdownExtension,
+  isPrivateNetworkAddress,
+  looksLikeMarkdown,
+  MARKDOWN_INDICATORS,
+  parseDurationString,
+  parseSizeString,
+  parseStringList,
+  readResponseBufferWithLimit,
+  resolveURLDownloadOptions,
+  assertURLDownloadAllowed,
+  type ResolvedURLDownloadOptions,
+} from "./urlDownloads.js";
+
+export {
+  assertURLDownloadAllowed,
+  filenameFromURL,
+  getDownloadTargetPath,
+  hasMarkdownExtension,
+  isPrivateNetworkAddress,
+  looksLikeMarkdown,
+  MARKDOWN_INDICATORS,
+  parseDurationString,
+  parseSizeString,
+  readResponseBufferWithLimit,
+  resolveURLDownloadOptions,
+};
 
 /**
  * Check if a string is a URL
@@ -112,141 +141,7 @@ function isURL(str: string): boolean {
   return str.startsWith("http://") || str.startsWith("https://");
 }
 
-const SUPPORTED_DOCUMENT_EXTENSIONS = [
-  ".pdf",
-  ".md",
-  ".markdown",
-  ".docx",
-  ".odt",
-  ".fodt",
-] as const;
-
 const DOCUMENT_TITLE_EXTENSION_RE = /\.(pdf|md|markdown|docx|odt|fodt)$/i;
-
-function fileTypeFromExtension(ext: string): DocumentFileType | null {
-  switch (ext.toLowerCase()) {
-    case ".pdf":
-      return "pdf";
-    case ".md":
-    case ".markdown":
-      return "markdown";
-    case ".docx":
-      return "docx";
-    case ".odt":
-    case ".fodt":
-      return "odt";
-    default:
-      return null;
-  }
-}
-
-function isSupportedDocumentExtension(ext: string): boolean {
-  return fileTypeFromExtension(ext) !== null;
-}
-
-/**
- * Extract filename from URL
- */
-export function filenameFromURL(url: string): string {
-  const urlObj = new URL(url);
-  const pathname = urlObj.pathname;
-  const filename = basename(pathname);
-  const ext = extname(filename).toLowerCase();
-
-  // If already has a recognized extension, keep it
-  if (isSupportedDocumentExtension(ext)) {
-    return filename;
-  }
-
-  // Default to .pdf for backwards compatibility
-  return `${filename}.pdf`;
-}
-
-function stripRecognizedDocumentExtension(filename: string): string {
-  return filename.replace(DOCUMENT_TITLE_EXTENSION_RE, "");
-}
-
-function extensionForDetectedType(
-  fileType: DocumentFileType,
-  sourceName: string
-): string {
-  if (fileType === "pdf") return ".pdf";
-  if (fileType === "markdown") {
-    return extname(sourceName).toLowerCase() === ".markdown"
-      ? ".markdown"
-      : ".md";
-  }
-  if (fileType === "docx") return ".docx";
-  return extname(sourceName).toLowerCase() === ".fodt" ? ".fodt" : ".odt";
-}
-
-export function getDownloadTargetPath(
-  url: string,
-  downloadsDir: string,
-  fileType: DocumentFileType
-): string {
-  const sourceFilename = filenameFromURL(url);
-  const basenameWithoutExt =
-    stripRecognizedDocumentExtension(sourceFilename) || "download";
-  const finalExtension = extensionForDetectedType(fileType, sourceFilename);
-  return join(downloadsDir, `${basenameWithoutExt}${finalExtension}`);
-}
-
-/** Size in bytes to peek for Markdown heuristics when content-type is text/plain */
-const MARKDOWN_PEEK_SIZE = 4096;
-
-/** Markdown indicators to look for in content */
-export const MARKDOWN_INDICATORS = [
-  /^#{1,6}\s/m, // Headings: # ## ### etc.
-  /^[-*+]\s/m, // Unordered list markers
-  /^\d+\.\s/m, // Ordered list markers
-  /^```/m, // Code fences
-  /^\|.+\|/m, // Table rows
-  /\[.+\]\(.+\)/m, // Links [text](url)
-];
-
-/**
- * Check if content looks like Markdown by examining the first N bytes
- */
-export function looksLikeMarkdown(content: string): boolean {
-  return MARKDOWN_INDICATORS.some((pattern) => pattern.test(content));
-}
-
-/**
- * Check if URL has a Markdown file extension
- */
-export function hasMarkdownExtension(url: string): boolean {
-  try {
-    const pathname = new URL(url).pathname;
-    const ext = extname(pathname).toLowerCase();
-    return ext === ".md" || ext === ".markdown";
-  } catch {
-    // Fallback for malformed URLs
-    return url.endsWith(".md") || url.endsWith(".markdown");
-  }
-}
-
-function hasPdfExtension(url: string): boolean {
-  try {
-    const pathname = new URL(url).pathname;
-    return extname(pathname).toLowerCase() === ".pdf";
-  } catch {
-    return url.toLowerCase().endsWith(".pdf");
-  }
-}
-
-function fileTypeFromURLExtension(url: string): DocumentFileType | null {
-  try {
-    const pathname = new URL(url).pathname;
-    return fileTypeFromExtension(extname(pathname));
-  } catch {
-    const lower = url.toLowerCase();
-    const match = SUPPORTED_DOCUMENT_EXTENSIONS.find((ext) =>
-      lower.endsWith(ext),
-    );
-    return match ? fileTypeFromExtension(match) : null;
-  }
-}
 
 type PreviewPDFExtractor = {
   extract: (
@@ -624,100 +519,6 @@ export function shouldCheckpoint(
   return processedCount > 0 && processedCount % interval === 0;
 }
 
-/**
- * Download a supported document file from URL to local path
- */
-function downloadFile(url: string, downloadsDir: string) {
-  return Effect.tryPromise({
-    try: async () => {
-      const response = await fetch(url);
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-      }
-      const contentType = response.headers.get("content-type") || "";
-
-      // Document detection: strict MIME types or file extension
-      const hasExplicitMarkdownMime =
-        contentType.includes("text/markdown") ||
-        contentType.includes("text/x-markdown");
-      const hasMarkdownExt = hasMarkdownExtension(url);
-      const hasPdfExt = hasPdfExtension(url);
-      const hasTextPlainMime = contentType.includes("text/plain");
-      const hasTextXmlMime =
-        contentType.includes("text/xml") ||
-        contentType.includes("application/xml");
-      const hasTextualMime =
-        hasExplicitMarkdownMime || hasTextPlainMime || hasTextXmlMime;
-      const extensionFileType = fileTypeFromURLExtension(url);
-
-      let isMarkdown = hasExplicitMarkdownMime || hasMarkdownExt;
-      let isPDF = contentType.includes("pdf") || (hasPdfExt && !hasTextualMime);
-      let detectedFileType: DocumentFileType | null = null;
-
-      if (isPDF) {
-        detectedFileType = "pdf";
-      } else if (isMarkdown) {
-        detectedFileType = "markdown";
-      } else if (
-        contentType.includes(
-          "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        ) ||
-        (extensionFileType === "docx" && !hasTextualMime)
-      ) {
-        detectedFileType = "docx";
-      } else if (
-        contentType.includes("application/vnd.oasis.opendocument.text") ||
-        (extensionFileType === "odt" &&
-          (!hasTextPlainMime || hasTextXmlMime))
-      ) {
-        detectedFileType = "odt";
-      }
-
-      // Heuristic for text/plain: check URL extension first, then peek at content
-      if (!detectedFileType && hasTextPlainMime) {
-        if (hasMarkdownExt) {
-          isMarkdown = true;
-          detectedFileType = "markdown";
-        } else {
-          // Peek at content to detect Markdown indicators
-          const buffer = await response.arrayBuffer();
-          const decoder = new TextDecoder("utf-8", { fatal: false });
-          const preview = decoder.decode(buffer.slice(0, MARKDOWN_PEEK_SIZE));
-          if (looksLikeMarkdown(preview)) {
-            isMarkdown = true;
-            detectedFileType = "markdown";
-          }
-          const finalPath = getDownloadTargetPath(
-            url,
-            downloadsDir,
-            detectedFileType ?? "pdf"
-          );
-          // Write the already-fetched buffer
-          if (detectedFileType) {
-            await writeFileData(finalPath, buffer);
-            return finalPath;
-          }
-          throw new Error(`Unsupported content type: ${contentType}`);
-        }
-      }
-
-      if (!detectedFileType) {
-        throw new Error(`Unsupported content type: ${contentType}`);
-      }
-      const finalPath = getDownloadTargetPath(
-        url,
-        downloadsDir,
-        detectedFileType
-      );
-      const buffer = await response.arrayBuffer();
-      await writeFileData(finalPath, buffer);
-      return finalPath;
-    },
-    catch: (e) => new URLFetchError({ url, reason: String(e) }),
-  });
-}
-
-
 export function parseArgs(args: string[]) {
   const result: Record<string, string | boolean> = {};
   let i = 0;
@@ -790,6 +591,7 @@ class CLIError extends Error {
 type JsonSchemaNode = {
   type?: string | string[];
   properties?: Record<string, JsonSchemaNode>;
+  items?: JsonSchemaNode;
   anyOf?: JsonSchemaNode[];
   enum?: unknown[];
 };
@@ -833,6 +635,25 @@ function parseConfigValue(path: string, rawValue: string, schemaNode: JsonSchema
       `Config path must point to a scalar value: ${path}`,
       { path }
     );
+  }
+
+  if (types.includes("array")) {
+    if (!schemaNode.items || schemaNode.items.type !== "string") {
+      throw new CLIError(
+        "INVALID_ARGS",
+        `Config path does not support CLI array values: ${path}`,
+        { path },
+      );
+    }
+    try {
+      return parseStringList(rawValue) ?? [];
+    } catch (error) {
+      throw new CLIError(
+        "INVALID_ARGS",
+        `Invalid array value for config path: ${path}`,
+        { path, value: rawValue, reason: describeCliFailure(error) },
+      );
+    }
   }
 
   if (types.includes("boolean")) {
@@ -1218,6 +1039,23 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
           { name: "list", argv: ["list"], description: "List documents" },
           { name: "stats", argv: ["stats"], description: "Library statistics" },
           {
+            name: "add",
+            argv: [
+              "add",
+              "<path|url>",
+              "[--tags <tags>]",
+              "[--enrich]",
+              "[--auto-tag]",
+              "[--max-file-size <size>]",
+              "[--download-timeout <duration>]",
+              "[--max-redirects <n>]",
+              "[--allow-private-network]",
+              "[--allowed-private-network-hosts <hosts>]",
+            ],
+            description:
+              "Add a local or URL document; URL downloads enforce SSRF protections, max file size, timeout, and redirect limits",
+          },
+          {
             name: "taxonomy",
             argv: ["taxonomy", "<subcommand>"],
             description: "Taxonomy navigation (SKOS concepts)",
@@ -1310,6 +1148,22 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
       if (isURL(pathOrUrl)) {
         // Download from URL
         const config = LibraryConfig.fromEnv();
+        const appConfig = loadConfig();
+        let downloadOptions: ResolvedURLDownloadOptions;
+        try {
+          downloadOptions = resolveURLDownloadOptions(
+            appConfig,
+            opts,
+            (code, message, details) =>
+              new CLIError(code, message, details),
+          );
+        } catch (error) {
+          return yield* Effect.fail(
+            error instanceof CLIError
+              ? error
+              : new CLIError("INVALID_ARGS", describeCliFailure(error)),
+          );
+        }
         const downloadsDir = join(config.libraryPath, "downloads");
 
         // Ensure downloads directory exists
@@ -1327,7 +1181,12 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
         }
 
         yield* Console.log(`Downloading: ${pathOrUrl}`);
-        localPath = yield* downloadFile(pathOrUrl, downloadsDir);
+        localPath = yield* downloadFile(
+          pathOrUrl,
+          downloadsDir,
+          downloadOptions,
+          `poink/${VERSION}`,
+        );
         yield* Console.log(`  Saved to: ${localPath}`);
       } else {
         localPath = pathOrUrl;
@@ -2313,6 +2172,9 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
         );
         yield* Console.log("");
         yield* Console.log(`CLI Format:  ${config.cli.globalFlags.format}`);
+        yield* Console.log(
+          `URL Downloads: max ${config.ingest.urlDownloads.maxFileSize}, timeout ${config.ingest.urlDownloads.timeout}, redirects ${config.ingest.urlDownloads.maxRedirects}`
+        );
         yield* Console.log("");
         yield* Console.log(`Server:      ${config.server.host}:${config.server.port}`);
         yield* Console.log(
@@ -3024,7 +2886,7 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
                 files.push(...discoverFiles(fullPath));
               } else if (stat.isFile()) {
                 const ext = extname(entry).toLowerCase();
-                if (isSupportedDocumentExtension(ext)) {
+                if (fileTypeFromExtension(ext)) {
                   files.push(fullPath);
                 }
               }

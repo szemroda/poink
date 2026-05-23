@@ -51,6 +51,7 @@ export function renderHelp(stats?: {
 
     ### Document Management
       poink add <path|url> [--tags t1,t2] [--enrich] [--auto-tag]
+      poink add <url> [--max-file-size 100mb] [--download-timeout 30s] [--max-redirects 5]
       poink remove "<id|title>"
       poink tag "<id|title>" "tag1,tag2"
       poink ingest <dir> [--enrich] [--auto-tag] [--recursive]

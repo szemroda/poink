@@ -224,6 +224,28 @@ const DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 const DEFAULT_GOOGLE_BASE_URL = "https://generativelanguage.googleapis.com/v1beta";
 const DEFAULT_ANTHROPIC_BASE_URL = "https://api.anthropic.com/v1";
 const DEFAULT_LIBSQL_URL = "file:~/.poink/library.db";
+export const DEFAULT_URL_DOWNLOAD_MAX_FILE_SIZE = "100mb";
+export const DEFAULT_URL_DOWNLOAD_TIMEOUT = "30s";
+export const DEFAULT_URL_DOWNLOAD_MAX_REDIRECTS = 5;
+
+const SizeStringSchema = Schema.String.pipe(
+  Schema.filter((value) => /^\d+(?:\.\d+)?\s*(?:b|kb|mb|gb)$/i.test(value), {
+    message: () => "Expected a size string with a unit suffix, such as 500kb, 100mb, or 1gb.",
+  }),
+);
+
+const DurationStringSchema = Schema.String.pipe(
+  Schema.filter((value) => /^\d+(?:\.\d+)?\s*(?:ms|s|m)$/i.test(value), {
+    message: () => "Expected a duration string with a unit suffix, such as 500ms, 30s, or 2m.",
+  }),
+);
+
+const NonNegativeIntegerSchema = Schema.Number.pipe(
+  Schema.filter(
+    (value) => Number.isInteger(value) && value >= 0,
+    { message: () => "Expected a non-negative integer." },
+  ),
+);
 
 function getLibraryConfigProps(libraryPath: string) {
   assertValidChunking(DEFAULT_CHUNK_SIZE, DEFAULT_CHUNK_OVERLAP);
@@ -356,6 +378,43 @@ export class Config extends Schema.Class<Config>("Config")({
     default: () => ({
       globalFlags: {
         format: DEFAULT_CLI_OUTPUT_FORMAT,
+      },
+    }),
+  }),
+  ingest: Schema.optionalWith(Schema.Struct({
+    urlDownloads: Schema.optionalWith(Schema.Struct({
+      maxFileSize: Schema.optionalWith(SizeStringSchema, {
+        default: () => DEFAULT_URL_DOWNLOAD_MAX_FILE_SIZE,
+      }),
+      timeout: Schema.optionalWith(DurationStringSchema, {
+        default: () => DEFAULT_URL_DOWNLOAD_TIMEOUT,
+      }),
+      maxRedirects: Schema.optionalWith(NonNegativeIntegerSchema, {
+        default: () => DEFAULT_URL_DOWNLOAD_MAX_REDIRECTS,
+      }),
+      allowPrivateNetwork: Schema.optionalWith(Schema.Boolean, {
+        default: () => false,
+      }),
+      allowedPrivateNetworkHosts: Schema.optionalWith(Schema.Array(Schema.String), {
+        default: () => [],
+      }),
+    }), {
+      default: () => ({
+        maxFileSize: DEFAULT_URL_DOWNLOAD_MAX_FILE_SIZE,
+        timeout: DEFAULT_URL_DOWNLOAD_TIMEOUT,
+        maxRedirects: DEFAULT_URL_DOWNLOAD_MAX_REDIRECTS,
+        allowPrivateNetwork: false,
+        allowedPrivateNetworkHosts: [],
+      }),
+    }),
+  }), {
+    default: () => ({
+      urlDownloads: {
+        maxFileSize: DEFAULT_URL_DOWNLOAD_MAX_FILE_SIZE,
+        timeout: DEFAULT_URL_DOWNLOAD_TIMEOUT,
+        maxRedirects: DEFAULT_URL_DOWNLOAD_MAX_REDIRECTS,
+        allowPrivateNetwork: false,
+        allowedPrivateNetworkHosts: [],
       },
     }),
   }),
@@ -573,6 +632,15 @@ export class Config extends Schema.Class<Config>("Config")({
     cli: {
       globalFlags: {
         format: DEFAULT_CLI_OUTPUT_FORMAT,
+      },
+    },
+    ingest: {
+      urlDownloads: {
+        maxFileSize: DEFAULT_URL_DOWNLOAD_MAX_FILE_SIZE,
+        timeout: DEFAULT_URL_DOWNLOAD_TIMEOUT,
+        maxRedirects: DEFAULT_URL_DOWNLOAD_MAX_REDIRECTS,
+        allowPrivateNetwork: false,
+        allowedPrivateNetworkHosts: [],
       },
     },
     models: {

@@ -156,6 +156,12 @@ poink add /path/to/notes.odt
 poink add https://example.com/paper.pdf
 poink add https://raw.githubusercontent.com/user/repo/main/README.md
 
+# Override URL download limits for this command
+poink add https://example.com/large-report.pdf --max-file-size 250mb --download-timeout 1m
+
+# Allow a specific internal document host that resolves to a private IP
+poink add https://docs.internal/report.pdf --allowed-private-network-hosts docs.internal
+
 # Add with manual tags
 poink add document.pdf --tags "ai,agents,research"
 
@@ -167,6 +173,16 @@ poink add document.pdf --enrich
 poink add notes.md --enrich
 poink add report.docx --enrich
 ```
+
+URL downloads are guarded by default. poink blocks private, loopback, link-local,
+and reserved network destinations, validates each redirect target, enforces
+`ingest.urlDownloads.maxFileSize`, and aborts downloads after
+`ingest.urlDownloads.timeout`. `maxFileSize` must be a string with a size suffix
+such as `500kb`, `100mb`, or `1gb`; `timeout` must be a string such as `500ms`,
+`30s`, or `2m`. For trusted internal document hosts, prefer
+`--allowed-private-network-hosts <host>` or
+`ingest.urlDownloads.allowedPrivateNetworkHosts` over the broader
+`--allow-private-network` escape hatch.
 
 ### Searching
 
@@ -427,6 +443,15 @@ poink config set models.enrichment.model anthropic/claude-haiku-4-5
       "format": "text"
     }
   },
+  "ingest": {
+    "urlDownloads": {
+      "maxFileSize": "100mb",
+      "timeout": "30s",
+      "maxRedirects": 5,
+      "allowPrivateNetwork": false,
+      "allowedPrivateNetworkHosts": []
+    }
+  },
   "models": {
     "embedding": {
       "provider": "ollama",
@@ -498,6 +523,11 @@ poink config set models.enrichment.model anthropic/claude-haiku-4-5
 | `chunking.size`       | `2000`                   | Chunk size in characters             |
 | `chunking.overlap`    | `200`                    | Chunk overlap in characters          |
 | `cli.globalFlags.format` | `text`                | Default CLI output format: `text`, `json`, or `ndjson` |
+| `ingest.urlDownloads.maxFileSize` | `100mb`       | Maximum URL download size. Use a string with `b`, `kb`, `mb`, or `gb` |
+| `ingest.urlDownloads.timeout` | `30s`              | URL download timeout. Use a string with `ms`, `s`, or `m` |
+| `ingest.urlDownloads.maxRedirects` | `5`           | Maximum HTTP redirects followed during URL downloads |
+| `ingest.urlDownloads.allowPrivateNetwork` | `false` | Allow URL downloads from private, loopback, link-local, or reserved networks |
+| `ingest.urlDownloads.allowedPrivateNetworkHosts` | `[]` | Hostname exceptions allowed to resolve to private-network addresses |
 | `models.embedding.provider` | `ollama`          | Embedding provider                   |
 | `models.embedding.model` | `mxbai-embed-large`   | Embedding model                      |
 | `models.enrichment.provider` | `ollama`         | LLM provider                         |

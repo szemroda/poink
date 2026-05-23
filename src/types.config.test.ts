@@ -65,6 +65,11 @@ describe("loadConfig path and database defaults", () => {
       expect(config.chunking.size).toBe(2000);
       expect(config.chunking.overlap).toBe(200);
       expect(config.cli.globalFlags.format).toBe("text");
+      expect(config.ingest.urlDownloads.maxFileSize).toBe("100mb");
+      expect(config.ingest.urlDownloads.timeout).toBe("30s");
+      expect(config.ingest.urlDownloads.maxRedirects).toBe(5);
+      expect(config.ingest.urlDownloads.allowPrivateNetwork).toBe(false);
+      expect(config.ingest.urlDownloads.allowedPrivateNetworkHosts).toEqual([]);
       expect(config.server.host).toBe("127.0.0.1");
       expect(config.server.port).toBe(3838);
       expect(config.server.auth.enabled).toBe(false);
@@ -220,6 +225,34 @@ describe("loadConfig path and database defaults", () => {
     const config = JSON.parse(JSON.stringify(Config.Default));
     config.cli.globalFlags.format = "xml";
 
+    expect(() => normalizeConfig(config)).toThrow();
+  });
+
+  test("normalizes legacy configs without ingest URL download settings", () => {
+    const config = JSON.parse(JSON.stringify(Config.Default));
+    delete config.ingest;
+
+    const normalized = normalizeConfig(config);
+
+    expect(normalized.ingest.urlDownloads.maxFileSize).toBe("100mb");
+    expect(normalized.ingest.urlDownloads.timeout).toBe("30s");
+    expect(normalized.ingest.urlDownloads.maxRedirects).toBe(5);
+  });
+
+  test("rejects numeric URL download max file sizes", () => {
+    const config = JSON.parse(JSON.stringify(Config.Default));
+    config.ingest.urlDownloads.maxFileSize = 104857600;
+
+    expect(() => normalizeConfig(config)).toThrow();
+  });
+
+  test("rejects URL download sizes and timeouts without units", () => {
+    const config = JSON.parse(JSON.stringify(Config.Default));
+    config.ingest.urlDownloads.maxFileSize = "100";
+    expect(() => normalizeConfig(config)).toThrow();
+
+    config.ingest.urlDownloads.maxFileSize = "100mb";
+    config.ingest.urlDownloads.timeout = "30";
     expect(() => normalizeConfig(config)).toThrow();
   });
 
