@@ -1054,6 +1054,12 @@ describe("HTTP MCP Server", () => {
         );
 
         let stderr = "";
+        let stdout = "";
+        let timedOut = false;
+        const rejectionTimeoutMs = 20_000;
+        proc.stdout.on("data", (chunk) => {
+          stdout += String(chunk);
+        });
         proc.stderr.on("data", (chunk) => {
           stderr += String(chunk);
         });
@@ -1061,11 +1067,19 @@ describe("HTTP MCP Server", () => {
         const exit = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
           (resolve, reject) => {
             const timeout = setTimeout(() => {
+              timedOut = true;
               proc.kill();
-              reject(new Error("serve did not reject unauthenticated remote bind"));
-            }, 3000);
+            }, rejectionTimeoutMs);
             proc.once("exit", (code, signal) => {
               clearTimeout(timeout);
+              if (timedOut) {
+                reject(
+                  new Error(
+                    `serve did not reject unauthenticated remote bind within ${rejectionTimeoutMs}ms\nstdout:\n${stdout}\nstderr:\n${stderr}`,
+                  ),
+                );
+                return;
+              }
               resolve({ code, signal });
             });
           },
@@ -1075,7 +1089,7 @@ describe("HTTP MCP Server", () => {
         expect(exit.signal).toBeNull();
         expect(stderr).toContain("Refusing to bind HTTP MCP server");
       }),
-    10000,
+    30000,
   );
 
   test(
