@@ -5,11 +5,16 @@
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { Effect } from "effect";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import JSZip from "jszip";
 import { OfficeExtractor, OfficeExtractorLive } from "./OfficeExtractor.js";
+
+const ZIP_DEFLATE_OPTIONS = {
+  type: "uint8array",
+  compression: "DEFLATE",
+} as const;
 
 let tempDir: string;
 
@@ -45,6 +50,46 @@ function writeTempFile(name: string, content: string): string {
   return path;
 }
 
+function patchCentralDirectoryUncompressedSize(
+  bytes: Uint8Array,
+  entryName: string,
+  uncompressedSize: number,
+): Uint8Array {
+  const patched = new Uint8Array(bytes);
+  const view = new DataView(
+    patched.buffer,
+    patched.byteOffset,
+    patched.byteLength,
+  );
+  const decoder = new TextDecoder("utf-8", { fatal: false });
+
+  for (let offset = 0; offset <= patched.byteLength - 46; offset += 1) {
+    if (view.getUint32(offset, true) !== 0x02014b50) continue;
+
+    const fileNameLength = view.getUint16(offset + 28, true);
+    const extraFieldLength = view.getUint16(offset + 30, true);
+    const commentLength = view.getUint16(offset + 32, true);
+    const nextOffset =
+      offset + 46 + fileNameLength + extraFieldLength + commentLength;
+    if (nextOffset > patched.byteLength) {
+      throw new Error("Central directory entry outside test ZIP bounds");
+    }
+
+    const fileNameStart = offset + 46;
+    const name = decoder.decode(
+      patched.subarray(fileNameStart, fileNameStart + fileNameLength),
+    );
+    if (name === entryName) {
+      view.setUint32(offset + 24, uncompressedSize, true);
+      return patched;
+    }
+
+    offset = nextOffset - 1;
+  }
+
+  throw new Error(`Test ZIP entry not found: ${entryName}`);
+}
+
 function sampleFodtXml(): string {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <office:document
@@ -66,7 +111,7 @@ async function writeOdtFile(name: string): Promise<string> {
   const path = join(tempDir, name);
   const zip = new JSZip();
   zip.file("content.xml", sampleFodtXml());
-  await writeFile(path, await zip.generateAsync({ type: "uint8array" }));
+  await writeFile(path, await zip.generateAsync(ZIP_DEFLATE_OPTIONS));
   return path;
 }
 
@@ -99,7 +144,7 @@ async function writeDocxFile(name: string): Promise<string> {
   </w:body>
 </w:document>`,
   );
-  await writeFile(path, await zip.generateAsync({ type: "uint8array" }));
+  await writeFile(path, await zip.generateAsync(ZIP_DEFLATE_OPTIONS));
   return path;
 }
 
@@ -195,6 +240,40 @@ describe("OfficeExtractor", () => {
     expect(result.sections[1].heading).toBe("Second Section");
   });
 
+  test("rejects zipped ODT when content.xml declares excessive expansion", async () => {
+    const zip = new JSZip();
+    zip.file("content.xml", sampleFodtXml());
+    const bytes = await zip.generateAsync(ZIP_DEFLATE_OPTIONS);
+    const patched = patchCentralDirectoryUncompressedSize(
+      bytes,
+      "content.xml",
+      21 * 1024 * 1024,
+    );
+    const path = join(tempDir, "oversized-content.odt");
+    await writeFile(path, patched);
+
+    await expect(runExtract(path)).rejects.toThrow(
+      "ODF content.xml declared uncompressed size exceeds limit",
+    );
+  });
+
+  test("rejects zipped ODT when content.xml underdeclares expansion", async () => {
+    const zip = new JSZip();
+    zip.file("content.xml", `<root>${"A".repeat(21 * 1024 * 1024)}</root>`);
+    const bytes = await zip.generateAsync(ZIP_DEFLATE_OPTIONS);
+    const patched = patchCentralDirectoryUncompressedSize(
+      bytes,
+      "content.xml",
+      1024,
+    );
+    const path = join(tempDir, "underdeclared-content.odt");
+    await writeFile(path, patched);
+
+    await expect(runExtract(path)).rejects.toThrow(
+      "Office ZIP entry content.xml failed validation",
+    );
+  });
+
   test("processes ODT sections into searchable chunks", async () => {
     const path = await writeOdtFile("chunked.odt");
     const result = await runProcess(path);
@@ -212,6 +291,22 @@ describe("OfficeExtractor", () => {
     expect(result.sectionCount).toBe(1);
     expect(result.sections[0].text).toContain("DOCX Research Notes");
     expect(result.sections[0].text).toContain("document pipeline");
+  });
+
+  test("rejects DOCX entries with excessive declared expansion", async () => {
+    const safePath = await writeDocxFile("safe-for-patching.docx");
+    const bytes = new Uint8Array(await readFile(safePath));
+    const patched = patchCentralDirectoryUncompressedSize(
+      bytes,
+      "word/document.xml",
+      51 * 1024 * 1024,
+    );
+    const path = join(tempDir, "oversized-document.docx");
+    await writeFile(path, patched);
+
+    await expect(runExtract(path)).rejects.toThrow(
+      "Office ZIP XML entry word/document.xml declared uncompressed size exceeds limit",
+    );
   });
 
   test("preserves DOCX heading styles as sections", async () => {

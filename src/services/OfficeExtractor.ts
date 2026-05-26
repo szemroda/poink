@@ -6,9 +6,12 @@
 
 import { Context, Effect, Layer, Schema } from "effect";
 import { existsSync, readFileSync } from "node:fs";
+import { stat } from "node:fs/promises";
 import { extname } from "node:path";
+import type { Readable } from "node:stream";
 import mammoth from "mammoth";
 import JSZip from "jszip";
+import * as yauzl from "yauzl";
 import { DOMParser } from "@xmldom/xmldom";
 import { resolveUserPath } from "../pathUtils.js";
 import { readFileBytes } from "../runtime.js";
@@ -87,6 +90,26 @@ const TABLE_CELL_NAMES = new Set(["td", "th", "table-cell"]);
 const TABLE_NAMES = new Set(["table"]);
 const HTML_HEADING_RE = /^h[1-6]$/;
 
+const MAX_OFFICE_PACKAGE_BYTES = 200 * 1024 * 1024;
+const MAX_OFFICE_ZIP_ENTRIES = 10_000;
+const MAX_OFFICE_TOTAL_UNCOMPRESSED_BYTES = 500 * 1024 * 1024;
+const MAX_OFFICE_ENTRY_UNCOMPRESSED_BYTES = 100 * 1024 * 1024;
+const MAX_OFFICE_XML_ENTRY_UNCOMPRESSED_BYTES = 50 * 1024 * 1024;
+const MAX_ODT_CONTENT_XML_BYTES = 20 * 1024 * 1024;
+const SAFE_ZIP_READ_OPTIONS = {
+  lazyEntries: true,
+  validateEntrySizes: true,
+} as const;
+
+type ZipEntryInfo = {
+  name: string;
+  uncompressedSize: number;
+};
+
+type ZipValidationOptions = {
+  contentXml?: boolean;
+};
+
 // ============================================================================
 // Service Definition
 // ============================================================================
@@ -137,6 +160,230 @@ function sectionsFromPlainText(text: string): ExtractedOfficeSection[] {
 
   if (!cleaned) return [];
   return [{ section: 1, heading: "", text: cleaned }];
+}
+
+function assertWithinLimit(
+  value: number,
+  limit: number,
+  description: string,
+): void {
+  if (value > limit) {
+    throw new Error(
+      `${description} exceeds limit (${value} bytes > ${limit} bytes)`,
+    );
+  }
+}
+
+async function assertSafeOfficePackageFile(path: string): Promise<void> {
+  const file = await stat(path);
+  assertWithinLimit(
+    file.size,
+    MAX_OFFICE_PACKAGE_BYTES,
+    "Office package size",
+  );
+}
+
+function openZipFromBuffer(buffer: Buffer): Promise<yauzl.ZipFile> {
+  return new Promise((resolve, reject) => {
+    yauzl.fromBuffer(buffer, SAFE_ZIP_READ_OPTIONS, (error, zipfile) => {
+      if (error) {
+        reject(error);
+      } else if (!zipfile) {
+        reject(new Error("Unable to open Office ZIP package"));
+      } else {
+        resolve(zipfile);
+      }
+    });
+  });
+}
+
+function zipEntryInfo(entry: yauzl.Entry): ZipEntryInfo {
+  return {
+    name: entry.fileName.replace(/\\/g, "/"),
+    uncompressedSize: entry.uncompressedSize,
+  };
+}
+
+function entryLimit(
+  entry: ZipEntryInfo,
+  options: ZipValidationOptions,
+  sizeKind: "declared" | "actual",
+): { limit: number; description: string } {
+  if (options.contentXml && entry.name === "content.xml") {
+    return {
+      limit: MAX_ODT_CONTENT_XML_BYTES,
+      description: `ODF content.xml ${sizeKind} uncompressed size`,
+    };
+  }
+
+  if (entry.name.toLowerCase().endsWith(".xml")) {
+    return {
+      limit: MAX_OFFICE_XML_ENTRY_UNCOMPRESSED_BYTES,
+      description: `Office ZIP XML entry ${entry.name} ${sizeKind} uncompressed size`,
+    };
+  }
+
+  return {
+    limit: MAX_OFFICE_ENTRY_UNCOMPRESSED_BYTES,
+    description: `Office ZIP entry ${entry.name} ${sizeKind} uncompressed size`,
+  };
+}
+
+function assertDeclaredZipEntry(
+  entry: ZipEntryInfo,
+  options: ZipValidationOptions,
+  onBytes: (bytes: number) => void,
+): void {
+  const limit = entryLimit(entry, options, "declared");
+
+  onBytes(entry.uncompressedSize);
+  assertWithinLimit(
+    entry.uncompressedSize,
+    limit.limit,
+    limit.description,
+  );
+}
+
+function assertTotalUncompressedSize(bytes: number, sizeKind: string): void {
+  assertWithinLimit(
+    bytes,
+    MAX_OFFICE_TOTAL_UNCOMPRESSED_BYTES,
+    `Office package ${sizeKind} uncompressed size`,
+  );
+}
+
+function openZipEntryStream(
+  zipfile: yauzl.ZipFile,
+  entry: yauzl.Entry,
+  name: string,
+): Promise<Readable> {
+  return new Promise((resolve, reject) => {
+    zipfile.openReadStream(entry, (error, stream) => {
+      if (error || !stream) {
+        reject(error ?? new Error(`Unable to read Office ZIP entry ${name}`));
+      } else {
+        resolve(stream);
+      }
+    });
+  });
+}
+
+async function validateZipEntryStream(
+  zipfile: yauzl.ZipFile,
+  rawEntry: yauzl.Entry,
+  entry: ZipEntryInfo,
+  options: ZipValidationOptions,
+  onBytes: (bytes: number) => void,
+): Promise<void> {
+  const limit = entryLimit(entry, options, "actual");
+  const stream = await openZipEntryStream(zipfile, rawEntry, entry.name);
+
+  return new Promise((resolve, reject) => {
+    let entryBytes = 0;
+
+    stream.on("data", (chunk: Buffer) => {
+      try {
+        entryBytes += chunk.byteLength;
+        assertWithinLimit(entryBytes, limit.limit, limit.description);
+        onBytes(chunk.byteLength);
+      } catch (limitError) {
+        stream.destroy(limitError as Error);
+      }
+    });
+    stream.on("error", (streamError) => {
+      reject(
+        new Error(
+          `Office ZIP entry ${entry.name} failed validation: ${String(
+            streamError,
+          )}`,
+        ),
+      );
+    });
+    stream.on("end", resolve);
+  });
+}
+
+function validateZipEntries(
+  zipfile: yauzl.ZipFile,
+  options: ZipValidationOptions,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let foundContentXml = false;
+    let declaredUncompressed = 0;
+    let actualUncompressed = 0;
+    let settled = false;
+
+    const finish = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      callback();
+    };
+
+    zipfile.on("entry", (rawEntry: yauzl.Entry) => {
+      const entry = zipEntryInfo(rawEntry);
+      if (entry.name.endsWith("/")) {
+        zipfile.readEntry();
+        return;
+      }
+
+      foundContentXml ||= entry.name === "content.xml";
+
+      try {
+        assertDeclaredZipEntry(entry, options, (bytes) => {
+          declaredUncompressed += bytes;
+          assertTotalUncompressedSize(declaredUncompressed, "declared");
+        });
+      } catch (error) {
+        finish(() => reject(error));
+        return;
+      }
+
+      validateZipEntryStream(zipfile, rawEntry, entry, options, (bytes) => {
+        actualUncompressed += bytes;
+        assertTotalUncompressedSize(actualUncompressed, "actual");
+      }).then(
+        () => zipfile.readEntry(),
+        (error) => finish(() => reject(error)),
+      );
+    });
+
+    zipfile.on("error", (error) => finish(() => reject(error)));
+    zipfile.on("end", () => {
+      finish(() => {
+        if (options.contentXml && !foundContentXml) {
+          reject(new Error("ODF package does not contain content.xml"));
+        } else {
+          resolve();
+        }
+      });
+    });
+
+    zipfile.readEntry();
+  });
+}
+
+async function assertSafeOfficeZip(
+  buffer: Buffer,
+  options: ZipValidationOptions,
+): Promise<void> {
+  assertWithinLimit(
+    buffer.byteLength,
+    MAX_OFFICE_PACKAGE_BYTES,
+    "Office package size",
+  );
+
+  const zipfile = await openZipFromBuffer(buffer);
+  try {
+    if (zipfile.entryCount > MAX_OFFICE_ZIP_ENTRIES) {
+      throw new Error(
+        `Office package contains too many ZIP entries (${zipfile.entryCount} > ${MAX_OFFICE_ZIP_ENTRIES})`,
+      );
+    }
+
+    await validateZipEntries(zipfile, options);
+  } finally {
+    zipfile.close();
+  }
 }
 
 function localName(node: XmlNode): string {
@@ -293,11 +540,15 @@ function sectionsFromHtml(html: string): ExtractedOfficeSection[] {
 }
 
 async function extractDocx(path: string): Promise<ExtractedOfficeDocument> {
-  const htmlResult = await mammoth.convertToHtml({ path });
+  await assertSafeOfficePackageFile(path);
+  const buffer = Buffer.from(await readFileBytes(path));
+  await assertSafeOfficeZip(buffer, { contentXml: false });
+
+  const htmlResult = await mammoth.convertToHtml({ buffer });
   let sections = sectionsFromHtml(htmlResult.value);
 
   if (sections.length === 0) {
-    const rawResult = await mammoth.extractRawText({ path });
+    const rawResult = await mammoth.extractRawText({ buffer });
     sections = sectionsFromPlainText(rawResult.value);
   }
 
@@ -343,7 +594,10 @@ async function extractOdt(path: string): Promise<ExtractedOfficeDocument> {
     ext === ".fodt"
       ? readFileSync(path, "utf-8")
       : await (async () => {
-          const zip = await JSZip.loadAsync(await readFileBytes(path));
+          await assertSafeOfficePackageFile(path);
+          const buffer = Buffer.from(await readFileBytes(path));
+          await assertSafeOfficeZip(buffer, { contentXml: true });
+          const zip = await JSZip.loadAsync(buffer);
           const contentXml = zip.file("content.xml");
           if (!contentXml) {
             throw new Error("ODF package does not contain content.xml");
