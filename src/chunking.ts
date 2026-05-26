@@ -15,12 +15,12 @@ export const CURRENT_CHUNKER: Record<
   DocumentFileType,
   { id: string; version: number }
 > = {
-  // v5: shared chunking + PDF cleanup/title heuristics + hyperlink/table-aware extraction
-  pdf: { id: "pdf-extractor:shared-context-v5", version: 5 },
+  // v6: shared chunking + optional visual enrichment chunks
+  pdf: { id: "pdf-extractor:shared-context-v6", version: 6 },
   // v3: shared chunking + heading ancestry/table preservation + enriched embedding text
   markdown: { id: "markdown-extractor:shared-context-v3", version: 3 },
-  // v3: shared chunking + mammoth HTML heading/table sections + enriched embedding text
-  docx: { id: "office-extractor:docx-shared-context-v3", version: 3 },
+  // v4: shared chunking + optional visual enrichment chunks
+  docx: { id: "office-extractor:docx-shared-context-v4", version: 4 },
   // v3: shared chunking + OpenDocument heading/table extraction + enriched embedding text
   odt: { id: "office-extractor:odt-shared-context-v3", version: 3 },
 };

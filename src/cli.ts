@@ -57,6 +57,7 @@ import {
   SearchResult,
   loadConfig,
   normalizeConfig,
+  resolveVisualsConfig,
   resolveConfigPath,
   saveConfig,
 } from "./types.js";
@@ -1118,6 +1119,7 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
               "<path|url>",
               "[--tags <tags>]",
               "[--enrich]",
+              "[--visuals]",
               "[--auto-tag]",
               "[--max-file-size <size>]",
               "[--download-timeout <duration>]",
@@ -1133,6 +1135,20 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
             argv: ["taxonomy", "<subcommand>"],
             description: "Taxonomy navigation (SKOS concepts)",
           },
+          {
+            name: "ingest",
+            argv: [
+              "ingest",
+              "<dir1>",
+              "[dir2]",
+              "[--enrich]",
+              "[--visuals]",
+              "[--auto-tag]",
+              "[--tags <tags>]",
+            ],
+            description:
+              "Add supported documents from one or more directories",
+          },
           { name: "doctor", argv: ["doctor"], description: "Health check" },
           {
             name: "rechunk",
@@ -1145,6 +1161,7 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
               "[--max-docs <n>]",
               "[--max-chunks <n>]",
               "[--all]",
+              "[--visuals]",
             ],
             description:
               "Rebuild chunks + embeddings when chunker changes (use --include-missing for legacy docs without metadata)",
@@ -1269,6 +1286,15 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
 
       const autoTag = opts["auto-tag"] === true;
       const enrich = opts.enrich === true;
+      const addConfig = loadConfig();
+      const visualsExplicit = opts.visuals === true;
+      const visualsEnabled =
+        visualsExplicit || resolveVisualsConfig(addConfig).enabled;
+      const visualsMode = visualsEnabled
+        ? visualsExplicit
+          ? "explicit"
+          : "config"
+        : undefined;
       const forceProvider = opts.provider as
         | "ollama"
         | "gateway"
@@ -1330,6 +1356,8 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
 	        new AddOptions({
 	          title: enrichedTitle,
 	          tags: enrichedTags.length > 0 ? enrichedTags : undefined,
+              visuals: visualsEnabled ? true : undefined,
+              visualsMode,
 	        })
 	      );
 	      resultPayload = doc;
@@ -2251,6 +2279,9 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
         yield* Console.log(
           `URL Downloads: max ${config.ingest.urlDownloads.maxFileSize}, timeout ${config.ingest.urlDownloads.timeout}, redirects ${config.ingest.urlDownloads.maxRedirects}`
         );
+        yield* Console.log(
+          `Visuals:     ${config.ingest.visuals.enabled ? "enabled" : "disabled"}, max image ${config.ingest.visuals.maxImageBytes}, max images/doc ${config.ingest.visuals.maxImagesPerDocument}`
+        );
         yield* Console.log("");
         yield* Console.log(`Server:      ${config.server.host}:${config.server.port}`);
         yield* Console.log(
@@ -2892,6 +2923,9 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
           "  --enrich       Full LLM enrichment (title, summary, concepts)"
         );
         yield* Console.error(
+          "  --visuals      Describe embedded PDF/DOCX images as searchable chunks"
+        );
+        yield* Console.error(
           "  --auto-tag     Light tagging (heuristics + LLM)"
         );
         yield* Console.error("  --tags a,b,c   Manual tags for all files");
@@ -2942,6 +2976,15 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
       const useTui = format === "text" && opts["no-tui"] !== true;
       const autoTag = opts["auto-tag"] === true;
       const enrich = opts.enrich === true;
+      const ingestConfig = loadConfig();
+      const visualsExplicit = opts.visuals === true;
+      const visualsEnabled =
+        visualsExplicit || resolveVisualsConfig(ingestConfig).enabled;
+      const visualsMode = visualsEnabled
+        ? visualsExplicit
+          ? "explicit"
+          : "config"
+        : undefined;
       // Always checkpoint after every file for crash safety
       const checkpointInterval = 1;
 
@@ -3118,6 +3161,8 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
                 new AddOptions({
                   title,
                   tags: fileTags.length > 0 ? fileTags : undefined,
+                  visuals: visualsEnabled ? true : undefined,
+                  visualsMode,
                 })
               );
 
@@ -3195,6 +3240,7 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
             succeeded: processed - failed,
             failed,
             enrich,
+            visuals: visualsEnabled,
             autoTag,
             manualTags: manualTags ?? null,
           };
@@ -3301,6 +3347,8 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
               new AddOptions({
                 title,
                 tags: fileTags.length > 0 ? fileTags : undefined,
+                visuals: visualsEnabled ? true : undefined,
+                visualsMode,
               })
             );
             yield* Console.log(`  ✓ ${doc.title} (${doc.pageCount} pages)`);
@@ -3342,6 +3390,7 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
           succeeded: processed - errors,
           failed: errors,
           enrich,
+          visuals: visualsEnabled,
           autoTag,
           manualTags: manualTags ?? null,
         };
@@ -3446,6 +3495,15 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
           opts["include-missing"] === true ||
           opts.includeMissing === true ||
           opts.missing === true;
+        const rechunkAppConfig = loadConfig();
+        const rechunkVisualsConfig = resolveVisualsConfig(rechunkAppConfig);
+        const visualsExplicit = opts.visuals === true;
+        const visualsEnabled = visualsExplicit || rechunkVisualsConfig.enabled;
+        const visualsMode = visualsEnabled
+          ? visualsExplicit
+            ? "explicit"
+            : "config"
+          : undefined;
 
         const parsePositiveIntFlag = (
           raw: string | boolean | undefined,
@@ -3523,13 +3581,31 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
 
         let plannedMissing = 0;
         let plannedMismatch = 0;
+        let plannedVisuals = 0;
         let skippedMissing = 0;
+
+        const needsVisualRefresh = (doc: Document): boolean => {
+          if (!visualsEnabled) return false;
+          const fileType = doc.fileType;
+          if (fileType !== "pdf" && fileType !== "docx") return false;
+          const visuals = (doc.metadata as any)?.visuals;
+          return (
+            !visuals ||
+            visuals.enabled !== true ||
+            visuals.version !== 1 ||
+            visuals.maxImageBytes !== rechunkVisualsConfig.maxImageBytes ||
+            visuals.maxImagesPerDocument !==
+              rechunkVisualsConfig.maxImagesPerDocument
+          );
+        };
 
         for (const doc of docs) {
           const assessment = assessDocChunker(doc, config);
           const isMissing = assessment.code === "missing_metadata";
+          const visualRefresh = needsVisualRefresh(doc);
           const shouldInclude =
             forceAll ||
+            visualRefresh ||
             (assessment.needsRechunk && (!isMissing || includeMissing));
 
           if (assessment.needsRechunk && isMissing && !includeMissing && !forceAll) {
@@ -3541,16 +3617,28 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
               id: doc.id,
               title: doc.title,
               path: doc.path,
-              reason: assessment.reason,
-              code: assessment.code,
+              reason:
+                visualRefresh && !assessment.needsRechunk
+                  ? "visual enrichment metadata mismatch"
+                  : assessment.reason,
+              code:
+                visualRefresh && !assessment.needsRechunk
+                  ? "visuals_mismatch"
+                  : assessment.code,
               expected: assessment.expected,
-              actual: assessment.actual,
+              actual: visualRefresh
+                ? {
+                    chunker: assessment.actual,
+                    visuals: (doc.metadata as any)?.visuals ?? null,
+                  }
+                : assessment.actual,
             });
 
             if (assessment.needsRechunk) {
               if (isMissing) plannedMissing++;
               else plannedMismatch++;
             }
+            if (visualRefresh) plannedVisuals++;
           }
         }
 
@@ -3659,6 +3747,14 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
 	            dryRun: true,
 	            forceAll,
               includeMissing,
+              visuals: visualsEnabled,
+              visualSettings: visualsEnabled
+                ? {
+                    maxImageBytes: rechunkVisualsConfig.maxImageBytes,
+                    maxImagesPerDocument:
+                      rechunkVisualsConfig.maxImagesPerDocument,
+                  }
+                : null,
               maxDocs: parsedMaxDocs ?? null,
               maxChunks: parsedMaxChunks ?? null,
 	            tag: tag ?? null,
@@ -3667,13 +3763,16 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
 	            planned: planned.length,
               plannedMissing,
               plannedMismatch,
+              plannedVisuals,
               skippedMissing,
               totalCurrentChunks,
               warnings,
 	            docs: planned,
 	            chunker: {
-	              pdf: { id: "pdf-extractor:paragraphs-v2", version: 2 },
-	              markdown: { id: "markdown-extractor:sections+placeholders-v1", version: 1 },
+	              pdf: { id: "pdf-extractor:shared-context-v6", version: 6 },
+	              markdown: { id: "markdown-extractor:shared-context-v3", version: 3 },
+	              docx: { id: "office-extractor:docx-shared-context-v4", version: 4 },
+	              odt: { id: "office-extractor:odt-shared-context-v3", version: 3 },
 	              chunkSize: config.chunkSize,
 	              chunkOverlap: config.chunkOverlap,
 	              unit: "chars",
@@ -3683,9 +3782,11 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
 	            _tag: "rechunk",
 	            dryRun: true,
               includeMissing,
+              visuals: visualsEnabled,
               skippedMissing,
               plannedMissing,
               plannedMismatch,
+              plannedVisuals,
 	            planned: planned.length,
 	            succeeded: 0,
 	            failed: 0,
@@ -3730,6 +3831,8 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
                   title: doc.title,
                   tags: doc.tags.length > 0 ? doc.tags : undefined,
                   metadata: doc.metadata,
+                  visuals: visualsEnabled ? true : undefined,
+                  visualsMode,
                   addedAt: doc.addedAt,
                 }),
               ),
@@ -3752,12 +3855,21 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
             includeMissing,
             maxDocs: effectiveMaxDocs ?? null,
             maxChunks: parsedMaxChunks ?? null,
+            visuals: visualsEnabled,
+            visualSettings: visualsEnabled
+              ? {
+                  maxImageBytes: rechunkVisualsConfig.maxImageBytes,
+                  maxImagesPerDocument:
+                    rechunkVisualsConfig.maxImagesPerDocument,
+                }
+              : null,
 	          tag: tag ?? null,
 	          docId: singleDocId ?? null,
 	          totalCandidates: docs.length,
 	          planned: planned.length,
             plannedMissing,
             plannedMismatch,
+            plannedVisuals,
             skippedMissing,
             totalCurrentChunks,
             warnings,
@@ -3768,9 +3880,11 @@ function makeProgram(args: string[], globals: GlobalCLIOptions) {
 	          _tag: "rechunk",
 	          dryRun: false,
             includeMissing,
+            visuals: visualsEnabled,
             skippedMissing,
             plannedMissing,
             plannedMismatch,
+            plannedVisuals,
 	          planned: planned.length,
 	          succeeded: processed - errors,
 	          failed: errors,

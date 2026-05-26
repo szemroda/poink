@@ -227,6 +227,8 @@ const DEFAULT_LIBSQL_URL = "file:~/.poink/library.db";
 export const DEFAULT_URL_DOWNLOAD_MAX_FILE_SIZE = "100mb";
 export const DEFAULT_URL_DOWNLOAD_TIMEOUT = "30s";
 export const DEFAULT_URL_DOWNLOAD_MAX_REDIRECTS = 5;
+export const DEFAULT_VISUALS_MAX_IMAGE_BYTES = "5mb";
+export const DEFAULT_VISUALS_MAX_IMAGES_PER_DOCUMENT = 100;
 
 const SizeStringSchema = Schema.String.pipe(
   Schema.filter((value) => /^\d+(?:\.\d+)?\s*(?:b|kb|mb|gb)$/i.test(value), {
@@ -382,6 +384,23 @@ export class Config extends Schema.Class<Config>("Config")({
     }),
   }),
   ingest: Schema.optionalWith(Schema.Struct({
+    visuals: Schema.optionalWith(Schema.Struct({
+      enabled: Schema.optionalWith(Schema.Boolean, {
+        default: () => false,
+      }),
+      maxImageBytes: Schema.optionalWith(SizeStringSchema, {
+        default: () => DEFAULT_VISUALS_MAX_IMAGE_BYTES,
+      }),
+      maxImagesPerDocument: Schema.optionalWith(NonNegativeIntegerSchema, {
+        default: () => DEFAULT_VISUALS_MAX_IMAGES_PER_DOCUMENT,
+      }),
+    }), {
+      default: () => ({
+        enabled: false,
+        maxImageBytes: DEFAULT_VISUALS_MAX_IMAGE_BYTES,
+        maxImagesPerDocument: DEFAULT_VISUALS_MAX_IMAGES_PER_DOCUMENT,
+      }),
+    }),
     urlDownloads: Schema.optionalWith(Schema.Struct({
       maxFileSize: Schema.optionalWith(SizeStringSchema, {
         default: () => DEFAULT_URL_DOWNLOAD_MAX_FILE_SIZE,
@@ -409,6 +428,11 @@ export class Config extends Schema.Class<Config>("Config")({
     }),
   }), {
     default: () => ({
+      visuals: {
+        enabled: false,
+        maxImageBytes: DEFAULT_VISUALS_MAX_IMAGE_BYTES,
+        maxImagesPerDocument: DEFAULT_VISUALS_MAX_IMAGES_PER_DOCUMENT,
+      },
       urlDownloads: {
         maxFileSize: DEFAULT_URL_DOWNLOAD_MAX_FILE_SIZE,
         timeout: DEFAULT_URL_DOWNLOAD_TIMEOUT,
@@ -635,6 +659,11 @@ export class Config extends Schema.Class<Config>("Config")({
       },
     },
     ingest: {
+      visuals: {
+        enabled: false,
+        maxImageBytes: DEFAULT_VISUALS_MAX_IMAGE_BYTES,
+        maxImagesPerDocument: DEFAULT_VISUALS_MAX_IMAGES_PER_DOCUMENT,
+      },
       urlDownloads: {
         maxFileSize: DEFAULT_URL_DOWNLOAD_MAX_FILE_SIZE,
         timeout: DEFAULT_URL_DOWNLOAD_TIMEOUT,
@@ -802,6 +831,43 @@ export function resolveChunkingConfig(config: Config) {
   };
 }
 
+function parseConfigSizeString(value: string): number {
+  const match = value.trim().match(/^(\d+(?:\.\d+)?)\s*(b|kb|mb|gb)$/i);
+  if (!match) {
+    throw new Error(
+      "Expected size with a unit suffix, such as 500kb, 100mb, or 1gb",
+    );
+  }
+
+  const amount = Number(match[1]);
+  const unit = match[2].toLowerCase();
+  const multiplier =
+    unit === "b"
+      ? 1
+      : unit === "kb"
+        ? 1024
+        : unit === "mb"
+          ? 1024 * 1024
+          : 1024 * 1024 * 1024;
+  const bytes = Math.floor(amount * multiplier);
+  if (!Number.isFinite(bytes) || bytes <= 0) {
+    throw new Error(`Invalid size value: ${value}`);
+  }
+  return bytes;
+}
+
+export function resolveVisualsConfig(config: Config): {
+  enabled: boolean;
+  maxImageBytes: number;
+  maxImagesPerDocument: number;
+} {
+  return {
+    enabled: config.ingest.visuals.enabled,
+    maxImageBytes: parseConfigSizeString(config.ingest.visuals.maxImageBytes),
+    maxImagesPerDocument: config.ingest.visuals.maxImagesPerDocument,
+  };
+}
+
 export function resolveStorageApiKey(value: {
   apiKey?: string;
   apiKeyEnv?: string;
@@ -904,6 +970,8 @@ export class AddOptions extends Schema.Class<AddOptions>("AddOptions")({
   metadata: Schema.optional(
     Schema.Record({ key: Schema.String, value: Schema.Unknown })
   ),
+  visuals: Schema.optional(Schema.Boolean),
+  visualsMode: Schema.optional(Schema.Literal("config", "explicit")),
   /**
    * Internal/advanced: preserve original `addedAt` on re-add/rechunk workflows.
    * CLI does not expose this directly.

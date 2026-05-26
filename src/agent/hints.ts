@@ -66,6 +66,8 @@ export type CommandResult =
       skippedMissing?: number;
       plannedMissing?: number;
       plannedMismatch?: number;
+      plannedVisuals?: number;
+      visuals?: boolean;
     };
 
 /**

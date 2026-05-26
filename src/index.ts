@@ -11,12 +11,15 @@ import { basename } from "node:path";
 
 import {
   AddOptions,
+  Config,
   Document,
   DocumentExistsError,
   type DocumentFileType,
   DocumentNotFoundError,
   expandHomePath,
   LibraryConfig,
+  loadConfig,
+  resolveVisualsConfig,
   SearchOptions,
   SearchResult,
 } from "./types.js";
@@ -28,7 +31,11 @@ import {
   EmbeddingProviderFullLive,
 } from "./services/EmbeddingProvider.js";
 import type { EmbeddingError } from "./services/EmbeddingProvider.js";
-import { PDFExtractor, PDFExtractorLive } from "./services/PDFExtractor.js";
+import {
+  chunkText,
+  PDFExtractor,
+  PDFExtractorLive,
+} from "./services/PDFExtractor.js";
 import {
   MarkdownExtractor,
   MarkdownExtractorLive,
@@ -37,6 +44,12 @@ import {
   OfficeExtractor,
   OfficeExtractorLive,
 } from "./services/OfficeExtractor.js";
+import {
+  VisualEnrichment,
+  VisualEnrichmentLive,
+  type VisualDescriptionChunk,
+  type VisualsMode,
+} from "./services/VisualEnrichment.js";
 import { Database } from "./services/Database.js";
 import { LibSQLDatabase } from "./services/LibSQLDatabase.js";
 import { DatabaseRegistry } from "./services/DatabaseRegistry.js";
@@ -65,6 +78,13 @@ export {
   OfficeExtractor,
   OfficeExtractorLive,
 } from "./services/OfficeExtractor.js";
+export {
+  VisualEnrichment,
+  VisualEnrichmentLive,
+  type ExtractedDocumentImage,
+  type VisualDescriptionChunk,
+  type VisualsMode,
+} from "./services/VisualEnrichment.js";
 export { Database } from "./services/Database.js";
 export { LibSQLDatabase } from "./services/LibSQLDatabase.js";
 export { DatabaseRegistry } from "./services/DatabaseRegistry.js";
@@ -95,6 +115,7 @@ export class PDFLibrary extends Effect.Service<PDFLibrary>()("PDFLibrary", {
     const pdfExtractor = yield* PDFExtractor;
     const markdownExtractor = yield* MarkdownExtractor;
     const officeExtractor = yield* OfficeExtractor;
+    const visualEnrichment = yield* VisualEnrichment;
     const db = yield* Database;
     const config = LibraryConfig.fromEnv();
 
@@ -136,20 +157,101 @@ export class PDFLibrary extends Effect.Service<PDFLibrary>()("PDFLibrary", {
         return fallbackTitle(resolvedPath);
       });
 
+    const configuredVisualsMode = (
+      appConfig: Config,
+      options: AddOptions,
+    ): VisualsMode => {
+      if (options.visuals === true) return options.visualsMode ?? "explicit";
+      return resolveVisualsConfig(appConfig).enabled ? "config" : "disabled";
+    };
+
+    const splitVisualChunk = (
+      visual: VisualDescriptionChunk,
+      startChunkIndex: number,
+    ): LibraryProcessedChunk[] => {
+      if (visual.content.length <= config.chunkSize) {
+        return [
+          {
+            page: visual.page,
+            chunkIndex: startChunkIndex,
+            content: visual.content,
+            embeddingContent: visual.embeddingContent,
+          },
+        ];
+      }
+
+      const header = visual.content.split("\n")[0]?.trim();
+      return chunkText(
+        visual.content,
+        config.chunkSize,
+        config.chunkOverlap,
+      ).map((content, index) => {
+        const display =
+          header && !content.includes(header)
+            ? `${header}\n\n${content}`
+            : content;
+        return {
+          page: visual.page,
+          chunkIndex: startChunkIndex + index,
+          content: display,
+          embeddingContent: visual.embeddingContent,
+        };
+      });
+    };
+
+    const appendVisualChunks = (
+      textResult: { pageCount: number; chunks: LibraryProcessedChunk[] },
+      visualChunks: VisualDescriptionChunk[],
+    ): { pageCount: number; chunks: LibraryProcessedChunk[] } => {
+      if (visualChunks.length === 0) return textResult;
+
+      const merged = [...textResult.chunks];
+      let nextChunkIndex =
+        merged.reduce((max, chunk) => Math.max(max, chunk.chunkIndex), -1) + 1;
+
+      for (const visual of visualChunks) {
+        const chunks = splitVisualChunk(visual, nextChunkIndex);
+        merged.push(...chunks);
+        nextChunkIndex += chunks.length;
+      }
+
+      return { pageCount: textResult.pageCount, chunks: merged };
+    };
+
     const processDocument = (
       resolvedPath: string,
       fileType: DocumentFileType,
+      options: {
+        visualsMode: VisualsMode;
+        title?: string;
+      },
     ): Effect.Effect<
       { pageCount: number; chunks: LibraryProcessedChunk[] },
       unknown
-    > => {
-      if (fileType === "markdown")
-        return markdownExtractor.process(resolvedPath);
-      if (fileType === "docx" || fileType === "odt") {
-        return officeExtractor.process(resolvedPath);
-      }
-      return pdfExtractor.process(resolvedPath);
-    };
+    > =>
+      Effect.gen(function* () {
+        const textResult = yield* (() => {
+          if (fileType === "markdown")
+            return markdownExtractor.process(resolvedPath);
+          if (fileType === "docx" || fileType === "odt") {
+            return officeExtractor.process(resolvedPath);
+          }
+          return pdfExtractor.process(resolvedPath);
+        })();
+
+        if (options.visualsMode === "disabled") return textResult;
+
+        const visualChunks = yield* visualEnrichment.enrichDocument(
+          resolvedPath,
+          fileType,
+          {
+            mode: options.visualsMode,
+            title: options.title,
+          },
+        );
+
+        return appendVisualChunks(textResult, visualChunks);
+      });
 
     const sectionFromChunkContent = (content: string): string | null => {
       const heading = content.match(/^#{1,6}\s+(.+)$/m)?.[1]?.trim();
@@ -247,8 +349,10 @@ export class PDFLibrary extends Effect.Service<PDFLibrary>()("PDFLibrary", {
             fileType,
             options.title,
           );
+          const appConfig = loadConfig();
+          const visualsMode = configuredVisualsMode(appConfig, options);
           const processResult = yield* Effect.either(
-            processDocument(resolvedPath, fileType),
+            processDocument(resolvedPath, fileType, { visualsMode, title }),
           );
           if (processResult._tag === "Left") {
             yield* Effect.logDebug(
@@ -272,6 +376,13 @@ export class PDFLibrary extends Effect.Service<PDFLibrary>()("PDFLibrary", {
             ...(options.metadata ?? {}),
             // Always stamp the chunker used to generate the current chunks/embeddings.
             chunker,
+            visuals: {
+              enabled: visualsMode !== "disabled",
+              version: 1,
+              maxImageBytes: resolveVisualsConfig(appConfig).maxImageBytes,
+              maxImagesPerDocument:
+                resolveVisualsConfig(appConfig).maxImagesPerDocument,
+            },
           };
 
           const doc = new Document({
@@ -409,8 +520,10 @@ export class PDFLibrary extends Effect.Service<PDFLibrary>()("PDFLibrary", {
           const baseMetadata: Record<string, unknown> =
             options.metadata ?? existing.metadata ?? {};
 
+          const appConfig = loadConfig();
+          const visualsMode = configuredVisualsMode(appConfig, options);
           const processResult = yield* Effect.either(
-            processDocument(resolvedPath, fileType),
+            processDocument(resolvedPath, fileType, { visualsMode, title }),
           );
           if (processResult._tag === "Left") {
             return yield* Effect.fail(processResult.left);
@@ -430,6 +543,13 @@ export class PDFLibrary extends Effect.Service<PDFLibrary>()("PDFLibrary", {
           const mergedMetadata: Record<string, unknown> = {
             ...baseMetadata,
             chunker,
+            visuals: {
+              enabled: visualsMode !== "disabled",
+              version: 1,
+              maxImageBytes: resolveVisualsConfig(appConfig).maxImageBytes,
+              maxImagesPerDocument:
+                resolveVisualsConfig(appConfig).maxImagesPerDocument,
+            },
           };
 
           const doc = new Document({
@@ -828,6 +948,9 @@ export class PDFLibrary extends Effect.Service<PDFLibrary>()("PDFLibrary", {
     PDFExtractorLive,
     MarkdownExtractorLive,
     OfficeExtractorLive,
+    VisualEnrichmentLive.pipe(
+      Layer.provide(Layer.merge(PDFExtractorLive, OfficeExtractorLive)),
+    ),
   ],
 }) {}
 

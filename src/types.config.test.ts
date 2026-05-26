@@ -2,7 +2,13 @@ import { afterEach, describe, expect, test } from "vitest";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-import { Config, LibraryConfig, loadConfig, normalizeConfig } from "./types.js";
+import {
+  Config,
+  LibraryConfig,
+  loadConfig,
+  normalizeConfig,
+  resolveVisualsConfig,
+} from "./types.js";
 
 const ORIGINAL_POINK_CONFIG = process.env.POINK_CONFIG;
 const ORIGINAL_OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
@@ -70,6 +76,9 @@ describe("loadConfig path and database defaults", () => {
       expect(config.ingest.urlDownloads.maxRedirects).toBe(5);
       expect(config.ingest.urlDownloads.allowPrivateNetwork).toBe(false);
       expect(config.ingest.urlDownloads.allowedPrivateNetworkHosts).toEqual([]);
+      expect(config.ingest.visuals.enabled).toBe(false);
+      expect(config.ingest.visuals.maxImageBytes).toBe("5mb");
+      expect(config.ingest.visuals.maxImagesPerDocument).toBe(100);
       expect(config.server.host).toBe("127.0.0.1");
       expect(config.server.port).toBe(3838);
       expect(config.server.auth.enabled).toBe(false);
@@ -237,6 +246,20 @@ describe("loadConfig path and database defaults", () => {
     expect(normalized.ingest.urlDownloads.maxFileSize).toBe("100mb");
     expect(normalized.ingest.urlDownloads.timeout).toBe("30s");
     expect(normalized.ingest.urlDownloads.maxRedirects).toBe(5);
+    expect(normalized.ingest.visuals.enabled).toBe(false);
+    expect(normalized.ingest.visuals.maxImageBytes).toBe("5mb");
+    expect(normalized.ingest.visuals.maxImagesPerDocument).toBe(100);
+  });
+
+  test("normalizes legacy configs without visual settings", () => {
+    const config = JSON.parse(JSON.stringify(Config.Default));
+    delete config.ingest.visuals;
+
+    const normalized = normalizeConfig(config);
+
+    expect(normalized.ingest.visuals.enabled).toBe(false);
+    expect(normalized.ingest.visuals.maxImageBytes).toBe("5mb");
+    expect(normalized.ingest.visuals.maxImagesPerDocument).toBe(100);
   });
 
   test("rejects numeric URL download max file sizes", () => {
@@ -253,6 +276,27 @@ describe("loadConfig path and database defaults", () => {
 
     config.ingest.urlDownloads.maxFileSize = "100mb";
     config.ingest.urlDownloads.timeout = "30";
+    expect(() => normalizeConfig(config)).toThrow();
+  });
+
+  test("validates visual enrichment settings", () => {
+    const config = JSON.parse(JSON.stringify(Config.Default));
+    config.ingest.visuals.enabled = true;
+    config.ingest.visuals.maxImageBytes = "10mb";
+    config.ingest.visuals.maxImagesPerDocument = 25;
+
+    const normalized = normalizeConfig(config);
+    const resolved = resolveVisualsConfig(normalized);
+
+    expect(resolved.enabled).toBe(true);
+    expect(resolved.maxImageBytes).toBe(10 * 1024 * 1024);
+    expect(resolved.maxImagesPerDocument).toBe(25);
+
+    config.ingest.visuals.maxImageBytes = "10";
+    expect(() => normalizeConfig(config)).toThrow();
+
+    config.ingest.visuals.maxImageBytes = "10mb";
+    config.ingest.visuals.maxImagesPerDocument = -1;
     expect(() => normalizeConfig(config)).toThrow();
   });
 

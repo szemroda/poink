@@ -172,6 +172,10 @@ poink add document.pdf --auto-tag
 poink add document.pdf --enrich
 poink add notes.md --enrich
 poink add report.docx --enrich
+
+# Add searchable descriptions for embedded PDF/DOCX visuals
+poink add document.pdf --visuals
+poink add document.pdf --enrich --visuals
 ```
 
 URL downloads are guarded by default. poink blocks private, loopback, link-local,
@@ -270,6 +274,9 @@ poink ingest ~/books --tags "books,reference"
 # Auto-tag only (faster, heuristics + light LLM)
 poink ingest ~/docs --auto-tag
 
+# Describe embedded PDF/DOCX visuals as searchable chunks
+poink ingest ~/docs --visuals
+
 # Process only first N files (for testing)
 poink ingest ~/papers --enrich --sample 10
 
@@ -285,6 +292,24 @@ poink ingest ~/papers --enrich --no-tui
 - `.docx` - Microsoft Word / OOXML documents
 - `.odt` - OpenDocument text documents
 - `.fodt` - Flat XML OpenDocument text documents
+
+### Visual Enrichment
+
+Visual enrichment is opt-in and currently supports embedded images in PDFs and
+DOCX files. It extracts meaningful document visuals such as diagrams,
+screenshots, charts, and figures, asks the configured `models.enrichment` model
+to describe them, and stores those descriptions as normal searchable text
+chunks. It does not store native image embeddings.
+
+```bash
+poink add document.pdf --visuals
+poink add document.pdf --enrich --visuals
+poink ingest ~/docs --visuals
+poink rechunk --visuals --doc <id>
+```
+
+The enrichment model must be vision-capable. Visual enrichment adds vision-model
+calls, so it can increase ingest/rechunk latency and provider cost.
 
 ## Enrichment
 
@@ -444,6 +469,11 @@ poink config set models.enrichment.model anthropic/claude-haiku-4-5
     }
   },
   "ingest": {
+    "visuals": {
+      "enabled": false,
+      "maxImageBytes": "5mb",
+      "maxImagesPerDocument": 100
+    },
     "urlDownloads": {
       "maxFileSize": "100mb",
       "timeout": "30s",
@@ -523,6 +553,9 @@ poink config set models.enrichment.model anthropic/claude-haiku-4-5
 | `chunking.size`       | `2000`                   | Chunk size in characters             |
 | `chunking.overlap`    | `200`                    | Chunk overlap in characters          |
 | `cli.globalFlags.format` | `text`                | Default CLI output format: `text`, `json`, or `ndjson` |
+| `ingest.visuals.enabled` | `false`              | Enable PDF/DOCX visual enrichment by default |
+| `ingest.visuals.maxImageBytes` | `5mb`          | Maximum extracted image size sent for visual enrichment |
+| `ingest.visuals.maxImagesPerDocument` | `100`   | Maximum extracted images described per document |
 | `ingest.urlDownloads.maxFileSize` | `100mb`       | Maximum URL download size. Use a string with `b`, `kb`, `mb`, or `gb` |
 | `ingest.urlDownloads.timeout` | `30s`              | URL download timeout. Use a string with `ms`, `s`, or `m` |
 | `ingest.urlDownloads.maxRedirects` | `5`           | Maximum HTTP redirects followed during URL downloads |

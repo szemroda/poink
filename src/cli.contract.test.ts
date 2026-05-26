@@ -828,6 +828,41 @@ describe("CLI JSON Envelope Contract", () => {
       ]);
     }));
 
+  test("config set accepts visual enrichment settings", () =>
+    withTempLibraryPath((libraryRoot) => {
+      const libraryPath = join(libraryRoot, "library");
+      const configPath = join(libraryRoot, "config.json");
+      writeTestConfig(configPath, libraryPath);
+
+      const enabledRes = runCli(
+        ["config", "set", "ingest.visuals.enabled", "true", "--format", "json"],
+        {
+          env: envForConfig(configPath),
+        },
+      );
+      expect(enabledRes.exitCode).toBe(0);
+
+      const sizeRes = runCli(
+        [
+          "config",
+          "set",
+          "ingest.visuals.maxImageBytes",
+          "10mb",
+          "--format",
+          "json",
+        ],
+        {
+          env: envForConfig(configPath),
+        },
+      );
+      expect(sizeRes.exitCode).toBe(0);
+
+      const saved = JSON.parse(readFileSync(configPath, "utf-8"));
+      expect(saved.ingest.visuals.enabled).toBe(true);
+      expect(saved.ingest.visuals.maxImageBytes).toBe("10mb");
+      expect(saved.ingest.visuals.maxImagesPerDocument).toBe(100);
+    }));
+
   test("config set rejects unitless URL download max file size", () =>
     withTempLibraryPath((libraryRoot) => {
       const libraryPath = join(libraryRoot, "library");

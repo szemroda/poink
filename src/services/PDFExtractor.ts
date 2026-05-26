@@ -3,6 +3,7 @@
  */
 
 import { Context, Effect, Layer } from "effect";
+import { createHash } from "node:crypto";
 import type { TableArray } from "pdf-parse";
 import { getData } from "pdf-parse/worker";
 import {
@@ -17,6 +18,7 @@ import {
   PDFExtractionError,
   PDFNotFoundError,
 } from "../types.js";
+import type { ExtractedDocumentImage } from "./VisualEnrichment.js";
 
 // ============================================================================
 // Service Definition
@@ -44,6 +46,12 @@ export class PDFExtractor extends Context.Tag("PDFExtractor")<
     readonly extract: (
       path: string,
     ) => Effect.Effect<ExtractedPDF, PDFExtractionError | PDFNotFoundError>;
+    readonly extractImages: (
+      path: string,
+    ) => Effect.Effect<
+      ExtractedDocumentImage[],
+      PDFExtractionError | PDFNotFoundError
+    >;
     readonly process: (
       path: string,
     ) => Effect.Effect<
@@ -173,6 +181,50 @@ async function extractFromResolvedPath(path: string): Promise<ExtractedPDF> {
         text: enhancePDFPageText(text, tablesByPage.get(num) ?? []),
       })),
     };
+  } finally {
+    await parser.destroy();
+  }
+}
+
+async function extractImagesFromResolvedPath(
+  path: string,
+): Promise<ExtractedDocumentImage[]> {
+  const data = await readFileBytes(path);
+  const PDFParse = await pdfParseModulePromise;
+  const parser = new PDFParse({ data });
+
+  try {
+    const result = await parser.getImage({
+      imageThreshold: 80,
+      imageDataUrl: false,
+      imageBuffer: true,
+    });
+
+    const images: ExtractedDocumentImage[] = [];
+    for (const page of result.pages ?? []) {
+      const pageNumber = page.pageNumber;
+      for (const image of page.images ?? []) {
+        const bytes = image.data;
+        const hash = createHash("sha256").update(bytes).digest("hex");
+        images.push({
+          sourceKind: "pdf",
+          page: pageNumber,
+          visualIndex: images.length + 1,
+          contentType: "image/png",
+          bytes,
+          byteSize: bytes.byteLength,
+          width: image.width,
+          height: image.height,
+          hash,
+          resourceName: image.name,
+          context:
+            typeof image.kind === "number"
+              ? `PDF image kind: ${image.kind}`
+              : undefined,
+        });
+      }
+    }
+    return images;
   } finally {
     await parser.destroy();
   }
@@ -421,6 +473,23 @@ export const PDFExtractorLive = Layer.effect(
           });
 
           return result;
+        }),
+
+      extractImages: (path: string) =>
+        Effect.gen(function* () {
+          const resolvedPath = resolvePath(path);
+
+          if (!fileExists(resolvedPath)) {
+            return yield* Effect.fail(
+              new PDFNotFoundError({ path: resolvedPath }),
+            );
+          }
+
+          return yield* Effect.tryPromise({
+            try: async () => extractImagesFromResolvedPath(resolvedPath),
+            catch: (e) =>
+              new PDFExtractionError({ path: resolvedPath, reason: String(e) }),
+          });
         }),
 
       process: (path: string) =>

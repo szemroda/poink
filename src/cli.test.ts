@@ -658,11 +658,12 @@ describe("CLI integration: cluster command with --soft flag", () => {
 });
 
 describe("CLI integration: add and ingest enrichment flags", () => {
-  test("parseArgs handles add with --enrich and --auto-tag", () => {
-    const args = ["add", "paper.pdf", "--enrich", "--auto-tag"];
+  test("parseArgs handles add with --enrich, --visuals, and --auto-tag", () => {
+    const args = ["add", "paper.pdf", "--enrich", "--visuals", "--auto-tag"];
     const opts = parseArgs(args.slice(2));
 
     expect(opts.enrich).toBe(true);
+    expect(opts.visuals).toBe(true);
     expect(opts["auto-tag"]).toBe(true);
     expect(opts["no-enrich"]).toBeUndefined();
   });
@@ -672,15 +673,17 @@ describe("CLI integration: add and ingest enrichment flags", () => {
     const opts = parseArgs(args.slice(2));
 
     expect(opts.enrich).toBeUndefined();
+    expect(opts.visuals).toBeUndefined();
     expect(opts["auto-tag"]).toBeUndefined();
     expect(opts["no-enrich"]).toBeUndefined();
   });
 
-  test("parseArgs handles ingest with --enrich and --auto-tag", () => {
-    const args = ["ingest", "./docs", "--enrich", "--auto-tag"];
+  test("parseArgs handles ingest with --enrich, --visuals, and --auto-tag", () => {
+    const args = ["ingest", "./docs", "--enrich", "--visuals", "--auto-tag"];
     const opts = parseArgs(args.slice(2));
 
     expect(opts.enrich).toBe(true);
+    expect(opts.visuals).toBe(true);
     expect(opts["auto-tag"]).toBe(true);
   });
 });

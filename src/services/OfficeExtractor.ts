@@ -5,6 +5,7 @@
  */
 
 import { Context, Effect, Layer, Schema } from "effect";
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { extname } from "node:path";
@@ -17,6 +18,7 @@ import { resolveUserPath } from "../pathUtils.js";
 import { readFileBytes } from "../runtime.js";
 import { LibraryConfig, type DocumentFileType } from "../types.js";
 import { chunkText, sanitizeText } from "./PDFExtractor.js";
+import type { ExtractedDocumentImage } from "./VisualEnrichment.js";
 
 // ============================================================================
 // Custom Error Types
@@ -121,6 +123,12 @@ export class OfficeExtractor extends Context.Tag("OfficeExtractor")<
       path: string,
     ) => Effect.Effect<
       ExtractedOfficeDocument,
+      OfficeExtractionError | OfficeNotFoundError
+    >;
+    readonly extractImages: (
+      path: string,
+    ) => Effect.Effect<
+      ExtractedDocumentImage[],
       OfficeExtractionError | OfficeNotFoundError
     >;
     readonly process: (
@@ -559,6 +567,50 @@ async function extractDocx(path: string): Promise<ExtractedOfficeDocument> {
   };
 }
 
+async function extractDocxImages(path: string): Promise<ExtractedDocumentImage[]> {
+  await assertSafeOfficePackageFile(path);
+  const buffer = Buffer.from(await readFileBytes(path));
+  await assertSafeOfficeZip(buffer, { contentXml: false });
+
+  const images: ExtractedDocumentImage[] = [];
+  await mammoth.convertToHtml(
+    { buffer },
+    {
+      externalFileAccess: false,
+      convertImage: mammoth.images.imgElement(async (image) => {
+        const bytes = await image.readAsBuffer();
+        const hash = createHash("sha256").update(bytes).digest("hex");
+        const altText =
+          typeof (image as unknown as { altText?: unknown }).altText === "string"
+            ? (image as unknown as { altText: string }).altText
+            : undefined;
+
+        images.push({
+          sourceKind: "docx",
+          page: 1,
+          visualIndex: images.length + 1,
+          contentType: image.contentType,
+          bytes,
+          byteSize: bytes.byteLength,
+          hash,
+          altText,
+        });
+
+        return { src: "" };
+      }),
+    },
+  );
+
+  return images;
+}
+
+async function extractImagesFromResolvedPath(
+  path: string,
+): Promise<ExtractedDocumentImage[]> {
+  const fileType = officeFileTypeForPath(path);
+  return fileType === "docx" ? extractDocxImages(path) : [];
+}
+
 function directElementsByLocalName(
   root: XmlDocument,
   names: Set<string>,
@@ -637,6 +689,25 @@ export const OfficeExtractorLive = Layer.effect(
 
           return yield* Effect.tryPromise({
             try: async () => extractFromResolvedPath(resolvedPath),
+            catch: (e) =>
+              new OfficeExtractionError({
+                path: resolvedPath,
+                reason: String(e),
+              }),
+          });
+        }),
+
+      extractImages: (path: string) =>
+        Effect.gen(function* () {
+          const resolvedPath = resolvePath(path);
+          if (!existsSync(resolvedPath)) {
+            return yield* Effect.fail(
+              new OfficeNotFoundError({ path: resolvedPath }),
+            );
+          }
+
+          return yield* Effect.tryPromise({
+            try: async () => extractImagesFromResolvedPath(resolvedPath),
             catch: (e) =>
               new OfficeExtractionError({
                 path: resolvedPath,

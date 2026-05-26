@@ -10,6 +10,7 @@ import { EmbeddingProvider } from "./services/EmbeddingProvider.js";
 import { MarkdownExtractor } from "./services/MarkdownExtractor.js";
 import { PDFExtractor } from "./services/PDFExtractor.js";
 import { OfficeExtractor } from "./services/OfficeExtractor.js";
+import { VisualEnrichment } from "./services/VisualEnrichment.js";
 import { DEFAULT_QUEUE_CONFIG } from "./services/EmbeddingQueue.js";
 
 describe("PDFLibrary.add", () => {
@@ -129,6 +130,9 @@ describe("PDFLibrary.add", () => {
       Layer.succeed(MarkdownExtractor, markdownExtractor as any),
       Layer.succeed(PDFExtractor, unusedPdfExtractor as any),
       Layer.succeed(OfficeExtractor, unusedOfficeExtractor as any),
+      Layer.succeed(VisualEnrichment, {
+        enrichDocument: () => Effect.succeed([]),
+      } as any),
     );
 
     const program = Effect.gen(function* () {
@@ -237,6 +241,9 @@ describe("PDFLibrary.add", () => {
       Layer.succeed(MarkdownExtractor, markdownExtractor as any),
       Layer.succeed(PDFExtractor, unusedPdfExtractor as any),
       Layer.succeed(OfficeExtractor, unusedOfficeExtractor as any),
+      Layer.succeed(VisualEnrichment, {
+        enrichDocument: () => Effect.succeed([]),
+      } as any),
     );
 
     const program = Effect.gen(function* () {
@@ -262,6 +269,110 @@ describe("PDFLibrary.add", () => {
       "Row 1: Name=Accuracy; Value=High",
     );
     expect(embeddedTexts[0]).toBe(persistedChunks[0].embeddingContent);
+  });
+
+  test("appends visual chunks when visual enrichment is enabled", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "poink-visual-chunks-"));
+    tempDirs.push(dir);
+    const docPath = join(dir, "doc.md");
+    writeFileSync(docPath, "# Doc\n\ncontent\n");
+
+    let embeddedTexts: string[] = [];
+    let persistedChunks: any[] = [];
+
+    const database = {
+      addDocument: () => Effect.void,
+      getDocument: () => Effect.succeed(null),
+      getDocumentByPath: () => Effect.succeed(null),
+      listDocuments: () => Effect.succeed([]),
+      deleteDocument: () => Effect.void,
+      updateTags: () => Effect.void,
+      addChunks: () => Effect.void,
+      getChunk: () => Effect.succeed(null),
+      listChunksByDocument: () => Effect.succeed([]),
+      addEmbeddings: () => Effect.void,
+      replaceDocument: (_doc: unknown, chunksArg: unknown[]) =>
+        Effect.sync(() => {
+          persistedChunks = chunksArg;
+        }),
+      vectorSearch: () => Effect.succeed([]),
+      ftsSearch: () => Effect.succeed([]),
+      getExpandedContext: () =>
+        Effect.succeed({ content: "", startChunk: "", endChunk: "" }),
+      getStats: () =>
+        Effect.succeed({ documents: 0, chunks: 0, embeddings: 0 }),
+      countChunksByDocumentIds: () => Effect.succeed({}),
+      repair: () =>
+        Effect.succeed({
+          orphanedChunks: 0,
+          orphanedEmbeddings: 0,
+          zeroVectorEmbeddings: 0,
+        }),
+      checkpoint: () => Effect.void,
+      dumpDataDir: () => Effect.succeed(new Blob()),
+      streamEmbeddings: async function* () {},
+      bulkInsertClusterAssignments: () => Effect.void,
+    };
+
+    const embeddingProvider = {
+      provider: "ollama" as const,
+      checkHealth: () => Effect.void,
+      embed: () => Effect.succeed([1, 0, 0]),
+      embedBatch: (texts: string[]) =>
+        Effect.sync(() => {
+          embeddedTexts = texts;
+          return texts.map(() => [1, 0, 0]);
+        }),
+    };
+
+    const markdownExtractor = {
+      extractFrontmatter: () => Effect.succeed({}),
+      extract: () =>
+        Effect.succeed({ frontmatter: {}, sections: [], sectionCount: 0 }),
+      process: () =>
+        Effect.succeed({
+          pageCount: 1,
+          chunks: [{ page: 1, chunkIndex: 0, content: "Text chunk" }],
+        }),
+    };
+
+    const deps = Layer.mergeAll(
+      Layer.succeed(Database, database as any),
+      Layer.succeed(EmbeddingProvider, embeddingProvider as any),
+      Layer.succeed(MarkdownExtractor, markdownExtractor as any),
+      Layer.succeed(PDFExtractor, {} as any),
+      Layer.succeed(OfficeExtractor, {} as any),
+      Layer.succeed(VisualEnrichment, {
+        enrichDocument: () =>
+          Effect.succeed([
+            {
+              page: 1,
+              chunkIndex: 0,
+              content: "Visual: Page 1, image 1\n\nDescription:\nA diagram.",
+            },
+          ]),
+      } as any),
+    );
+
+    const program = Effect.gen(function* () {
+      const library = yield* PDFLibrary;
+      return yield* library.add(
+        docPath,
+        new AddOptions({ title: "Doc", visuals: true }),
+      );
+    });
+
+    await Effect.runPromise(
+      program.pipe(
+        Effect.provide(
+          PDFLibrary.DefaultWithoutDependencies.pipe(Layer.provide(deps)),
+        ),
+      ),
+    );
+
+    expect(persistedChunks).toHaveLength(2);
+    expect(persistedChunks[1].content).toContain("Visual: Page 1, image 1");
+    expect(embeddedTexts[1]).toContain("A diagram.");
   });
 
   test("reindex uses stored embedding content when available", async () => {
@@ -340,6 +451,9 @@ describe("PDFLibrary.add", () => {
       Layer.succeed(MarkdownExtractor, {} as any),
       Layer.succeed(PDFExtractor, {} as any),
       Layer.succeed(OfficeExtractor, {} as any),
+      Layer.succeed(VisualEnrichment, {
+        enrichDocument: () => Effect.succeed([]),
+      } as any),
     );
 
     const program = Effect.gen(function* () {
