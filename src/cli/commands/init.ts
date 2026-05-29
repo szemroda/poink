@@ -1,0 +1,114 @@
+import { Effect } from "effect";
+import { existsSync, mkdirSync, readFileSync } from "fs";
+import { dirname, join } from "path";
+import { fileURLToPath } from "url";
+import { LibraryConfig } from "../../index.js";
+import {
+  TaxonomyService,
+  TaxonomyServiceImpl,
+  type TaxonomyJSON,
+} from "../../services/TaxonomyService.js";
+import {
+  runCommandWithContext,
+  type GlobalCLIOptions,
+} from "../runner.js";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
+interface InitCommandOptions extends Record<string, unknown> {}
+
+export function runInitCommand(
+  args: string[],
+  globals: GlobalCLIOptions,
+  options: InitCommandOptions = {},
+) {
+  return runCommandWithContext(args, globals, ({ Console, library }) =>
+    Effect.gen(function* () {
+      const config = LibraryConfig.fromEnv();
+      yield* Console.log("Initializing poink...\n");
+
+      if (!existsSync(config.libraryPath)) {
+        mkdirSync(config.libraryPath, { recursive: true });
+        yield* Console.log(`OK Created library directory: ${config.libraryPath}`);
+      } else {
+        yield* Console.log(`OK Library directory exists: ${config.libraryPath}`);
+      }
+
+      yield* Console.log("OK Database initialized");
+
+      const ollamaResult = yield* Effect.either(library.checkReady());
+      if (ollamaResult._tag === "Right") {
+        yield* Console.log("OK Ollama is ready");
+      } else {
+        yield* Console.log(
+          "WARN Ollama not available - run 'ollama serve' and pull models:",
+        );
+        yield* Console.log("    ollama pull mxbai-embed-large");
+        yield* Console.log("    ollama pull llama3.2:3b");
+      }
+
+      const taxonomyLayer = TaxonomyServiceImpl.make({
+        url: `file:${config.dbPath}`,
+      });
+      const seedResult = yield* Effect.either(
+        Effect.gen(function* () {
+          const taxonomy = yield* TaxonomyService;
+          const concepts = yield* taxonomy.listConcepts();
+
+          if (concepts.length === 0) {
+            const taxonomyFile = join(__dirname, "..", "..", "data", "taxonomy.json");
+            if (existsSync(taxonomyFile)) {
+              const taxonomyData = JSON.parse(
+                readFileSync(taxonomyFile, "utf-8"),
+              ) as TaxonomyJSON;
+              yield* taxonomy.seedFromJSON(taxonomyData);
+              yield* Console.log(
+                `OK Seeded taxonomy with ${taxonomyData.concepts.length} concepts`,
+              );
+            } else {
+              yield* Console.log(
+                "WARN No taxonomy.json found - skipping taxonomy seed",
+              );
+            }
+          } else {
+            yield* Console.log(
+              `OK Taxonomy already has ${concepts.length} concepts`,
+            );
+          }
+        }).pipe(Effect.provide(taxonomyLayer)),
+      );
+
+      if (seedResult._tag === "Left") {
+        yield* Console.log(
+          "WARN Taxonomy seed failed - you can seed manually with 'poink taxonomy seed'",
+        );
+      }
+
+      const stats = yield* library.stats();
+      yield* Console.log("\nLibrary Status:");
+      yield* Console.log(`   Documents:  ${stats.documents}`);
+      yield* Console.log(`   Chunks:     ${stats.chunks}`);
+      yield* Console.log(`   Embeddings: ${stats.embeddings}`);
+
+      yield* Console.log("\nReady! Add documents with:");
+      yield* Console.log("   poink add <file.pdf|file.docx|file.odt> --enrich");
+      yield* Console.log("   poink ingest <directory> --enrich");
+
+      return {
+        resultPayload: {
+          libraryPath: config.libraryPath,
+          dbPath: config.dbPath,
+          ollamaReady: ollamaResult._tag === "Right",
+          taxonomySeedOk: seedResult._tag === "Right",
+          stats,
+        },
+        agentResult: {
+          _tag: "stats" as const,
+          documents: stats.documents,
+          chunks: stats.chunks,
+          embeddings: stats.embeddings,
+        },
+      };
+    }),
+    options);
+}

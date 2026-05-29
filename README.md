@@ -280,8 +280,8 @@ poink ingest ~/docs --visuals
 # Process only first N files (for testing)
 poink ingest ~/papers --enrich --sample 10
 
-# Disable TUI for simple output
-poink ingest ~/papers --enrich --no-tui
+# Disable line progress output
+poink ingest ~/papers --enrich --no-progress
 ```
 
 **Supported formats:**
@@ -357,9 +357,9 @@ poink config set models.enrichment.provider openai-codex
 poink config set models.enrichment.model gpt-5.5
 poink config set models.judge.provider openai-codex
 poink config set models.judge.model gpt-5.5
-poink --format text providers login --provider openai-codex
+poink providers login --provider openai-codex --format text
 # For headless devices, use Codex device authorization:
-poink --format text providers login --provider openai-codex --device-auth
+poink providers login --provider openai-codex --device-auth --format text
 
 # Use OpenRouter
 poink config set models.enrichment.provider openrouter
@@ -673,9 +673,9 @@ poink config set models.enrichment.model gpt-5.5
 poink config set models.judge.provider openai-codex
 poink config set models.judge.model gpt-5.5
 
-poink --format text providers login --provider openai-codex
+poink providers login --provider openai-codex --format text
 # For headless devices, use Codex device authorization:
-poink --format text providers login --provider openai-codex --device-auth
+poink providers login --provider openai-codex --device-auth --format text
 poink doctor
 ```
 

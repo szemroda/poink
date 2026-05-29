@@ -1,11 +1,12 @@
-import { describe, expect, test } from "vitest";
+﻿import { describe, expect, test } from "vitest";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { createServer } from "net";
 import { tmpdir } from "os";
 import { join } from "path";
 import { Client } from "@modelcontextprotocol/sdk/client";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { buildCliAppLayer, createCliAppLayer } from "./cli/index.js";
 
 function nodeTsxArgs(args: string[]): string[] {
   return ["--import", "tsx", "src/cli.ts", ...args];
@@ -201,7 +202,7 @@ describe("Node Build Smoke", () => {
           throw new Error(build.stderr || build.stdout);
         }
 
-        const proc = spawnSync(process.execPath, ["dist/cli.js", "--format", "json", "--help"], {
+        const proc = spawnSync(process.execPath, ["dist/cli.js", "help", "--format", "json"], {
           env: {
             ...process.env,
             ...envForConfig(configPath),
@@ -305,27 +306,27 @@ describe("CLI JSON Envelope Contract", () => {
       expect(() => JSON.parse(res.stdout)).toThrow();
     }));
 
-  test("invalid --format returns a text error by default", () =>
+  test("root-level --format is rejected by default", () =>
     withTempLibraryPath((libraryPath) => {
       const configPath = join(libraryPath, "config.json");
       writeTestConfig(configPath, libraryPath);
 
-      const res = runCli(["--format", "wat", "stats"], {
+      const res = runCli(["--format", "json", "stats"], {
         env: envForConfig(configPath),
       });
 
       expect(res.exitCode).not.toBe(0);
       expect(res.stdout).toBe("");
       expect(res.stderr).toContain("INVALID_FLAG");
-      expect(res.stderr).toContain("Invalid --format value");
+      expect(res.stderr).toContain("unknown option");
     }));
 
-  test("invalid --format returns a structured error envelope when configured for JSON", () =>
+  test("root-level --format returns a structured error envelope when configured for JSON", () =>
     withTempLibraryPath((libraryPath) => {
       const configPath = join(libraryPath, "config.json");
       writeTestConfig(configPath, libraryPath, "ollama", "json");
 
-      const res = runCli(["--format", "wat", "stats"], {
+      const res = runCli(["--format", "text", "stats"], {
         env: envForConfig(configPath),
       });
 
@@ -335,6 +336,40 @@ describe("CLI JSON Envelope Contract", () => {
       expect(obj.protocolVersion).toBe(1);
       expect(obj.error).toBeDefined();
       expect(obj.error.code).toBe("INVALID_FLAG");
+    }));
+
+  test("unknown command option returns a structured INVALID_FLAG envelope", () =>
+    withTempLibraryPath((libraryPath) => {
+      const configPath = join(libraryPath, "config.json");
+      writeTestConfig(configPath, libraryPath);
+
+      const res = runCli(["stats", "--bogus", "--format", "json"], {
+        env: envForConfig(configPath),
+      });
+
+      expect(res.exitCode).not.toBe(0);
+      const obj = JSON.parse(res.stdout);
+      expect(obj.ok).toBe(false);
+      expect(obj.command).toBe("stats");
+      expect(obj.error.code).toBe("INVALID_FLAG");
+      expect(String(obj.error.message)).toContain("--bogus");
+    }));
+
+  test("missing required command argument returns a structured INVALID_ARGS envelope", () =>
+    withTempLibraryPath((libraryPath) => {
+      const configPath = join(libraryPath, "config.json");
+      writeTestConfig(configPath, libraryPath);
+
+      const res = runCli(["search", "--format", "json"], {
+        env: envForConfig(configPath),
+      });
+
+      expect(res.exitCode).not.toBe(0);
+      const obj = JSON.parse(res.stdout);
+      expect(obj.ok).toBe(false);
+      expect(obj.command).toBe("search");
+      expect(obj.error.code).toBe("INVALID_ARGS");
+      expect(String(obj.error.message)).toContain("query");
     }));
 
   test("rechunk flag validation: --max-docs requires a numeric value", () =>
@@ -396,12 +431,12 @@ describe("CLI JSON Envelope Contract", () => {
         (c) => c.name === "providers",
       );
       expect(providersCommand?.argv).toEqual([
-        "--format",
-        "text",
         "providers",
         "login",
         "--provider",
         "openai-codex",
+        "--format",
+        "text",
         "[--device-auth]",
       ]);
 
@@ -455,7 +490,7 @@ describe("CLI JSON Envelope Contract", () => {
       expect(obj.error.code).toBe("INVALID_ARGS");
       expect(String(obj.error.message)).toContain("--format text");
       expect(obj.error.details.hint).toBe(
-        "poink --format text providers login --provider openai-codex",
+        "poink providers login --provider openai-codex --format text",
       );
     }));
 
@@ -503,7 +538,7 @@ describe("CLI JSON Envelope Contract", () => {
         expect(obj.ok).toBe(true);
         expect(obj.command).toBe("help");
         expect(obj.result.help).toContain(
-          "poink --format text providers login --provider openai-codex",
+          "poink providers login --provider openai-codex --format text",
         );
       }
     }));
@@ -987,6 +1022,82 @@ describe("CLI JSON Envelope Contract", () => {
       expect(obj.result.libraryPath).toBe(libraryPath);
       expect(obj.result.dbPath).toBe(join(libraryPath, "library.db"));
     }));
+
+  test("ingest with JSON output emits a single machine-readable envelope", () =>
+    withTempLibraryPath((libraryRoot) => {
+      const libraryPath = join(libraryRoot, "library");
+      const emptyDocs = join(libraryRoot, "empty-docs");
+      const configPath = join(libraryRoot, "config.json");
+      writeTestConfig(configPath, libraryPath);
+      mkdirSync(emptyDocs);
+
+      const res = runCli(["ingest", emptyDocs, "--format", "json", "--quiet"], {
+        env: envForConfig(configPath),
+      });
+
+      expect(res.exitCode).toBe(0);
+      const obj = JSON.parse(res.stdout);
+      expect(obj.ok).toBe(true);
+      expect(obj.command).toBe("ingest");
+      expect(obj.result.foundFiles).toBe(0);
+    }));
+
+  test("ingest --no-recursive does not scan nested directories", () =>
+    withTempLibraryPath((libraryRoot) => {
+      const libraryPath = join(libraryRoot, "library");
+      const docs = join(libraryRoot, "docs");
+      const nested = join(docs, "nested");
+      const configPath = join(libraryRoot, "config.json");
+      writeTestConfig(configPath, libraryPath);
+      mkdirSync(nested, { recursive: true });
+      writeFileSync(join(nested, "note.md"), "# Nested note\n\nNot discovered.", "utf-8");
+
+      const res = runCli(["ingest", docs, "--no-recursive", "--format", "json", "--quiet"], {
+        env: envForConfig(configPath),
+      });
+
+      expect(res.exitCode).toBe(0);
+      const obj = JSON.parse(res.stdout);
+      expect(obj.ok).toBe(true);
+      expect(obj.command).toBe("ingest");
+      expect(obj.result.foundFiles).toBe(0);
+    }));
+
+  test("CLI package dependencies do not include Ink or React", () => {
+    const pkg = JSON.parse(readFileSync("package.json", "utf-8"));
+    expect(pkg.dependencies?.ink).toBeUndefined();
+    expect(pkg.dependencies?.["ink-spinner"]).toBeUndefined();
+    expect(pkg.dependencies?.react).toBeUndefined();
+    expect(pkg.devDependencies?.["@types/react"]).toBeUndefined();
+  });
+
+  test("public CLI module exports createCliAppLayer alias", () => {
+    expect(createCliAppLayer).toBe(buildCliAppLayer);
+  });
+
+  test("commander refactor has concrete module entrypoints for planned CLI domains", () => {
+    for (const path of [
+      "src/cli/mcp.ts",
+      "src/cli/serve.ts",
+      "src/cli/runtime.ts",
+      "src/cli/envelope.ts",
+      "src/cli/health.ts",
+      "src/cli/ingestProgress.ts",
+      "src/cli/commands/capabilities.ts",
+      "src/cli/commands/add.ts",
+      "src/cli/commands/search.ts",
+      "src/cli/commands/taxonomy.ts",
+      "src/cli/commands/doctor.ts",
+      "src/cli/commands/init.ts",
+      "src/cli/commands/repair.ts",
+      "src/cli/commands/ingest.ts",
+      "src/cli/commands/reindex.ts",
+      "src/cli/commands/rechunk.ts",
+      "src/cli/commands/unsupported.ts",
+    ]) {
+      expect(existsSync(path), path).toBe(true);
+    }
+  });
 });
 
 describe("MCP Tool Output Contract", () => {
@@ -1123,6 +1234,51 @@ describe("HTTP MCP Server", () => {
         expect(exit.code).toBe(1);
         expect(exit.signal).toBeNull();
         expect(stderr).toContain("Refusing to bind HTTP MCP server");
+      }),
+    30000,
+  );
+
+  test(
+    "serve refusal is a structured envelope in JSON mode",
+    async () =>
+      withTempLibraryPathAsync(async (libraryPath) => {
+        const configPath = join(libraryPath, "config.json");
+        writeTestConfig(configPath, libraryPath);
+
+        const port = await getAvailablePort();
+        const env = {
+          ...process.env,
+          ...envForConfig(configPath),
+        } as Record<string, string>;
+        delete env.POINK_SERVER_TOKEN;
+
+        const proc = spawnSync(
+          process.execPath,
+          nodeTsxArgs([
+            "serve",
+            "--host",
+            "0.0.0.0",
+            "--port",
+            String(port),
+            "--format",
+            "json",
+            "--quiet",
+          ]),
+          {
+            cwd: process.cwd(),
+            encoding: "utf-8",
+            env,
+          },
+        );
+
+        expect(proc.status).toBe(1);
+        expect(proc.stderr).toBe("");
+        const obj = JSON.parse(proc.stdout);
+        expect(obj.ok).toBe(false);
+        expect(obj.command).toBe("serve");
+        expect(obj.protocolVersion).toBe(1);
+        expect(obj.error.code).toBe("INVALID_CONFIG");
+        expect(String(obj.error.message)).toContain("Refusing to bind HTTP MCP server");
       }),
     30000,
   );

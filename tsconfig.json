@@ -7,8 +7,7 @@
     "strict": true,
     "skipLibCheck": true,
     "types": ["node"],
-    "resolveJsonModule": true,
-    "jsx": "react-jsx"
+    "resolveJsonModule": true
   },
   "include": ["src/**/*"],
   "exclude": ["node_modules"]

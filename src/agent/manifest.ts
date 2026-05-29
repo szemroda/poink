@@ -54,7 +54,7 @@ export function renderHelp(stats?: {
       poink add <url> [--max-file-size 100mb] [--download-timeout 30s] [--max-redirects 5]
       poink remove "<id|title>"
       poink tag "<id|title>" "tag1,tag2"
-      poink ingest <dir> [--enrich] [--auto-tag] [--recursive]
+      poink ingest <dir> [--enrich] [--auto-tag] [--recursive] [--no-progress]
 
     ### Maintenance
       poink capabilities
@@ -64,7 +64,7 @@ export function renderHelp(stats?: {
       poink doctor [--fix]
       poink repair
       poink config show|get|set [--show-secrets]
-      poink --format text providers login --provider openai-codex [--device-auth]
+      poink providers login --provider openai-codex --format text [--device-auth]
       poink reindex [--clean]
       poink rechunk [--dry-run] [--include-missing] [--max-docs N] [--max-chunks N]
 
