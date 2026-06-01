@@ -261,6 +261,11 @@ export function parseCommandLine(
     setResult,
   );
 
+  const setup = program.command("setup");
+  executable(setup, rawArgs, configuredDefaultFormat, setResult);
+  executable(setup.command("init").option("--dry-run"), rawArgs, configuredDefaultFormat, setResult);
+  executable(setup.command("config").option("--dry-run"), rawArgs, configuredDefaultFormat, setResult);
+
   executable(program.command("doctor").option("--fix"), rawArgs, configuredDefaultFormat, setResult);
   executable(program.command("check"), rawArgs, configuredDefaultFormat, setResult);
   executable(program.command("init"), rawArgs, configuredDefaultFormat, setResult);

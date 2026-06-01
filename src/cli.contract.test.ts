@@ -427,6 +427,7 @@ describe("CLI JSON Envelope Contract", () => {
       expect(commandNames.has("mcp")).toBe(true);
       expect(commandNames.has("serve")).toBe(true);
       expect(commandNames.has("providers")).toBe(true);
+      expect(commandNames.has("setup")).toBe(false);
       const providersCommand = (result.commands as Array<any>).find(
         (c) => c.name === "providers",
       );
@@ -455,6 +456,60 @@ describe("CLI JSON Envelope Contract", () => {
       expect(docSchema.required).toContain("title");
       expect(docSchema.required).toContain("path");
       expect(docSchema.required).toContain("tags");
+    }));
+
+  test("setup lists available subcommands without running the wizard", () =>
+    withTempLibraryPath((libraryPath) => {
+      const configPath = join(libraryPath, "config.json");
+      writeTestConfig(configPath, libraryPath);
+
+      const res = runCli(["setup", "--format", "text"], {
+        env: envForConfig(configPath),
+      });
+
+      expect(res.exitCode).toBe(0);
+      expect(res.stdout).toContain("Usage: poink setup <command>");
+      expect(res.stdout).toContain("Initialize Poink and run the configuration wizard");
+      expect(res.stdout).toContain("Run the configuration wizard for an initialized library");
+    }));
+
+  test("setup interactive commands require text format, including dry-run", () =>
+    withTempLibraryPath((libraryPath) => {
+      const configPath = join(libraryPath, "config.json");
+      writeTestConfig(configPath, libraryPath);
+
+      for (const argv of [
+        ["setup", "init", "--format", "json"],
+        ["setup", "config", "--format", "json"],
+        ["setup", "init", "--dry-run", "--format", "json"],
+        ["setup", "config", "--dry-run", "--format", "json"],
+      ]) {
+        const res = runCli(argv, {
+          env: envForConfig(configPath),
+        });
+
+        expect(res.exitCode).not.toBe(0);
+        const obj = JSON.parse(res.stdout);
+        expect(obj.ok).toBe(false);
+        expect(obj.command).toBe("setup");
+        expect(obj.error.code).toBe("INVALID_ARGS");
+        expect(String(obj.error.message)).toContain("--format text");
+      }
+    }));
+
+  test("setup config fails before prompting when library is not initialized", () =>
+    withTempLibraryPath((libraryRoot) => {
+      const libraryPath = join(libraryRoot, "missing-library");
+      const configPath = join(libraryRoot, "config.json");
+      writeTestConfig(configPath, libraryPath);
+
+      const res = runCli(["setup", "config", "--format", "text"], {
+        env: envForConfig(configPath),
+      });
+
+      expect(res.exitCode).not.toBe(0);
+      expect(res.stderr).toContain("NOT_INITIALIZED");
+      expect(res.stderr).toContain("poink setup init");
     }));
 
   test("capabilities reports configured default format separately from --format", () =>
@@ -528,7 +583,7 @@ describe("CLI JSON Envelope Contract", () => {
       const configPath = join(libraryPath, "config.json");
       writeTestConfig(configPath, libraryPath);
 
-      for (const command of ["config", "providers"]) {
+      for (const command of ["config", "providers", "setup"]) {
         const res = runCli([command, "--help", "--format", "json"], {
           env: envForConfig(configPath),
         });
@@ -540,6 +595,7 @@ describe("CLI JSON Envelope Contract", () => {
         expect(obj.result.help).toContain(
           "poink providers login --provider openai-codex --format text",
         );
+        expect(obj.result.help).toContain("poink setup init --format text");
       }
     }));
 
@@ -1089,6 +1145,7 @@ describe("CLI JSON Envelope Contract", () => {
       "src/cli/commands/taxonomy.ts",
       "src/cli/commands/doctor.ts",
       "src/cli/commands/init.ts",
+      "src/cli/commands/setup.ts",
       "src/cli/commands/repair.ts",
       "src/cli/commands/ingest.ts",
       "src/cli/commands/reindex.ts",

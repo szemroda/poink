@@ -23,6 +23,8 @@ export { runRepairCommand } from "./commands/repair.js";
 import { runRepairCommand } from "./commands/repair.js";
 export { runSearchCommand } from "./commands/search.js";
 import { runSearchCommand } from "./commands/search.js";
+export { runSetupCommand } from "./commands/setup.js";
+import { runSetupCommand } from "./commands/setup.js";
 export { runTaxonomyCommand } from "./commands/taxonomy.js";
 import { runTaxonomyCommand } from "./commands/taxonomy.js";
 export { runUnsupportedCommand } from "./commands/unsupported.js";
@@ -143,6 +145,8 @@ export function dispatchCommand(
       return runCommandWithContext(args, globals, ({ Console, format }) =>
         runProvidersCommand(args, format, Console, options),
       options);
+    case "setup":
+      return runSetupCommand(args, globals, options);
     case "chunk":
     case "doc":
     case "page":

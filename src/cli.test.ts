@@ -11,6 +11,7 @@ import {
   shouldCheckpoint,
   parseArgs,
 } from "./cli.js";
+import { selectDefaultModel } from "./cli/commands/setup.js";
 import {
   filenameFromURL,
   getDownloadTargetPath,
@@ -46,6 +47,41 @@ function eventually<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
     clearTimeout(timeout),
   );
 }
+
+describe("setup defaults", () => {
+  test("keeps the current embedding model when provider is unchanged", () => {
+    expect(
+      selectDefaultModel({
+        kind: "embedding",
+        currentProvider: "openai",
+        currentModel: "custom-embedding-model",
+        selectedProvider: "openai",
+      }),
+    ).toBe("custom-embedding-model");
+  });
+
+  test("uses provider embedding defaults when provider changes", () => {
+    expect(
+      selectDefaultModel({
+        kind: "embedding",
+        currentProvider: "ollama",
+        currentModel: "mxbai-embed-large",
+        selectedProvider: "google",
+      }),
+    ).toBe("gemini-embedding-2");
+  });
+
+  test("uses provider language defaults when provider changes", () => {
+    expect(
+      selectDefaultModel({
+        kind: "language",
+        currentProvider: "ollama",
+        currentModel: "llama3.2:3b",
+        selectedProvider: "openrouter",
+      }),
+    ).toBe("openai/gpt-5.4-mini");
+  });
+});
 
 describe("filenameFromURL", () => {
   test("preserves .pdf extension", () => {

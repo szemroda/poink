@@ -25,6 +25,7 @@ export function renderHelp(stats?: {
     ${docCount} documents indexed.
 
     ## Quick Start
+      poink setup init
       poink search "your question here"
 
     ## Commands
@@ -57,6 +58,9 @@ export function renderHelp(stats?: {
       poink ingest <dir> [--enrich] [--auto-tag] [--recursive] [--no-progress]
 
     ### Maintenance
+      poink setup
+      poink setup init --format text
+      poink setup config --format text
       poink capabilities
       poink mcp
       poink serve [--host <host>] [--port <port>] [--auth-token <token>]

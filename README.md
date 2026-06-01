@@ -6,7 +6,7 @@ Local-first **PDF, Markdown, DOCX, and ODT** knowledge base with semantic search
 
 - **PDF + Markdown + Office docs** - Index `.pdf`, `.md`, `.docx`, `.odt`, and `.fodt` files with the same workflow
 - **Local-first by default** - Run with Ollama on your machine when you want no API costs
-- **External provider support** - Use AI Gateway, OpenAI, or OpenRouter for cloud embeddings or enrichment
+- **External provider support** - Use AI Gateway, OpenAI, OpenAI Codex, OpenRouter, Google, or Anthropic for hosted models
 - **AI enrichment** - LLM extracts titles, summaries, tags, and concepts
 - **SKOS taxonomy** - Organize documents with hierarchical concepts
 - **Vector search** - Semantic search via embeddings
@@ -26,20 +26,10 @@ poink started as a fork of the original [pdf-brain](https://github.com/joelhooks
 # 1. Install from npm
 npm install -g poink-cli
 
-# 2. Install Ollama (macOS)
-brew install ollama
+# 2. Guided setup (choose providers, creates DB, seeds starter taxonomy)
+poink setup init
 
-# 3. Pull required models
-ollama pull mxbai-embed-large   # embeddings (required)
-ollama pull llama3.2:3b         # enrichment (optional but recommended)
-
-# 4. Start Ollama
-ollama serve
-
-# 5. Initialize (creates DB + seeds starter taxonomy)
-poink init
-
-# 6. Add your first document
+# 3. Add your first document
 poink add ~/Documents/paper.pdf --enrich
 ```
 
@@ -47,9 +37,17 @@ poink add ~/Documents/paper.pdf --enrich
 
 ### Prerequisites
 
-The default local setup uses **Ollama** for embeddings and optional enrichment. You can also configure AI Gateway, OpenAI, or OpenRouter instead.
+poink requires Node.js 20.17.0 or newer.
 
-poink requires Node.js 20 or newer.
+The setup wizard lets you choose local or hosted providers for embeddings, enrichment, and judging:
+
+- **Ollama** for a local-first setup with no API costs
+- **AI Gateway**, **OpenAI**, **OpenRouter**, or **Google** for hosted embeddings
+- **AI Gateway**, **OpenAI**, **OpenAI Codex**, **OpenRouter**, **Google**, or **Anthropic** for hosted enrichment and judging
+
+If you choose a hosted provider, have the matching API key or environment variable ready. If you choose OpenAI Codex, the wizard can run browser or device-code OAuth after applying your config.
+
+Ollama is only required for the default local setup:
 
 ```bash
 # macOS
@@ -114,7 +112,13 @@ poink check
 # Show library stats
 poink stats
 
-# Initialize library (creates DB, seeds taxonomy)
+# Guided first-time setup
+poink setup init
+
+# Guided reconfiguration for an initialized library
+poink setup config
+
+# Non-interactive initializer for scripts and agents (creates DB, seeds taxonomy)
 poink init
 ```
 
@@ -431,7 +435,7 @@ Create your own `taxonomy.json`:
 }
 ```
 
-Custom taxonomy JSON files can be loaded programmatically through the library API. The CLI currently seeds the bundled starter taxonomy during `poink init`.
+Custom taxonomy JSON files can be loaded programmatically through the library API. The CLI currently seeds the bundled starter taxonomy during `poink setup init` and the non-interactive `poink init`.
 
 ## Configuration
 
@@ -810,7 +814,7 @@ ollama list
 ### "Model not found"
 
 ```bash
-# Pull required models
+# Pull default local models
 ollama pull mxbai-embed-large
 ollama pull llama3.2:3b
 ```

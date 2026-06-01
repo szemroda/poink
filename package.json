@@ -41,6 +41,7 @@
     "@ai-sdk/google": "^3.0.73",
     "@ai-sdk/openai": "^3.0.63",
     "@effect/platform": "^0.96.1",
+    "@inquirer/prompts": "^8.5.2",
     "@libsql/client": "^0.17.3",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@openai/codex": "^0.133.0",
@@ -79,7 +80,7 @@
     "vitest": "^4.1.6"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=20.17.0"
   },
   "lint-staged": {
     "*": "secretlint"
