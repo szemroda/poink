@@ -79,6 +79,14 @@ ollama serve
 npm install -g poink-cli
 ```
 
+### Agent Skill
+
+Install the poink semantic search skill with [skills.sh](https://skills.sh/):
+
+```bash
+npx skills add https://github.com/szemroda/poink --skill poink-semantic-search
+```
+
 ## CLI Reference
 
 ### Output Format
@@ -560,47 +568,47 @@ poink config set models.enrichment.model anthropic/claude-haiku-4-5
 }
 ```
 
-| Setting               | Default                  | Description                          |
-| --------------------- | ------------------------ | ------------------------------------ |
-| `library.path`        | `~/.poink`               | Library storage location             |
-| `chunking.size`       | `2000`                   | Chunk size in characters             |
-| `chunking.overlap`    | `200`                    | Chunk overlap in characters          |
-| `cli.globalFlags.format` | `text`                | Default CLI output format: `text`, `json`, or `ndjson` |
-| `ingest.visuals.enabled` | `false`              | Enable PDF/DOCX visual enrichment by default |
-| `ingest.visuals.maxImageBytes` | `5mb`          | Maximum extracted image size sent for visual enrichment |
-| `ingest.visuals.maxImagesPerDocument` | `100`   | Maximum extracted images described per document |
-| `ingest.urlDownloads.maxFileSize` | `100mb`       | Maximum URL download size. Use a string with `b`, `kb`, `mb`, or `gb` |
-| `ingest.urlDownloads.timeout` | `30s`              | URL download timeout. Use a string with `ms`, `s`, or `m` |
-| `ingest.urlDownloads.maxRedirects` | `5`           | Maximum HTTP redirects followed during URL downloads |
-| `ingest.urlDownloads.allowPrivateNetwork` | `false` | Allow URL downloads from private, loopback, link-local, or reserved networks |
-| `ingest.urlDownloads.allowedPrivateNetworkHosts` | `[]` | Hostname exceptions allowed to resolve to private-network addresses |
-| `models.embedding.provider` | `ollama`          | Embedding provider                   |
-| `models.embedding.model` | `mxbai-embed-large`   | Embedding model                      |
-| `models.enrichment.provider` | `ollama`         | LLM provider                         |
-| `models.enrichment.model` | `llama3.2:3b`       | Model for document enrichment        |
-| `models.enrichment.reasoning` | -              | Optional reasoning level: `low`, `medium`, `high`, `none`, or `null` for provider default |
-| `models.judge.provider` | `ollama`              | Provider for concept deduplication   |
-| `models.judge.model`  | `llama3.2:3b`            | Model for judging duplicate concepts |
-| `models.judge.reasoning` | -                   | Optional reasoning level: `low`, `medium`, `high`, `none`, or `null` for provider default |
-| `providers.ollama.baseUrl` | `http://localhost:11434` | Ollama API endpoint             |
-| `providers.ollama.autoPull` | `true`            | Auto-pull missing Ollama models when supported |
-| `providers.gateway.apiKey` | -                  | AI Gateway API key                   |
-| `providers.openai.apiKey` | -                   | OpenAI API key                       |
-| `providers.openai.baseUrl` | `https://api.openai.com/v1` | Optional OpenAI-compatible base URL |
-| `providers.openrouter.apiKey` | -               | OpenRouter API key                   |
-| `providers.openrouter.baseUrl` | `https://openrouter.ai/api/v1` | Optional OpenRouter API base URL |
-| `providers.google.apiKey` | -                   | Google Generative AI API key         |
-| `providers.google.baseUrl` | `https://generativelanguage.googleapis.com/v1beta` | Optional Google Generative AI base URL |
-| `providers.anthropic.apiKey` | -                | Anthropic API key                    |
-| `providers.anthropic.baseUrl` | `https://api.anthropic.com/v1` | Optional Anthropic API base URL |
-| `storage.backend`     | `libsql`                 | Storage backend: `libsql` or `qdrant` |
-| `storage.qdrant.url`  | `http://localhost:6333`  | Qdrant endpoint when using Qdrant    |
-| `storage.qdrant.collection` | `poink`           | Qdrant collection prefix             |
-| `server.host`         | `127.0.0.1`              | Host/interface for `poink serve` |
-| `server.port`         | `3838`                   | HTTP port for `poink serve`      |
-| `server.auth.enabled` | `false`                  | Require bearer auth on `/mcp`        |
-| `server.auth.token`   | -                        | Bearer token for `/mcp`              |
-| `server.auth.tokenEnv` | `POINK_SERVER_TOKEN`    | Environment variable for bearer token |
+| Setting                                          | Default                                            | Description                                                                               |
+| ------------------------------------------------ | -------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| `library.path`                                   | `~/.poink`                                         | Library storage location                                                                  |
+| `chunking.size`                                  | `2000`                                             | Chunk size in characters                                                                  |
+| `chunking.overlap`                               | `200`                                              | Chunk overlap in characters                                                               |
+| `cli.globalFlags.format`                         | `text`                                             | Default CLI output format: `text`, `json`, or `ndjson`                                    |
+| `ingest.visuals.enabled`                         | `false`                                            | Enable PDF/DOCX visual enrichment by default                                              |
+| `ingest.visuals.maxImageBytes`                   | `5mb`                                              | Maximum extracted image size sent for visual enrichment                                   |
+| `ingest.visuals.maxImagesPerDocument`            | `100`                                              | Maximum extracted images described per document                                           |
+| `ingest.urlDownloads.maxFileSize`                | `100mb`                                            | Maximum URL download size. Use a string with `b`, `kb`, `mb`, or `gb`                     |
+| `ingest.urlDownloads.timeout`                    | `30s`                                              | URL download timeout. Use a string with `ms`, `s`, or `m`                                 |
+| `ingest.urlDownloads.maxRedirects`               | `5`                                                | Maximum HTTP redirects followed during URL downloads                                      |
+| `ingest.urlDownloads.allowPrivateNetwork`        | `false`                                            | Allow URL downloads from private, loopback, link-local, or reserved networks              |
+| `ingest.urlDownloads.allowedPrivateNetworkHosts` | `[]`                                               | Hostname exceptions allowed to resolve to private-network addresses                       |
+| `models.embedding.provider`                      | `ollama`                                           | Embedding provider                                                                        |
+| `models.embedding.model`                         | `mxbai-embed-large`                                | Embedding model                                                                           |
+| `models.enrichment.provider`                     | `ollama`                                           | LLM provider                                                                              |
+| `models.enrichment.model`                        | `llama3.2:3b`                                      | Model for document enrichment                                                             |
+| `models.enrichment.reasoning`                    | -                                                  | Optional reasoning level: `low`, `medium`, `high`, `none`, or `null` for provider default |
+| `models.judge.provider`                          | `ollama`                                           | Provider for concept deduplication                                                        |
+| `models.judge.model`                             | `llama3.2:3b`                                      | Model for judging duplicate concepts                                                      |
+| `models.judge.reasoning`                         | -                                                  | Optional reasoning level: `low`, `medium`, `high`, `none`, or `null` for provider default |
+| `providers.ollama.baseUrl`                       | `http://localhost:11434`                           | Ollama API endpoint                                                                       |
+| `providers.ollama.autoPull`                      | `true`                                             | Auto-pull missing Ollama models when supported                                            |
+| `providers.gateway.apiKey`                       | -                                                  | AI Gateway API key                                                                        |
+| `providers.openai.apiKey`                        | -                                                  | OpenAI API key                                                                            |
+| `providers.openai.baseUrl`                       | `https://api.openai.com/v1`                        | Optional OpenAI-compatible base URL                                                       |
+| `providers.openrouter.apiKey`                    | -                                                  | OpenRouter API key                                                                        |
+| `providers.openrouter.baseUrl`                   | `https://openrouter.ai/api/v1`                     | Optional OpenRouter API base URL                                                          |
+| `providers.google.apiKey`                        | -                                                  | Google Generative AI API key                                                              |
+| `providers.google.baseUrl`                       | `https://generativelanguage.googleapis.com/v1beta` | Optional Google Generative AI base URL                                                    |
+| `providers.anthropic.apiKey`                     | -                                                  | Anthropic API key                                                                         |
+| `providers.anthropic.baseUrl`                    | `https://api.anthropic.com/v1`                     | Optional Anthropic API base URL                                                           |
+| `storage.backend`                                | `libsql`                                           | Storage backend: `libsql` or `qdrant`                                                     |
+| `storage.qdrant.url`                             | `http://localhost:6333`                            | Qdrant endpoint when using Qdrant                                                         |
+| `storage.qdrant.collection`                      | `poink`                                            | Qdrant collection prefix                                                                  |
+| `server.host`                                    | `127.0.0.1`                                        | Host/interface for `poink serve`                                                          |
+| `server.port`                                    | `3838`                                             | HTTP port for `poink serve`                                                               |
+| `server.auth.enabled`                            | `false`                                            | Require bearer auth on `/mcp`                                                             |
+| `server.auth.token`                              | -                                                  | Bearer token for `/mcp`                                                                   |
+| `server.auth.tokenEnv`                           | `POINK_SERVER_TOKEN`                               | Environment variable for bearer token                                                     |
 
 Embedding dimensions are not user configuration. poink derives the vector
 dimension from embeddings returned by the configured provider and records it in
@@ -615,17 +623,17 @@ unsupported combinations are left for the provider to accept, ignore, or reject.
 
 ### Environment Variables
 
-| Variable             | Default                    | Description              |
-| -------------------- | -------------------------- | ------------------------ |
-| `POINK_CONFIG`       | `~/.config/poink/config.json` | Config file path      |
-| `AI_GATEWAY_API_KEY` | -                          | API key for AI Gateway   |
-| `OPENAI_API_KEY`     | -                          | API key for OpenAI       |
-| `OPENROUTER_API_KEY` | -                          | API key for OpenRouter   |
-| `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | Optional OpenRouter base URL |
-| `GOOGLE_GENERATIVE_AI_API_KEY` | -              | API key for Google Generative AI |
-| `ANTHROPIC_API_KEY`  | -                          | API key for Anthropic    |
-| `POINK_LOG_LEVEL` | `silent`                  | stderr logging verbosity |
-| `POINK_QUERY_EMBED_CACHE_SIZE` | `256`        | Query embedding LRU cache size (0 disables) |
+| Variable                       | Default                        | Description                                 |
+| ------------------------------ | ------------------------------ | ------------------------------------------- |
+| `POINK_CONFIG`                 | `~/.config/poink/config.json`  | Config file path                            |
+| `AI_GATEWAY_API_KEY`           | -                              | API key for AI Gateway                      |
+| `OPENAI_API_KEY`               | -                              | API key for OpenAI                          |
+| `OPENROUTER_API_KEY`           | -                              | API key for OpenRouter                      |
+| `OPENROUTER_BASE_URL`          | `https://openrouter.ai/api/v1` | Optional OpenRouter base URL                |
+| `GOOGLE_GENERATIVE_AI_API_KEY` | -                              | API key for Google Generative AI            |
+| `ANTHROPIC_API_KEY`            | -                              | API key for Anthropic                       |
+| `POINK_LOG_LEVEL`              | `silent`                       | stderr logging verbosity                    |
+| `POINK_QUERY_EMBED_CACHE_SIZE` | `256`                          | Query embedding LRU cache size (0 disables) |
 
 ### AI Gateway
 
@@ -773,37 +781,37 @@ tools return a JSON envelope in `structuredContent` and in their text content.
 
 ### Document Tools
 
-| Tool                  | Description                                   |
-| --------------------- | --------------------------------------------- |
-| `search`        | Unified semantic search (docs + concepts)     |
-| `search_pack`   | Run multiple searches and aggregate results   |
-| `list`          | List documents, optionally filter by tag      |
-| `read`          | Get document details and metadata             |
-| `chunk_get`     | Fetch one chunk by chunk ID                   |
-| `doc_chunks`    | List chunk IDs for a document                 |
-| `page_get`      | Reconstruct page text from chunks             |
-| `stats`         | Library statistics (docs, chunks, embeddings) |
+| Tool          | Description                                   |
+| ------------- | --------------------------------------------- |
+| `search`      | Unified semantic search (docs + concepts)     |
+| `search_pack` | Run multiple searches and aggregate results   |
+| `list`        | List documents, optionally filter by tag      |
+| `read`        | Get document details and metadata             |
+| `chunk_get`   | Fetch one chunk by chunk ID                   |
+| `doc_chunks`  | List chunk IDs for a document                 |
+| `page_get`    | Reconstruct page text from chunks             |
+| `stats`       | Library statistics (docs, chunks, embeddings) |
 
 ### Taxonomy Tools
 
-| Tool                        | Description                              |
-| --------------------------- | ---------------------------------------- |
-| `taxonomy_list`   | List taxonomy concept summaries |
-| `taxonomy_tree`   | Render the full taxonomy tree or a subtree |
-| `taxonomy_get`    | Get concept details and relationships |
+| Tool              | Description                                      |
+| ----------------- | ------------------------------------------------ |
+| `taxonomy_list`   | List taxonomy concept summaries                  |
+| `taxonomy_tree`   | Render the full taxonomy tree or a subtree       |
+| `taxonomy_get`    | Get concept details and relationships            |
 | `taxonomy_search` | Search concepts by label or embedding similarity |
 
 ### Discovery Tools
 
-| Tool                    | Description               |
-| ----------------------- | ------------------------- |
-| `capabilities` | Describe commands, flags, and formats |
+| Tool            | Description                            |
+| --------------- | -------------------------------------- |
+| `capabilities`  | Describe commands, flags, and formats  |
 | `config_schema` | Retrieve the configuration JSON Schema |
 
 ### Utility Tools
 
-| Tool               | Description                   |
-| ------------------ | ----------------------------- |
+| Tool      | Description                          |
+| --------- | ------------------------------------ |
 | `doctor`  | Run health checks and optional fixes |
 | `rechunk` | Rebuild chunks and embeddings        |
 
