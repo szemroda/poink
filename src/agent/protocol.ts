@@ -61,19 +61,60 @@ export type AgentEnvelope<T> =
   | {
       ok: true;
       command: string;
-      protocolVersion: typeof POINK_PROTOCOL_VERSION;
       result: T;
+      protocolVersion?: typeof POINK_PROTOCOL_VERSION;
       nextActions?: NextAction[];
       meta?: Record<string, unknown>;
     }
   | {
       ok: false;
       command: string;
-      protocolVersion: typeof POINK_PROTOCOL_VERSION;
       error: AgentErrorShape;
+      protocolVersion?: typeof POINK_PROTOCOL_VERSION;
       nextActions?: NextAction[];
       meta?: Record<string, unknown>;
     };
+
+type EnvelopeOptions = {
+  verbose?: boolean;
+  nextActions?: NextAction[];
+  meta?: Record<string, unknown>;
+};
+
+export function makeSuccessEnvelope<T>(
+  command: string,
+  result: T,
+  options: EnvelopeOptions = {},
+): AgentEnvelope<T> {
+  const envelope: AgentEnvelope<T> = { ok: true, command, result };
+  if (options.verbose) {
+    envelope.protocolVersion = POINK_PROTOCOL_VERSION;
+    if (options.nextActions) envelope.nextActions = options.nextActions;
+    if (options.meta) envelope.meta = options.meta;
+  }
+  return envelope;
+}
+
+export function makeErrorEnvelope(
+  command: string,
+  error: AgentErrorShape,
+  options: EnvelopeOptions = {},
+): AgentEnvelope<never> {
+  const envelope: AgentEnvelope<never> = {
+    ok: false,
+    command,
+    error: {
+      code: error.code,
+      message: error.message,
+    },
+  };
+  if (options.verbose) {
+    envelope.protocolVersion = POINK_PROTOCOL_VERSION;
+    if (error.details !== undefined) envelope.error.details = error.details;
+    if (options.meta) envelope.meta = options.meta;
+  }
+  return envelope;
+}
 
 export function toJsonLine(
   value: unknown,

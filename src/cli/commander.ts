@@ -16,8 +16,8 @@ export type ParsedCommandLine = {
     format: OutputFormat;
     configuredDefaultFormat: OutputFormat;
     pretty: boolean;
+    verbose: boolean;
     logLevel: LogLevel;
-    quiet: boolean;
   };
 };
 
@@ -42,8 +42,8 @@ function commandGlobals(
     format: options.format ?? configuredDefaultFormat,
     configuredDefaultFormat,
     pretty: options.pretty === true,
+    verbose: options.verbose === true,
     logLevel: options.logLevel ?? getLogLevel(),
-    quiet: options.quiet === true || options.noHints === true,
   };
 }
 
@@ -54,8 +54,7 @@ function outputOptionsFromRawArgs(rawArgs: string[]): CommandOutputOptions {
   for (let i = 1; i < rawArgs.length; i++) {
     const arg = rawArgs[i]!;
     if (arg === "--pretty") options.pretty = true;
-    else if (arg === "--quiet") options.quiet = true;
-    else if (arg === "--no-hints") options.noHints = true;
+    else if (arg === "--verbose") options.verbose = true;
     else if (arg.startsWith("--format=")) {
       options.format = arg.slice("--format=".length) as OutputFormat;
     } else if (arg === "--format") {
@@ -78,8 +77,7 @@ function stripOutputOptions(args: string[]): string[] {
     const arg = args[i]!;
     if (
       arg === "--pretty" ||
-      arg === "--quiet" ||
-      arg === "--no-hints" ||
+      arg === "--verbose" ||
       arg.startsWith("--format=") ||
       arg.startsWith("--log-level=")
     ) {
@@ -195,8 +193,9 @@ export function parseCommandLine(
 
   const taxonomy = program.command("taxonomy");
   executable(taxonomy, rawArgs, configuredDefaultFormat, setResult);
-  executable(taxonomy.command("list").option("--tree"), rawArgs, configuredDefaultFormat, setResult);
+  executable(taxonomy.command("list"), rawArgs, configuredDefaultFormat, setResult);
   executable(taxonomy.command("tree [rootId]"), rawArgs, configuredDefaultFormat, setResult);
+  executable(taxonomy.command("get <id>"), rawArgs, configuredDefaultFormat, setResult);
   executable(
     taxonomy
       .command("search <query>")
@@ -245,6 +244,7 @@ export function parseCommandLine(
   const config = program.command("config");
   executable(config.option("--show-secrets"), rawArgs, configuredDefaultFormat, setResult);
   executable(config.command("show").option("--show-secrets"), rawArgs, configuredDefaultFormat, setResult);
+  executable(config.command("schema"), rawArgs, configuredDefaultFormat, setResult);
   executable(config.command("get <path>").option("--show-secrets"), rawArgs, configuredDefaultFormat, setResult);
   executable(config.command("set <path> <value>").option("--show-secrets"), rawArgs, configuredDefaultFormat, setResult);
 

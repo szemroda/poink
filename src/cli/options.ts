@@ -4,8 +4,7 @@ import { OUTPUT_FORMATS, type LogLevel, type OutputFormat } from "../agent/proto
 export type CommandOutputOptions = {
   format?: OutputFormat;
   pretty?: boolean;
-  quiet?: boolean;
-  noHints?: boolean;
+  verbose?: boolean;
   logLevel?: LogLevel;
 };
 
@@ -43,8 +42,7 @@ export function addOutputOptions<T extends Command>(command: T): T {
   return command
     .option("--format <format>", "output format: text, json, or ndjson", parseOutputFormat)
     .option("--pretty", "pretty-print JSON output")
-    .option("--quiet", "suppress next-action hints")
-    .option("--no-hints", "suppress next-action hints")
+    .option("--verbose", "include protocol metadata and next actions")
     .option("-h, --help", "display command help")
     .option("--log-level <level>", "stderr log level: silent, error, info, or debug", parseLogLevel) as T;
 }

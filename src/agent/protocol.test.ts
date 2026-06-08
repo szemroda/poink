@@ -4,10 +4,65 @@ import {
   DEFAULT_SERVER_CONFIG,
   isBearerTokenAuthorized,
   isLoopbackBindHost,
+  makeErrorEnvelope,
+  makeSuccessEnvelope,
   requiresServerAuthForHost,
   resolveServerAuthToken,
   resolveServerConfig,
 } from "./protocol.js";
+
+describe("agent envelopes", () => {
+  test("uses compact success and error envelopes by default", () => {
+    expect(makeSuccessEnvelope("stats", { documents: 1 })).toEqual({
+      ok: true,
+      command: "stats",
+      result: { documents: 1 },
+    });
+    expect(
+      makeErrorEnvelope("read", {
+        code: "NOT_FOUND",
+        message: "Missing",
+        details: { id: "doc-1" },
+      }),
+    ).toEqual({
+      ok: false,
+      command: "read",
+      error: { code: "NOT_FOUND", message: "Missing" },
+    });
+  });
+
+  test("adds diagnostics only in verbose mode", () => {
+    expect(
+      makeSuccessEnvelope("stats", {}, {
+        verbose: true,
+        nextActions: [{ kind: "shell", argv: ["poink", "list"] }],
+        meta: { poinkVersion: "1.0.0" },
+      }),
+    ).toMatchObject({
+      protocolVersion: 1,
+      nextActions: [{ kind: "shell", argv: ["poink", "list"] }],
+      meta: { poinkVersion: "1.0.0" },
+    });
+    expect(
+      makeErrorEnvelope(
+        "read",
+        {
+          code: "NOT_FOUND",
+          message: "Missing",
+          details: { id: "doc-1" },
+        },
+        { verbose: true },
+      ),
+    ).toMatchObject({
+      protocolVersion: 1,
+      error: {
+        code: "NOT_FOUND",
+        message: "Missing",
+        details: { id: "doc-1" },
+      },
+    });
+  });
+});
 
 describe("MCP server config helpers", () => {
   test("defaults to local-only host/port and auth disabled", () => {

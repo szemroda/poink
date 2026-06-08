@@ -87,7 +87,7 @@ npm install -g poink-cli
 
 - `--format text|json|ndjson` (default: `text`)
 - `--pretty` pretty-print JSON
-- `--quiet` (alias: `--no-hints`) omit `nextActions`
+- `--verbose` include protocol metadata, next actions, and command diagnostics
 - `--log-level silent|error|info|debug` (logs go to stderr)
 
 You can change the CLI default format in config:
@@ -97,10 +97,16 @@ poink config set cli.globalFlags.format json
 poink config set cli.globalFlags.format text
 ```
 
-Discover the full command/tool contract (including JSON Schemas) at runtime:
+Discover the command and tool contract at runtime:
 
 ```bash
 poink capabilities
+```
+
+Inspect the configuration JSON Schema separately:
+
+```bash
+poink config schema
 ```
 
 ### Basic Commands
@@ -247,6 +253,9 @@ poink taxonomy tree
 
 # Show subtree from a concept
 poink taxonomy tree programming
+
+# Get full concept details and relationships
+poink taxonomy get programming
 
 # Search concepts
 poink taxonomy search "machine learning"
@@ -779,15 +788,17 @@ tools return a JSON envelope in `structuredContent` and in their text content.
 
 | Tool                        | Description                              |
 | --------------------------- | ---------------------------------------- |
-| `taxonomy_list`   | List all concepts (optional tree format) |
+| `taxonomy_list`   | List taxonomy concept summaries |
 | `taxonomy_tree`   | Render the full taxonomy tree or a subtree |
+| `taxonomy_get`    | Get concept details and relationships |
 | `taxonomy_search` | Search concepts by label or embedding similarity |
 
 ### Discovery Tools
 
 | Tool                    | Description               |
 | ----------------------- | ------------------------- |
-| `capabilities` | Describe commands, flags, and schemas |
+| `capabilities` | Describe commands, flags, and formats |
+| `config_schema` | Retrieve the configuration JSON Schema |
 
 ### Utility Tools
 

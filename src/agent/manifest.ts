@@ -47,7 +47,8 @@ export function renderHelp(stats?: {
     ### Taxonomy
       poink taxonomy search "<q>"
       poink taxonomy tree [id]
-      poink taxonomy list [--tree]
+      poink taxonomy list
+      poink taxonomy get <id>
       poink taxonomy add <id> --label "<name>" [--broader <parent>]
 
     ### Document Management
@@ -62,6 +63,7 @@ export function renderHelp(stats?: {
       poink setup init --format text
       poink setup config --format text
       poink capabilities
+      poink config schema
       poink mcp
       poink serve [--host <host>] [--port <port>] [--auth-token <token>]
       # Non-loopback HTTP binds require --auth-token, server.auth.token, or POINK_SERVER_TOKEN.
@@ -78,6 +80,6 @@ export function renderHelp(stats?: {
       --format <mode>       ${OUTPUT_FORMAT_HELP}
       --pretty
       --log-level <level>   silent (default), error, info, debug
-      --quiet, --no-hints
+      --verbose
   `;
 }

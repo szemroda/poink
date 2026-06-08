@@ -4,7 +4,8 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import * as z from "zod/v4";
 import {
-  POINK_PROTOCOL_VERSION,
+  makeErrorEnvelope,
+  makeSuccessEnvelope,
   type OutputFormat,
 } from "../agent/protocol.js";
 import { toEffectLogLevel } from "../logger.js";
@@ -51,7 +52,7 @@ export async function connectMcpServer<ROut, E>(
   const EnvelopeSchema = z.object({
     ok: z.boolean(),
     command: z.string(),
-    protocolVersion: z.number(),
+    protocolVersion: z.number().optional(),
     result: z.any().optional(),
     error: z
       .object({
@@ -88,6 +89,7 @@ export async function connectMcpServer<ROut, E>(
   const runCommand = async (
     invocation: CommandInvocation,
   ): Promise<z.infer<typeof EnvelopeSchema>> => {
+    const startedAt = Date.now();
     const cmdGlobals = forceJsonGlobals(globals);
     const { argv, options = {} } = invocation;
 
@@ -103,24 +105,25 @@ export async function connectMcpServer<ROut, E>(
 
     if (outEither._tag === "Right") {
       const out: any = outEither.right;
-      return {
-        ok: true,
-        command: out.command,
-        protocolVersion: POINK_PROTOCOL_VERSION,
-        result: out.result,
+      return makeSuccessEnvelope(out.command, out.result, {
+        verbose: cmdGlobals.verbose,
         nextActions: out.nextActions,
         meta: out.meta ?? { poinkVersion: VERSION },
-      };
+      });
     }
 
     const err = coerceCliError(outEither.left);
-    return {
-      ok: false,
-      command: argv[0] ?? "cli",
-      protocolVersion: POINK_PROTOCOL_VERSION,
-      error: { code: err.code, message: err.message, details: err.details },
-      meta: { poinkVersion: VERSION },
-    };
+    return makeErrorEnvelope(
+      argv[0] ?? "cli",
+      { code: err.code, message: err.message, details: err.details },
+      {
+        verbose: cmdGlobals.verbose,
+        meta: {
+          poinkVersion: VERSION,
+          timingMs: Date.now() - startedAt,
+        },
+      },
+    );
   };
 
   const server = new McpServer({ name: "poink", version: VERSION });
@@ -154,10 +157,19 @@ export async function connectMcpServer<ROut, E>(
     "capabilities",
     {
       description:
-        "Describe poink commands, flags, and schemas (agent discovery entrypoint).",
+        "Describe poink commands and flags (agent discovery entrypoint).",
       inputSchema: z.object({}).optional(),
     },
     () => ({ argv: ["capabilities"] }),
+  );
+
+  tool(
+    "config_schema",
+    {
+      description: "Retrieve the complete poink configuration JSON Schema.",
+      inputSchema: z.object({}).optional(),
+    },
+    () => ({ argv: ["config", "schema"] }),
   );
 
   tool("stats", {
@@ -265,11 +277,9 @@ export async function connectMcpServer<ROut, E>(
   }, (input) => ({ argv: ["page", "get", input.docId, String(input.page)] }));
 
   tool("taxonomy_list", {
-    description: "List taxonomy concepts (optionally with tree).",
-    inputSchema: z.object({ tree: z.boolean().optional() }),
-  }, (input) => {
-    return { argv: ["taxonomy", "list"], options: { tree: input.tree } };
-  });
+    description: "List taxonomy concept summaries.",
+    inputSchema: z.object({}).optional(),
+  }, () => ({ argv: ["taxonomy", "list"] }));
 
   tool("taxonomy_tree", {
     description: "Render taxonomy hierarchy (full or rooted).",
@@ -279,6 +289,11 @@ export async function connectMcpServer<ROut, E>(
     if (typeof input.rootId === "string" && input.rootId.length > 0) argv.push(input.rootId);
     return { argv };
   });
+
+  tool("taxonomy_get", {
+    description: "Get full taxonomy concept details and relationships.",
+    inputSchema: z.object({ id: z.string() }),
+  }, (input) => ({ argv: ["taxonomy", "get", input.id] }));
 
   tool("taxonomy_search", {
     description: "Search taxonomy concepts via vector similarity or text fallback.",

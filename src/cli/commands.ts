@@ -156,8 +156,15 @@ export function dispatchCommand(
     case "remove":
     case "tag":
     case "stats":
-      return runCommandWithContext(args, globals, ({ Console, format, library }) =>
-        runLibraryCommand(args, format, library, Console),
+      return runCommandWithContext(args, globals, ({ Console, format, library, globals }) =>
+        runLibraryCommand(
+          args,
+          format,
+          library,
+          Console,
+          globals.verbose,
+          options,
+        ),
     options);
     default:
       return runCommandWithContext(args, globals, ({ command }) =>

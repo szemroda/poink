@@ -1,8 +1,24 @@
 import { Effect } from "effect";
 import type { OutputFormat } from "../../agent/protocol.js";
 import type { PDFLibrary } from "../../index.js";
+import type { Document } from "../../types.js";
 import { CLIError } from "../runner.js";
 import type { CliCommandOutput, CliConsole } from "./types.js";
+
+export type DocumentSummary = Pick<
+  Document,
+  "id" | "title" | "pageCount" | "tags" | "fileType"
+>;
+
+export function toDocumentSummary(doc: Document): DocumentSummary {
+  return {
+    id: doc.id,
+    title: doc.title,
+    pageCount: doc.pageCount,
+    tags: [...doc.tags],
+    fileType: doc.fileType,
+  };
+}
 
 function optionValue(args: string[], name: string): string | undefined {
   const equalsPrefix = `${name}=`;
@@ -19,6 +35,8 @@ export function runLibraryCommand(
   format: OutputFormat,
   library: PDFLibrary,
   Console: CliConsole,
+  verbose = false,
+  options: Record<string, unknown> = {},
 ) {
   return Effect.gen(function* (): Generator<any, CliCommandOutput, any> {
     const command = args[0];
@@ -83,7 +101,10 @@ export function runLibraryCommand(
           );
         }
 
-        const pageValue = optionValue(args.slice(3), "--page");
+        const pageValue =
+          typeof options.page === "number" || typeof options.page === "string"
+            ? String(options.page)
+            : optionValue(args.slice(3), "--page");
         const page = pageValue ? Number(pageValue) : undefined;
 
         if (page !== undefined && (Number.isNaN(page) || page <= 0)) {
@@ -161,10 +182,15 @@ export function runLibraryCommand(
       }
 
       case "list": {
-        const tag = optionValue(args.slice(1), "--tag");
+        const tag =
+          typeof options.tag === "string"
+            ? options.tag
+            : optionValue(args.slice(1), "--tag");
 
         const docs = yield* library.list(tag);
-        resultPayload = { tag: tag ?? null, documents: docs };
+        resultPayload = verbose
+          ? { tag: tag ?? null, documents: docs }
+          : { documents: docs.map(toDocumentSummary) };
 
         if (docs.length === 0) {
           yield* Console.log(tag ? `No documents with tag "${tag}"` : "Library is empty");

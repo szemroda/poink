@@ -6,6 +6,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { Client } from "@modelcontextprotocol/sdk/client";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { createClient } from "@libsql/client";
 import { buildCliAppLayer, createCliAppLayer } from "./cli/index.js";
 
 function nodeTsxArgs(args: string[]): string[] {
@@ -234,7 +235,27 @@ describe("CLI JSON Envelope Contract", () => {
       expect(res.stdout).toContain("Documents:  0");
     }));
 
-  test("stats emits a single JSON envelope with nextActions when not --quiet", () =>
+  test("list is compact by default and retains legacy payload in verbose mode", () =>
+    withTempLibraryPath((libraryPath) => {
+      const configPath = join(libraryPath, "config.json");
+      writeTestConfig(configPath, libraryPath);
+      const env = envForConfig(configPath);
+
+      const compact = runCli(["list", "--format", "json"], { env });
+      expect(compact.exitCode).toBe(0);
+      expect(JSON.parse(compact.stdout).result).toEqual({ documents: [] });
+
+      const verbose = runCli(["list", "--format", "json", "--verbose"], {
+        env,
+      });
+      expect(verbose.exitCode).toBe(0);
+      expect(JSON.parse(verbose.stdout).result).toEqual({
+        tag: null,
+        documents: [],
+      });
+    }));
+
+  test("stats emits a minimal JSON envelope by default", () =>
     withTempLibraryPath((libraryPath) => {
       const configPath = join(libraryPath, "config.json");
       writeTestConfig(configPath, libraryPath);
@@ -249,24 +270,20 @@ describe("CLI JSON Envelope Contract", () => {
       const obj = JSON.parse(res.stdout);
       expect(obj.ok).toBe(true);
       expect(obj.command).toBe("stats");
-      expect(obj.protocolVersion).toBe(1);
       expect(obj.result).toBeDefined();
       expect(obj.result.libraryPath).toBe(libraryPath);
       expect(obj.result.documents).toBe(0);
       expect(obj.result.chunks).toBe(0);
       expect(obj.result.embeddings).toBe(0);
-
-      // Agent mode: nextActions should exist by default (unless --quiet)
-      expect(Array.isArray(obj.nextActions)).toBe(true);
-      expect(obj.nextActions.length).toBeGreaterThan(0);
+      expect(Object.keys(obj).sort()).toEqual(["command", "ok", "result"]);
     }));
 
-  test("stats with --quiet omits nextActions", () =>
+  test("stats with --verbose includes protocol metadata and nextActions", () =>
     withTempLibraryPath((libraryPath) => {
       const configPath = join(libraryPath, "config.json");
       writeTestConfig(configPath, libraryPath);
 
-      const res = runCli(["stats", "--format", "json", "--quiet"], {
+      const res = runCli(["stats", "--format", "json", "--verbose"], {
         env: envForConfig(configPath),
       });
 
@@ -274,7 +291,25 @@ describe("CLI JSON Envelope Contract", () => {
       const obj = JSON.parse(res.stdout);
       expect(obj.ok).toBe(true);
       expect(obj.command).toBe("stats");
-      expect("nextActions" in obj).toBe(false);
+      expect(obj.protocolVersion).toBe(1);
+      expect(obj.meta.poinkVersion).toBeDefined();
+      expect(typeof obj.meta.timingMs).toBe("number");
+      expect(Array.isArray(obj.nextActions)).toBe(true);
+      expect(obj.nextActions.length).toBeGreaterThan(0);
+    }));
+
+  test("removed hint flags are rejected", () =>
+    withTempLibraryPath((libraryPath) => {
+      const configPath = join(libraryPath, "config.json");
+      writeTestConfig(configPath, libraryPath);
+
+      for (const flag of ["--quiet", "--no-hints"]) {
+        const res = runCli(["stats", flag, "--format", "json"], {
+          env: envForConfig(configPath),
+        });
+        expect(res.exitCode).not.toBe(0);
+        expect(JSON.parse(res.stdout).error.code).toBe("INVALID_FLAG");
+      }
     }));
 
   test("configured default format is used when --format is omitted", () =>
@@ -333,9 +368,9 @@ describe("CLI JSON Envelope Contract", () => {
       expect(res.exitCode).not.toBe(0);
       const obj = JSON.parse(res.stdout);
       expect(obj.ok).toBe(false);
-      expect(obj.protocolVersion).toBe(1);
       expect(obj.error).toBeDefined();
       expect(obj.error.code).toBe("INVALID_FLAG");
+      expect(Object.keys(obj).sort()).toEqual(["command", "error", "ok"]);
     }));
 
   test("unknown command option returns a structured INVALID_FLAG envelope", () =>
@@ -355,6 +390,24 @@ describe("CLI JSON Envelope Contract", () => {
       expect(String(obj.error.message)).toContain("--bogus");
     }));
 
+  test("verbose parse errors include timing metadata", () =>
+    withTempLibraryPath((libraryPath) => {
+      const configPath = join(libraryPath, "config.json");
+      writeTestConfig(configPath, libraryPath);
+
+      const res = runCli(
+        ["stats", "--bogus", "--format", "json", "--verbose"],
+        { env: envForConfig(configPath) },
+      );
+
+      expect(res.exitCode).not.toBe(0);
+      const obj = JSON.parse(res.stdout);
+      expect(obj.protocolVersion).toBe(1);
+      expect(obj.meta.poinkVersion).toBeDefined();
+      expect(typeof obj.meta.timingMs).toBe("number");
+      expect(obj.meta.timingMs).toBeGreaterThanOrEqual(0);
+    }));
+
   test("missing required command argument returns a structured INVALID_ARGS envelope", () =>
     withTempLibraryPath((libraryPath) => {
       const configPath = join(libraryPath, "config.json");
@@ -370,6 +423,69 @@ describe("CLI JSON Envelope Contract", () => {
       expect(obj.command).toBe("search");
       expect(obj.error.code).toBe("INVALID_ARGS");
       expect(String(obj.error.message)).toContain("query");
+    }));
+
+  test("search omits echoed input by default and restores it in verbose mode", () =>
+    withTempLibraryPath((libraryPath) => {
+      const configPath = join(libraryPath, "config.json");
+      writeTestConfig(configPath, libraryPath);
+      const env = envForConfig(configPath);
+
+      const compact = runCli(
+        ["search", "absent", "--fts", "--docs-only", "--format", "json"],
+        { env },
+      );
+      expect(compact.exitCode).toBe(0);
+      expect(JSON.parse(compact.stdout).result).toEqual({
+        concepts: [],
+        documents: [],
+      });
+
+      const verbose = runCli(
+        ["search", "absent", "--fts", "--docs-only", "--format", "json", "--verbose"],
+        { env },
+      );
+      expect(verbose.exitCode).toBe(0);
+      const result = JSON.parse(verbose.stdout).result;
+      expect(result.query).toBe("absent");
+      expect(result.options.ftsOnly).toBe(true);
+      expect(result.concepts).toEqual([]);
+      expect(result.documents).toEqual([]);
+    }));
+
+  test("search-pack omits echoed top-level input by default", () =>
+    withTempLibraryPath((libraryPath) => {
+      const configPath = join(libraryPath, "config.json");
+      writeTestConfig(configPath, libraryPath);
+      const env = envForConfig(configPath);
+
+      const compact = runCli(
+        ["search-pack", "absent", "--fts", "--format", "json"],
+        { env },
+      );
+      expect(compact.exitCode).toBe(0);
+      const compactResult = JSON.parse(compact.stdout).result;
+      expect(Object.keys(compactResult).sort()).toEqual(["deduped", "perQuery"]);
+      expect(compactResult.perQuery[0]).toEqual({
+        query: "absent",
+        documents: [],
+      });
+
+      const verbose = runCli(
+        [
+          "search-pack",
+          "absent",
+          "--fts",
+          "--format",
+          "json",
+          "--verbose",
+        ],
+        { env },
+      );
+      expect(verbose.exitCode).toBe(0);
+      const verboseResult = JSON.parse(verbose.stdout).result;
+      expect(verboseResult.queries).toEqual(["absent"]);
+      expect(verboseResult.options.ftsOnly).toBe(true);
     }));
 
   test("rechunk flag validation: --max-docs requires a numeric value", () =>
@@ -388,12 +504,12 @@ describe("CLI JSON Envelope Contract", () => {
       expect(String(obj.error.message)).toContain("--max-docs");
     }));
 
-  test("capabilities is self-describing and includes JSON Schemas", () =>
+  test("capabilities is self-describing without embedding JSON Schemas", () =>
     withTempLibraryPath((libraryPath) => {
       const configPath = join(libraryPath, "config.json");
       writeTestConfig(configPath, libraryPath);
 
-      const res = runCli(["capabilities", "--format", "json", "--quiet"], {
+      const res = runCli(["capabilities", "--format", "json"], {
         env: envForConfig(configPath),
       });
 
@@ -401,15 +517,17 @@ describe("CLI JSON Envelope Contract", () => {
       const obj = JSON.parse(res.stdout);
       expect(obj.ok).toBe(true);
       expect(obj.command).toBe("capabilities");
-      expect(obj.protocolVersion).toBe(1);
 
       const result = obj.result;
       expect(result).toBeDefined();
-      expect(result.protocolVersion).toBe(1);
       expect(typeof result.poinkVersion).toBe("string");
-      expect(result.defaultFormat).toBe("text");
-      expect(result.factoryDefaultFormat).toBe("text");
-      expect(result.configurableDefaultFormat).toBe("cli.globalFlags.format");
+      expect(result.outputFormats).toEqual(["text", "json", "ndjson"]);
+      expect(result.globalFlags["--verbose"]).toBeDefined();
+      expect(result.globalFlags["--quiet"]).toBeUndefined();
+      expect(result.globalFlags["--no-hints"]).toBeUndefined();
+      expect("defaultFormat" in result).toBe(false);
+      expect("factoryDefaultFormat" in result).toBe(false);
+      expect("configurableDefaultFormat" in result).toBe(false);
 
       // Command list invariants (agent discovery depends on these names)
       const commandNames = new Set(
@@ -441,21 +559,131 @@ describe("CLI JSON Envelope Contract", () => {
         "[--device-auth]",
       ]);
 
-      // Schema invariants (agents can validate/parses these)
-      expect(result.schemas).toBeDefined();
-      expect(result.schemas.Document).toBeDefined();
-      expect(result.schemas.PDFChunk).toBeDefined();
-      expect(result.schemas.SearchResult).toBeDefined();
-      expect(result.schemas.Config).toBeDefined();
+      expect("schemas" in result).toBe(false);
+    }));
 
-      // Lightweight stability assertions: required field names shouldn't drift.
-      const docSchema = result.schemas.Document as any;
-      expect(docSchema.type).toBe("object");
-      expect(Array.isArray(docSchema.required)).toBe(true);
-      expect(docSchema.required).toContain("id");
-      expect(docSchema.required).toContain("title");
-      expect(docSchema.required).toContain("path");
-      expect(docSchema.required).toContain("tags");
+  test("config schema exposes the config schema outside capabilities", () =>
+    withTempLibraryPath((libraryPath) => {
+      const configPath = join(libraryPath, "config.json");
+      writeTestConfig(configPath, libraryPath);
+
+      const fetched = runCli(["config", "schema", "--format", "json"], {
+        env: envForConfig(configPath),
+      });
+      expect(fetched.exitCode).toBe(0);
+      const schema = JSON.parse(fetched.stdout).result;
+      expect(schema.type).toBe("object");
+      expect(schema.properties.models).toBeDefined();
+      expect(schema.properties.providers).toBeDefined();
+      expect(schema.properties.storage).toBeDefined();
+    }));
+
+  test("taxonomy list is compact and taxonomy get returns details", async () =>
+    withTempLibraryPathAsync(async (libraryPath) => {
+      const configPath = join(libraryPath, "config.json");
+      writeTestConfig(configPath, libraryPath);
+      const env = envForConfig(configPath);
+
+      expect(runCli(["stats", "--format", "json"], { env }).exitCode).toBe(0);
+      const db = createClient({
+        url: `file:${join(libraryPath, "library.db")}`,
+      });
+      try {
+        await db.batch(
+          [
+            {
+              sql: `INSERT INTO concepts
+                    (id, pref_label, alt_labels, definition, created_at)
+                    VALUES (?, ?, ?, ?, ?)`,
+              args: [
+                "programming",
+                "Programming",
+                "[]",
+                "Software development and programming topics",
+                "2026-01-01T00:00:00.000Z",
+              ],
+            },
+            {
+              sql: `INSERT INTO concepts
+                    (id, pref_label, alt_labels, definition, created_at)
+                    VALUES (?, ?, ?, ?, ?)`,
+              args: [
+                "programming/typescript",
+                "TypeScript",
+                "[\"TS\"]",
+                "TypeScript language and ecosystem",
+                "2026-01-01T00:00:00.000Z",
+              ],
+            },
+            {
+              sql: `INSERT INTO concept_hierarchy (concept_id, broader_id)
+                    VALUES (?, ?)`,
+              args: ["programming/typescript", "programming"],
+            },
+          ],
+          "write",
+        );
+      } finally {
+        await db.close();
+      }
+
+      const listed = runCli(["taxonomy", "list", "--format", "json"], {
+        env,
+      });
+      expect(listed.exitCode).toBe(0);
+      const concepts = JSON.parse(listed.stdout).result.concepts;
+      expect(concepts).toContainEqual({
+        id: "programming",
+        prefLabel: "Programming",
+      });
+      expect(concepts[0]).not.toHaveProperty("definition");
+      expect(concepts[0]).not.toHaveProperty("createdAt");
+
+      const verboseList = runCli(
+        ["taxonomy", "list", "--format", "json", "--verbose"],
+        { env },
+      );
+      expect(verboseList.exitCode).toBe(0);
+      const verboseConcepts = JSON.parse(verboseList.stdout).result.concepts;
+      expect(verboseConcepts[0]).toHaveProperty("altLabels");
+      expect(verboseConcepts[0]).not.toHaveProperty("createdAt");
+
+      const removedTreeFlag = runCli(
+        ["taxonomy", "list", "--tree", "--format", "json"],
+        { env },
+      );
+      expect(removedTreeFlag.exitCode).not.toBe(0);
+      expect(JSON.parse(removedTreeFlag.stdout).error.code).toBe("INVALID_FLAG");
+
+      const fetched = runCli(
+        ["taxonomy", "get", "programming/typescript", "--format", "json"],
+        { env },
+      );
+      expect(fetched.exitCode).toBe(0);
+      const detail = JSON.parse(fetched.stdout).result;
+      expect(detail.id).toBe("programming/typescript");
+      expect(detail.definition).toBe("TypeScript language and ecosystem");
+      expect(detail.broader).toEqual([
+        { id: "programming", prefLabel: "Programming" },
+      ]);
+      expect(detail.narrower).toEqual([]);
+      expect(detail.related).toEqual([]);
+      expect(detail).not.toHaveProperty("createdAt");
+
+      const tree = runCli(["taxonomy", "tree", "--format", "json"], { env });
+      expect(tree.exitCode).toBe(0);
+      const root = JSON.parse(tree.stdout).result.tree[0];
+      expect(root).not.toHaveProperty("concept");
+      const programmingRoot = JSON.parse(tree.stdout).result.tree.find(
+        (node: any) => node.id === "programming",
+      );
+      expect(programmingRoot.children).toContainEqual(
+        expect.objectContaining({
+          id: "programming/typescript",
+          prefLabel: "TypeScript",
+        }),
+      );
+      await sleep(250);
     }));
 
   test("setup lists available subcommands without running the wizard", () =>
@@ -512,21 +740,21 @@ describe("CLI JSON Envelope Contract", () => {
       expect(res.stderr).toContain("poink setup init");
     }));
 
-  test("capabilities reports configured default format separately from --format", () =>
+  test("capabilities does not expose configured default format", () =>
     withTempLibraryPath((libraryPath) => {
       const configPath = join(libraryPath, "config.json");
       writeTestConfig(configPath, libraryPath, "ollama", "ndjson");
 
-      const res = runCli(["capabilities", "--format", "json", "--quiet"], {
+      const res = runCli(["capabilities", "--format", "json"], {
         env: envForConfig(configPath),
       });
 
       expect(res.exitCode).toBe(0);
       const obj = JSON.parse(res.stdout);
       expect(obj.ok).toBe(true);
-      expect(obj.result.defaultFormat).toBe("ndjson");
-      expect(obj.result.factoryDefaultFormat).toBe("text");
-      expect(obj.result.configurableDefaultFormat).toBe("cli.globalFlags.format");
+      expect("defaultFormat" in obj.result).toBe(false);
+      expect("factoryDefaultFormat" in obj.result).toBe(false);
+      expect("configurableDefaultFormat" in obj.result).toBe(false);
     }));
 
   test("providers login requires text format because it is interactive", () =>
@@ -534,7 +762,7 @@ describe("CLI JSON Envelope Contract", () => {
       const configPath = join(libraryPath, "config.json");
       writeTestConfig(configPath, libraryPath);
 
-      const res = runCli(["providers", "login", "--provider", "openai-codex", "--format", "json"], {
+      const res = runCli(["providers", "login", "--provider", "openai-codex", "--format", "json", "--verbose"], {
         env: envForConfig(configPath),
       });
 
@@ -563,6 +791,7 @@ describe("CLI JSON Envelope Contract", () => {
           "--device-code",
           "--format",
           "json",
+          "--verbose",
         ],
         {
           env: envForConfig(configPath),
@@ -1066,7 +1295,7 @@ describe("CLI JSON Envelope Contract", () => {
       const configPath = join(libraryRoot, "config.json");
       writeTestConfig(configPath, libraryPath, "openrouter");
 
-      const res = runCli(["init", "--format", "json", "--quiet"], {
+      const res = runCli(["init", "--format", "json"], {
         env: envForConfig(configPath),
       });
 
@@ -1087,7 +1316,7 @@ describe("CLI JSON Envelope Contract", () => {
       writeTestConfig(configPath, libraryPath);
       mkdirSync(emptyDocs);
 
-      const res = runCli(["ingest", emptyDocs, "--format", "json", "--quiet"], {
+      const res = runCli(["ingest", emptyDocs, "--format", "json"], {
         env: envForConfig(configPath),
       });
 
@@ -1108,7 +1337,7 @@ describe("CLI JSON Envelope Contract", () => {
       mkdirSync(nested, { recursive: true });
       writeFileSync(join(nested, "note.md"), "# Nested note\n\nNot discovered.", "utf-8");
 
-      const res = runCli(["ingest", docs, "--no-recursive", "--format", "json", "--quiet"], {
+      const res = runCli(["ingest", docs, "--no-recursive", "--format", "json"], {
         env: envForConfig(configPath),
       });
 
@@ -1167,7 +1396,7 @@ describe("MCP Tool Output Contract", () => {
 
         const transport = new StdioClientTransport({
           command: process.execPath,
-          args: nodeTsxArgs(["mcp", "--quiet"]),
+          args: nodeTsxArgs(["mcp"]),
           cwd: process.cwd(),
           stderr: "pipe",
           env: {
@@ -1187,8 +1416,10 @@ describe("MCP Tool Output Contract", () => {
           const tools = await client.listTools();
           const toolNames = new Set(tools.tools.map((t) => t.name));
           expect(toolNames.has("capabilities")).toBe(true);
+          expect(toolNames.has("config_schema")).toBe(true);
           expect(toolNames.has("stats")).toBe(true);
           expect(toolNames.has("search")).toBe(true);
+          expect(toolNames.has("taxonomy_get")).toBe(true);
 
           const call = await client.callTool({ name: "stats", arguments: {} });
           expect(Boolean(call.isError)).toBe(false);
@@ -1204,9 +1435,64 @@ describe("MCP Tool Output Contract", () => {
           const envelope: any = call.structuredContent;
           expect(envelope.ok).toBe(true);
           expect(envelope.command).toBe("stats");
-          expect(envelope.protocolVersion).toBe(1);
           expect(envelope.result).toBeDefined();
           expect(envelope.result.libraryPath).toBe(libraryPath);
+          expect("protocolVersion" in envelope).toBe(false);
+          expect(JSON.parse(textContent.text)).toEqual(envelope);
+        } finally {
+          try {
+            await client.close();
+          } catch {
+            // ignore
+          }
+          try {
+            await transport.close();
+          } catch {
+            // ignore
+          }
+        }
+      }),
+    20000,
+  );
+
+  test(
+    "verbose MCP errors include timing metadata",
+    async () =>
+      withTempLibraryPathAsync(async (libraryPath) => {
+        const configPath = join(libraryPath, "config.json");
+        writeTestConfig(configPath, libraryPath);
+
+        const transport = new StdioClientTransport({
+          command: process.execPath,
+          args: nodeTsxArgs(["mcp", "--verbose"]),
+          cwd: process.cwd(),
+          stderr: "pipe",
+          env: Object.fromEntries(
+            Object.entries({
+              ...process.env,
+              ...envForConfig(configPath),
+            }).filter((entry): entry is [string, string] => entry[1] !== undefined),
+          ),
+        });
+        const client = new Client({
+          name: "poink-verbose-error-test",
+          version: "0.0.0",
+        });
+
+        try {
+          await client.connect(transport);
+          const call = await client.callTool({
+            name: "read",
+            arguments: { idOrTitle: "missing-document" },
+          });
+          const envelope = call.structuredContent as Record<string, unknown>;
+          const meta = envelope.meta as Record<string, unknown>;
+
+          expect(envelope.ok).toBe(false);
+          expect(envelope.protocolVersion).toBe(1);
+          expect(meta.poinkVersion).toBeDefined();
+          expect(typeof meta.timingMs).toBe("number");
+          expect(meta.timingMs).toBeGreaterThanOrEqual(0);
         } finally {
           try {
             await client.close();
@@ -1247,7 +1533,6 @@ describe("HTTP MCP Server", () => {
             "0.0.0.0",
             "--port",
             String(port),
-            "--quiet",
           ]),
           {
             cwd: process.cwd(),
@@ -1319,7 +1604,6 @@ describe("HTTP MCP Server", () => {
             String(port),
             "--format",
             "json",
-            "--quiet",
           ]),
           {
             cwd: process.cwd(),
@@ -1333,7 +1617,7 @@ describe("HTTP MCP Server", () => {
         const obj = JSON.parse(proc.stdout);
         expect(obj.ok).toBe(false);
         expect(obj.command).toBe("serve");
-        expect(obj.protocolVersion).toBe(1);
+        expect("protocolVersion" in obj).toBe(false);
         expect(obj.error.code).toBe("INVALID_CONFIG");
         expect(String(obj.error.message)).toContain("Refusing to bind HTTP MCP server");
       }),
@@ -1356,7 +1640,6 @@ describe("HTTP MCP Server", () => {
             "127.0.0.1",
             "--port",
             String(port),
-            "--quiet",
           ]),
           {
             cwd: process.cwd(),
@@ -1420,7 +1703,6 @@ describe("HTTP MCP Server", () => {
             "0.0.0.0",
             "--port",
             String(port),
-            "--quiet",
           ]),
           {
             cwd: process.cwd(),

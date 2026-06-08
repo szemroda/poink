@@ -44,5 +44,10 @@ export function withConfiguredLogging<A, E, R>(
 }
 
 export function isServiceFreeCommand(command: string | undefined): boolean {
-  return command === "config" || command === "providers" || command === "setup";
+  return (
+    command === "capabilities" ||
+    command === "config" ||
+    command === "providers" ||
+    command === "setup"
+  );
 }

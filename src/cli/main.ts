@@ -3,8 +3,9 @@ import { fileURLToPath } from "url";
 import { realpathSync } from "fs";
 import { resolve } from "path";
 import {
+  makeErrorEnvelope,
+  makeSuccessEnvelope,
   OUTPUT_FORMATS,
-  POINK_PROTOCOL_VERSION,
   type OutputFormat,
 } from "../agent/protocol.js";
 import { setLogLevel } from "../logger.js";
@@ -40,7 +41,7 @@ function configuredGlobals(
 ): GlobalCLIOptions {
   let format = configuredDefaultFormat;
   let pretty = false;
-  let quiet = false;
+  let verbose = false;
   let logLevel: GlobalCLIOptions["logLevel"] = "error";
 
   if (rawArgs[0]?.startsWith("--")) {
@@ -48,7 +49,7 @@ function configuredGlobals(
       format,
       configuredDefaultFormat,
       pretty,
-      quiet,
+      verbose,
       logLevel,
     };
   }
@@ -56,7 +57,7 @@ function configuredGlobals(
   for (let i = 1; i < rawArgs.length; i++) {
     const arg = rawArgs[i]!;
     if (arg === "--pretty") pretty = true;
-    else if (arg === "--quiet" || arg === "--no-hints") quiet = true;
+    else if (arg === "--verbose") verbose = true;
     else if (arg.startsWith("--format=")) {
       const value = arg.slice("--format=".length);
       if (isOutputFormat(value)) format = value;
@@ -78,13 +79,14 @@ function configuredGlobals(
     }
   }
 
-  return { format, configuredDefaultFormat, pretty, quiet, logLevel };
+  return { format, configuredDefaultFormat, pretty, verbose, logLevel };
 }
 
 function writeCliError(
   globals: GlobalCLIOptions,
   command: string,
   error: CLIError,
+  startedAt: number,
 ): void {
   if (globals.format === "text") {
     try {
@@ -97,18 +99,23 @@ function writeCliError(
 
   writeEnvelope(
     globals.format,
-    {
-      ok: false,
+    makeErrorEnvelope(
       command,
-      protocolVersion: POINK_PROTOCOL_VERSION,
-      error: { code: error.code, message: error.message, details: error.details },
-      meta: { poinkVersion: VERSION },
-    },
+      { code: error.code, message: error.message, details: error.details },
+      {
+        verbose: globals.verbose,
+        meta: {
+          poinkVersion: VERSION,
+          timingMs: Date.now() - startedAt,
+        },
+      },
+    ),
     globals.pretty,
   );
 }
 
 async function executeParsed(parsed: ParsedCommandLine): Promise<number> {
+  const startedAt = Date.now();
   const { args, globals } = parsed;
   setLogLevel(globals.logLevel);
 
@@ -133,7 +140,7 @@ async function executeParsed(parsed: ParsedCommandLine): Promise<number> {
         error instanceof CLIError
           ? error
           : new CLIError("SERVE_FAILED", String(error), error);
-      writeCliError(globals, "serve", cliErr);
+      writeCliError(globals, "serve", cliErr, startedAt);
       return 1;
     }
   }
@@ -170,7 +177,7 @@ async function executeParsed(parsed: ParsedCommandLine): Promise<number> {
     } catch {
       // ignore cleanup errors while reporting the original failure
     }
-    writeCliError(globals, command || "cli", coerceCliError(error));
+    writeCliError(globals, command || "cli", coerceCliError(error), startedAt);
     return 1;
   }
 
@@ -186,25 +193,28 @@ async function executeParsed(parsed: ParsedCommandLine): Promise<number> {
     if (globals.format !== "text") {
       writeEnvelope(
         globals.format,
-        {
-          ok: true,
-          command: out.command,
-          protocolVersion: POINK_PROTOCOL_VERSION,
-          result: out.result,
+        makeSuccessEnvelope(out.command, out.result, {
+          verbose: globals.verbose,
           nextActions: out.nextActions,
           meta: out.meta ?? { poinkVersion: VERSION },
-        },
+        }),
         globals.pretty,
       );
     }
     return 0;
   }
 
-  writeCliError(globals, command || "cli", coerceCliError(outEither.left));
+  writeCliError(
+    globals,
+    command || "cli",
+    coerceCliError(outEither.left),
+    startedAt,
+  );
   return 1;
 }
 
 export async function runCli(rawArgs: string[]): Promise<number> {
+  const startedAt = Date.now();
   const configuredDefaultFormat = resolveConfiguredDefaultFormat();
 
   if (rawArgs.length === 0) {
@@ -236,7 +246,12 @@ export async function runCli(rawArgs: string[]): Promise<number> {
     parsed = parseCommandLine(rawArgs, configuredDefaultFormat);
   } catch (error) {
     const globals = configuredGlobals(configuredDefaultFormat, rawArgs);
-    writeCliError(globals, rawArgs[0] && !rawArgs[0].startsWith("-") ? rawArgs[0] : "cli", coerceCliError(error));
+    writeCliError(
+      globals,
+      rawArgs[0] && !rawArgs[0].startsWith("-") ? rawArgs[0] : "cli",
+      coerceCliError(error),
+      startedAt,
+    );
     return 1;
   }
 

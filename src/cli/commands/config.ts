@@ -12,6 +12,7 @@ import {
   CLIError,
 } from "../runner.js";
 import {
+  CONFIG_JSON_SCHEMA,
   getConfigSchemaNode,
   invalidConfigPathError,
   parseConfigOutputOptions,
@@ -27,6 +28,15 @@ export function runConfigCommand(args: string[], Console: CliConsole) {
     const configArgs = ["config", ...configOutputOptions.args];
     const subcommand = configArgs[1];
     const showSecrets = configOutputOptions.showSecrets;
+
+    if (subcommand === "schema") {
+      yield* Console.log(JSON.stringify(CONFIG_JSON_SCHEMA, null, 2));
+      return {
+        resultPayload: CONFIG_JSON_SCHEMA,
+        agentResult: { _tag: "config", subcommand: "schema" },
+      };
+    }
+
     const config = loadConfig();
     const configPath = resolveConfigPath();
     let resultPayload: unknown = null;
@@ -222,11 +232,11 @@ export function runConfigCommand(args: string[], Console: CliConsole) {
       resultPayload = { path, value: outputValue };
     } else {
       yield* Console.error(`Unknown config subcommand: ${subcommand}`);
-      yield* Console.error("Available: show, get, set");
+      yield* Console.error("Available: show, get, set, schema");
       return yield* Effect.fail(
         new CLIError("INVALID_ARGS", `Unknown config subcommand: ${subcommand}`, {
           subcommand,
-          available: ["show", "get", "set"],
+          available: ["show", "get", "set", "schema"],
         }),
       );
     }

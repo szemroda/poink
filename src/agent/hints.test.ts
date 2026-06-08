@@ -135,7 +135,7 @@ describe("generateHints", () => {
   test("taxonomyList suggests tree + search", () => {
     const result: CommandResult = { _tag: "taxonomyList", count: 50 };
     const hints = generateHints(result);
-    expect(hints.some((h) => h.includes("--tree"))).toBe(true);
+    expect(hints.some((h) => h.includes("taxonomy tree"))).toBe(true);
     expect(hints.some((h) => h.includes("taxonomy search"))).toBe(true);
   });
 

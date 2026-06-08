@@ -624,8 +624,8 @@ export type GlobalCLIOptions = {
   format: OutputFormat;
   configuredDefaultFormat: OutputFormat;
   pretty: boolean;
+  verbose: boolean;
   logLevel: LogLevel;
-  quiet: boolean;
 };
 
 export type CommandExecutionContext = {
@@ -634,7 +634,6 @@ export type CommandExecutionContext = {
   globals: GlobalCLIOptions;
   command: string;
   format: OutputFormat;
-  quiet: boolean;
   startedAt: number;
   Console: {
     log: (message: string) => Effect.Effect<void, never, never>;
@@ -664,7 +663,7 @@ export function runCommandWithContext(
   options: Record<string, unknown> = {},
 ) {
   return Effect.gen(function* () {
-    const { format, quiet } = globals;
+    const { format, verbose } = globals;
     const startedAt = Date.now();
     const command = args[0] ?? "cli";
     let loadedLibrary: PDFLibrary | undefined;
@@ -701,7 +700,6 @@ export function runCommandWithContext(
       globals,
       command,
       format,
-      quiet,
       startedAt,
       Console,
       library,
@@ -717,7 +715,7 @@ export function runCommandWithContext(
     };
 
     let nextActions: NextAction[] | undefined = undefined;
-    if (!quiet && output.agentResult) {
+    if (output.agentResult) {
       if (format === "text") {
         const hints = generateHints(output.agentResult);
         if (hints.length > 0) {
@@ -730,7 +728,7 @@ export function runCommandWithContext(
               : undefined;
           yield* Console.log(formatHintBlock(hints, statsData));
         }
-      } else {
+      } else if (verbose) {
         nextActions = generateNextActions(output.agentResult);
       }
     }
@@ -767,7 +765,7 @@ function parseGlobalCLIOptions(
 } {
   let format: OutputFormat = configuredDefaultFormat;
   let pretty = false;
-  let quiet = false;
+  let verbose = false;
   let logLevel: LogLevel = getLogLevel();
 
   const args: string[] = [];
@@ -780,8 +778,8 @@ function parseGlobalCLIOptions(
       continue;
     }
 
-    if (arg === "--quiet" || arg === "--no-hints") {
-      quiet = true;
+    if (arg === "--verbose") {
+      verbose = true;
       continue;
     }
 
@@ -832,8 +830,8 @@ function parseGlobalCLIOptions(
       format,
       configuredDefaultFormat,
       pretty,
+      verbose,
       logLevel,
-      quiet,
     },
     args,
   };

@@ -1,12 +1,8 @@
-import { Effect, JSONSchema } from "effect";
+import { Effect } from "effect";
 import {
-  DEFAULT_CLI_OUTPUT_FORMAT,
   DEFAULT_SERVER_CONFIG,
   OUTPUT_FORMATS,
-  POINK_PROTOCOL_VERSION,
 } from "../../agent/protocol.js";
-import { Document, PDFChunk, SearchResult } from "../../types.js";
-import { CONFIG_JSON_SCHEMA } from "../configValues.js";
 import {
   VERSION,
   runCommandWithContext,
@@ -20,18 +16,14 @@ export function runCapabilitiesCommand(
   globals: GlobalCLIOptions,
   options: CapabilitiesCommandOptions = {},
 ) {
-  return runCommandWithContext(args, globals, ({ Console, format, globals }) => {
+  return runCommandWithContext(args, globals, ({ Console, format }) => {
     const result = {
-      protocolVersion: POINK_PROTOCOL_VERSION,
       poinkVersion: VERSION,
-      defaultFormat: globals.configuredDefaultFormat,
-      factoryDefaultFormat: DEFAULT_CLI_OUTPUT_FORMAT,
-      configurableDefaultFormat: "cli.globalFlags.format" as const,
       outputFormats: OUTPUT_FORMATS,
       globalFlags: {
         "--format": OUTPUT_FORMATS,
         "--pretty": { type: "boolean", default: false },
-        "--quiet": { type: "boolean", default: false },
+        "--verbose": { type: "boolean", default: false },
         "--log-level": ["silent", "error", "info", "debug"] as const,
       },
       commands: [
@@ -60,7 +52,7 @@ export function runCapabilitiesCommand(
           ],
           description: "Add a local or URL document; URL downloads enforce SSRF protections, max file size, timeout, and redirect limits",
         },
-        { name: "taxonomy", argv: ["taxonomy", "<subcommand>"], description: "Taxonomy navigation (SKOS concepts)" },
+        { name: "taxonomy", argv: ["taxonomy", "<list|tree|get|search|add>"], description: "Taxonomy navigation and concept details (SKOS concepts)" },
         {
           name: "ingest",
           argv: ["ingest", "<dir1>", "[dir2]", "[--enrich]", "[--visuals]", "[--auto-tag]", "[--tags <tags>]"],
@@ -73,7 +65,7 @@ export function runCapabilitiesCommand(
           description: "Rebuild chunks + embeddings when chunker changes (use --include-missing for legacy docs without metadata)",
         },
         { name: "reindex", argv: ["reindex", "[--clean]", "[--doc <id>]"], description: "Re-embed existing chunks in-place (updates embeddings only; does NOT remove/re-add documents)" },
-        { name: "config", argv: ["config", "<subcommand>"], description: "Config show/get/set" },
+        { name: "config", argv: ["config", "<show|get|set|schema>"], description: "Configuration and configuration schema" },
         {
           name: "providers",
           argv: ["providers", "login", "--provider", "openai-codex", "--format", "text", "[--device-auth]"],
@@ -86,12 +78,6 @@ export function runCapabilitiesCommand(
           description: `Start MCP server over HTTP (default ${DEFAULT_SERVER_CONFIG.host}:${DEFAULT_SERVER_CONFIG.port}; non-loopback hosts require bearer auth)`,
         },
       ],
-      schemas: {
-        Document: JSONSchema.make(Document as any),
-        PDFChunk: JSONSchema.make(PDFChunk as any),
-        SearchResult: JSONSchema.make(SearchResult as any),
-        Config: CONFIG_JSON_SCHEMA,
-      },
     };
 
     return Effect.gen(function* () {

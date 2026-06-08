@@ -22,12 +22,66 @@ interface SearchCommandOptions extends Record<string, unknown> {
   globalLimit?: string | number;
 }
 
+export type SearchDocumentOutput = {
+  chunkId: string;
+  docId: string;
+  title: string;
+  page: number;
+  score: number;
+  matchType: SearchResult["matchType"];
+  content: string;
+  diagnostics?: {
+    chunkIndex: number;
+    rawScore: number;
+    scoreType: SearchResult["scoreType"];
+    vectorScore?: number;
+    ftsRank?: number;
+    expandedRange?: { start: number; end: number };
+  };
+};
+
+export function toSearchDocumentOutput(
+  result: SearchResult,
+  expandChars: number,
+  verbose = false,
+): SearchDocumentOutput {
+  const output: SearchDocumentOutput = {
+    chunkId: result.chunkId,
+    docId: result.docId,
+    title: result.title,
+    page: result.page,
+    score: result.score,
+    matchType: result.matchType,
+    content:
+      expandChars > 0
+        ? result.expandedContent ?? result.content
+        : result.content,
+  };
+
+  if (verbose) {
+    output.diagnostics = {
+      chunkIndex: result.chunkIndex,
+      rawScore: result.rawScore,
+      scoreType: result.scoreType,
+      ...(result.vectorScore !== undefined
+        ? { vectorScore: result.vectorScore }
+        : {}),
+      ...(result.ftsRank !== undefined ? { ftsRank: result.ftsRank } : {}),
+      ...(expandChars > 0 && result.expandedRange
+        ? { expandedRange: result.expandedRange }
+        : {}),
+    };
+  }
+
+  return output;
+}
+
 export function runSearchCommand(
   args: string[],
   globals: GlobalCLIOptions,
   options: SearchCommandOptions = {},
 ) {
-  return runCommandWithContext(args, globals, ({ Console, format, library }) =>
+  return runCommandWithContext(args, globals, ({ Console, format, library, globals }) =>
     Effect.gen(function* () {
       let resultPayload: unknown = null;
       let agentResult: any = null;
@@ -66,7 +120,7 @@ export function runSearchCommand(
 	      // Track results for agent hints
 	      let hintDocResults: { title: string; docId: string; chunkId?: string; score: number }[] = [];
 	      let hintConceptResults: { id: string; prefLabel: string }[] = [];
-	      let docResults: any[] = [];
+	      let docResults: SearchDocumentOutput[] = [];
 	      let conceptResults: Concept[] = [];
 
       yield* Console.log(
@@ -141,7 +195,9 @@ export function runSearchCommand(
 	                includeClusterSummaries: includeClusters,
 	              })
 	            );
-	        docResults = results;
+	        docResults = results.map((result) =>
+	          toSearchDocumentOutput(result, expandChars, globals.verbose)
+	        );
 
 	        hintDocResults = results.map((r) => ({
 	          title: r.title,
@@ -184,7 +240,18 @@ export function runSearchCommand(
       }
 
 	      // Build agent result for hints
-	      resultPayload = {
+	      const concepts = conceptResults.map((concept) => ({
+	        id: concept.id,
+	        prefLabel: concept.prefLabel,
+	        ...(concept.definition ? { definition: concept.definition } : {}),
+	        ...(globals.verbose ? { altLabels: [...concept.altLabels] } : {}),
+	      }));
+	      const compactPayload = {
+	        concepts,
+	        documents: docResults,
+	      };
+	      resultPayload = globals.verbose
+	        ? {
 	        query,
 	        options: {
 	          limit,
@@ -195,9 +262,9 @@ export function runSearchCommand(
 	          docsOnly,
 	          includeClusters,
 	        },
-	        concepts: conceptResults,
-	        documents: docResults,
-	      };
+	        ...compactPayload,
+	      }
+	        : compactPayload;
 
 	      agentResult = {
 	        _tag: "search",
@@ -286,34 +353,31 @@ export function runSearchCommand(
             docId: string;
             title: string;
             page: number;
-            chunkIndex: number;
             score: number;
-            rawScore: number;
-            scoreType: string;
             matchType: string;
-            vectorScore?: number;
-            ftsRank?: number;
-            // Optional payload for verbose workflows
             content?: string;
-            expandedContent?: string;
+            diagnostics?: SearchDocumentOutput["diagnostics"];
           };
 
-          const toHandle = (r: SearchResult): ChunkHandle => ({
-            chunkId: r.chunkId,
-            docId: r.docId,
-            title: r.title,
-            page: r.page,
-            chunkIndex: r.chunkIndex,
-            score: r.score,
-            rawScore: r.rawScore,
-            scoreType: r.scoreType,
-            matchType: r.matchType,
-            vectorScore: r.vectorScore,
-            ftsRank: r.ftsRank,
-            ...(withContent
-              ? { content: r.content, expandedContent: r.expandedContent }
-              : {}),
-          });
+          const toHandle = (r: SearchResult): ChunkHandle => {
+            const projected = toSearchDocumentOutput(
+              r,
+              expandChars,
+              globals.verbose,
+            );
+            return {
+              chunkId: projected.chunkId,
+              docId: projected.docId,
+              title: projected.title,
+              page: projected.page,
+              score: projected.score,
+              matchType: projected.matchType,
+              ...(withContent ? { content: projected.content } : {}),
+              ...(projected.diagnostics
+                ? { diagnostics: projected.diagnostics }
+                : {}),
+            };
+          };
 
           const perQuery: Array<{ query: string; documents: ChunkHandle[] }> = [];
           const merged = new Map<
@@ -363,7 +427,9 @@ export function runSearchCommand(
             deduped = deduped.slice(0, globalLimit);
           }
 
-          resultPayload = {
+          const compactPayload = { perQuery, deduped };
+          resultPayload = globals.verbose
+            ? {
             queries,
             options: {
               limit,
@@ -373,9 +439,9 @@ export function runSearchCommand(
               withContent,
               globalLimit,
             },
-            perQuery,
-            deduped,
-          };
+            ...compactPayload,
+          }
+            : compactPayload;
 
           agentResult = {
             _tag: "searchPack",

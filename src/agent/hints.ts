@@ -215,7 +215,7 @@ export function generateHints(result: CommandResult): string[] {
     case "taxonomyList": {
       const hints: string[] = [];
       hints.push(
-        `\`poink taxonomy list --tree\` -- Show hierarchy tree view`,
+        `\`poink taxonomy tree\` -- Show hierarchy tree view`,
         `\`poink taxonomy search "<query>"\` -- Find specific concepts`,
         `\`poink search "<query>"\` -- Search documents by content`
       );

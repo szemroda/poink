@@ -4,7 +4,6 @@ import { EmbeddingProvider } from "../../services/EmbeddingProvider.js";
 import { buildTreeStructure, CLIError, renderConceptTree, runCommandWithContext, type GlobalCLIOptions } from "../runner.js";
 
 interface TaxonomyCommandOptions extends Record<string, unknown> {
-  tree?: boolean;
   limit?: string | number;
   threshold?: string | number;
   label?: string;
@@ -14,12 +13,65 @@ interface TaxonomyCommandOptions extends Record<string, unknown> {
   altLabels?: string;
 }
 
+type ConceptSummary = Pick<Concept, "id" | "prefLabel">;
+
+type CompactTreeNode = {
+  id: string;
+  prefLabel: string;
+  children: CompactTreeNode[];
+};
+
+type PublicConcept = {
+  id: string;
+  prefLabel: string;
+  altLabels: string[];
+  definition?: string;
+};
+
+type VerboseTreeNode = {
+  concept: PublicConcept;
+  children: VerboseTreeNode[];
+};
+
+type TaxonomyTreeNode = {
+  concept: Concept;
+  children: TaxonomyTreeNode[];
+};
+
+function summarizeConcept(concept: Concept): ConceptSummary {
+  return { id: concept.id, prefLabel: concept.prefLabel };
+}
+
+function publicConcept(concept: Concept): PublicConcept {
+  return {
+    id: concept.id,
+    prefLabel: concept.prefLabel,
+    altLabels: [...concept.altLabels],
+    ...(concept.definition ? { definition: concept.definition } : {}),
+  };
+}
+
+function compactTree(node: TaxonomyTreeNode): CompactTreeNode {
+  return {
+    id: node.concept.id,
+    prefLabel: node.concept.prefLabel,
+    children: node.children.map(compactTree),
+  };
+}
+
+function verboseTree(node: TaxonomyTreeNode): VerboseTreeNode {
+  return {
+    concept: publicConcept(node.concept),
+    children: node.children.map(verboseTree),
+  };
+}
+
 export function runTaxonomyCommand(
   args: string[],
   globals: GlobalCLIOptions,
   options: TaxonomyCommandOptions = {},
 ) {
-  return runCommandWithContext(args, globals, ({ Console, format }) =>
+  return runCommandWithContext(args, globals, ({ Console, format, globals }) =>
     Effect.gen(function* () {
       let resultPayload: unknown = null;
       let agentResult: any = null;
@@ -32,42 +84,27 @@ export function runTaxonomyCommand(
       if (!subcommand) {
         yield* Console.error("Error: taxonomy subcommand required");
         yield* Console.error(
-          "Usage: poink taxonomy <list|tree|search|add> [args]"
+          "Usage: poink taxonomy <list|tree|get|search|add> [args]"
         );
         return yield* Effect.fail(
           new CLIError("INVALID_ARGS", "taxonomy subcommand required", {
-            available: ["list", "tree", "search", "add"],
+            available: ["list", "tree", "get", "search", "add"],
           })
         );
       }
 
       if (subcommand === "list") {
-        const opts = options;
-        const includeTree = opts.tree === true;
-
         const concepts = yield* taxonomy.listConcepts();
+        resultPayload = {
+          concepts: globals.verbose
+            ? concepts.map(publicConcept)
+            : concepts.map(summarizeConcept),
+        };
 
-        if (includeTree) {
-          const roots = yield* Effect.promise(() => buildTreeStructure(taxonomy));
-          resultPayload = { concepts, tree: roots };
-
-          if (format === "text") {
-            yield* Console.log(`Concepts: ${concepts.length}\n`);
-            for (const root of roots) {
-              for (const line of renderConceptTree(root)) {
-                yield* Console.log(line);
-              }
-              yield* Console.log("");
-            }
-          }
-        } else {
-          resultPayload = { concepts };
-
-          if (format === "text") {
-            yield* Console.log(`Concepts: ${concepts.length}\n`);
-            for (const c of concepts) {
-              yield* Console.log(`- ${c.prefLabel} (${c.id})`);
-            }
+        if (format === "text") {
+          yield* Console.log(`Concepts: ${concepts.length}\n`);
+          for (const c of concepts) {
+            yield* Console.log(`- ${c.prefLabel} (${c.id})`);
           }
         }
 
@@ -90,7 +127,12 @@ export function runTaxonomyCommand(
           );
         }
 
-        resultPayload = { rootId: rootId ?? null, tree: roots };
+        resultPayload = {
+          rootId: rootId ?? null,
+          tree: globals.verbose
+            ? roots.map(verboseTree)
+            : roots.map(compactTree),
+        };
 
         if (format === "text") {
           for (const root of roots) {
@@ -102,6 +144,69 @@ export function runTaxonomyCommand(
         }
 
         agentResult = { _tag: "taxonomyTree", rootId: rootId ?? undefined };
+        break;
+      }
+
+      if (subcommand === "get") {
+        const id = args[2];
+        if (!id) {
+          return yield* Effect.fail(
+            new CLIError("INVALID_ARGS", "Concept id required", {
+              command: "taxonomy get",
+            }),
+          );
+        }
+
+        const concept = yield* taxonomy.getConcept(id);
+        if (!concept) {
+          return yield* Effect.fail(
+            new CLIError("NOT_FOUND", `Concept not found: ${id}`, { id }),
+          );
+        }
+
+        const [broader, narrower, related] = yield* Effect.all([
+          taxonomy.getBroader(id),
+          taxonomy.getNarrower(id),
+          taxonomy.getRelated(id),
+        ]);
+
+        resultPayload = {
+          ...publicConcept(concept),
+          broader: broader.map(summarizeConcept),
+          narrower: narrower.map(summarizeConcept),
+          related: related.map(summarizeConcept),
+        };
+
+        if (format === "text") {
+          yield* Console.log(`Label: ${concept.prefLabel}`);
+          yield* Console.log(`ID: ${concept.id}`);
+          if (concept.altLabels.length > 0) {
+            yield* Console.log(`Alternative labels: ${concept.altLabels.join(", ")}`);
+          }
+          if (concept.definition) {
+            yield* Console.log(`Definition: ${concept.definition}`);
+          }
+          if (broader.length > 0) {
+            yield* Console.log(
+              `Broader: ${broader.map((item) => `${item.prefLabel} (${item.id})`).join(", ")}`,
+            );
+          }
+          if (narrower.length > 0) {
+            yield* Console.log(
+              `Narrower: ${narrower.map((item) => `${item.prefLabel} (${item.id})`).join(", ")}`,
+            );
+          }
+          if (related.length > 0) {
+            yield* Console.log(
+              `Related: ${related.map((item) => `${item.prefLabel} (${item.id})`).join(", ")}`,
+            );
+          }
+        }
+
+        agentResult = {
+          _tag: "taxonomyTree",
+          rootId: concept.id,
+        };
         break;
       }
 
@@ -151,7 +256,15 @@ export function runTaxonomyCommand(
             .slice(0, limit);
         }
 
-        resultPayload = { query, mode, limit, threshold, matches };
+        const publicMatches = matches.map((concept) => ({
+          id: concept.id,
+          prefLabel: concept.prefLabel,
+          ...(concept.definition ? { definition: concept.definition } : {}),
+          ...(globals.verbose ? { altLabels: [...concept.altLabels] } : {}),
+        }));
+        resultPayload = globals.verbose
+          ? { query, mode, limit, threshold, matches: publicMatches }
+          : { matches: publicMatches };
 
         if (format === "text") {
           yield* Console.log(`Matches: ${matches.length}\n`);
@@ -254,7 +367,7 @@ export function runTaxonomyCommand(
         new CLIError(
           "INVALID_ARGS",
           `Unknown taxonomy subcommand: ${subcommand}`,
-          { subcommand, available: ["list", "tree", "search", "add"] }
+          { subcommand, available: ["list", "tree", "get", "search", "add"] }
         )
       );
     }
