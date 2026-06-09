@@ -160,3 +160,19 @@ jobs:
       - run: npm publish
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  publish-clawhub:
+    needs:
+      - release
+      - publish-npm
+    uses: openclaw/clawhub/.github/workflows/skill-publish.yml@main
+    permissions:
+      contents: read
+      id-token: write
+    with:
+      skill_path: skills/poink-semantic-search
+      ref: ${{ needs.release.outputs.tag }}
+      dry_run: false
+      bump: patch
+    secrets:
+      clawhub_token: ${{ secrets.CLAWHUB_TOKEN }}

@@ -1,6 +1,17 @@
 ---
 name: poink-semantic-search
-description: Helps building and querying local document knowledge base with semantic and hybrid search across PDF, Markdown, DOCX, ODT, and FODT files. This skill should be used when User or Agent needs to search, ingest, organize, or inspect documents with the poink CLI.
+description: Build and query local document knowledge bases with semantic and hybrid search across PDF, Markdown, DOCX, ODT, and FODT files. Use when searching, ingesting, organizing, or inspecting documents with the poink CLI.
+metadata:
+  openclaw:
+    requires:
+      bins:
+        - poink
+    install:
+      - kind: node
+        package: poink-cli
+        bins:
+          - poink
+    homepage: https://github.com/szemroda/poink
 ---
 
 # Poink
