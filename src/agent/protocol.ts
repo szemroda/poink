@@ -9,8 +9,6 @@
 
 import { isIP } from "node:net";
 
-export const POINK_PROTOCOL_VERSION = 1 as const;
-
 export const DEFAULT_CLI_OUTPUT_FORMAT = "text" as const;
 export const OUTPUT_FORMATS = [DEFAULT_CLI_OUTPUT_FORMAT, "json", "ndjson"] as const;
 export const DEFAULT_SERVER_AUTH_TOKEN_ENV = "POINK_SERVER_TOKEN" as const;
@@ -28,6 +26,16 @@ export interface AgentErrorShape {
   code: string;
   message: string;
   details?: unknown;
+}
+
+export interface TimingMeta {
+  totalMs: number;
+  commandMs?: number;
+}
+
+export interface AgentMeta {
+  poinkVersion: string;
+  timing: TimingMeta;
 }
 
 export interface ServerAuthConfig {
@@ -62,23 +70,21 @@ export type AgentEnvelope<T> =
       ok: true;
       command: string;
       result: T;
-      protocolVersion?: typeof POINK_PROTOCOL_VERSION;
       nextActions?: NextAction[];
-      meta?: Record<string, unknown>;
+      meta?: AgentMeta;
     }
   | {
       ok: false;
       command: string;
       error: AgentErrorShape;
-      protocolVersion?: typeof POINK_PROTOCOL_VERSION;
       nextActions?: NextAction[];
-      meta?: Record<string, unknown>;
+      meta?: AgentMeta;
     };
 
 type EnvelopeOptions = {
   verbose?: boolean;
   nextActions?: NextAction[];
-  meta?: Record<string, unknown>;
+  meta?: AgentMeta;
 };
 
 export function makeSuccessEnvelope<T>(
@@ -88,7 +94,6 @@ export function makeSuccessEnvelope<T>(
 ): AgentEnvelope<T> {
   const envelope: AgentEnvelope<T> = { ok: true, command, result };
   if (options.verbose) {
-    envelope.protocolVersion = POINK_PROTOCOL_VERSION;
     if (options.nextActions) envelope.nextActions = options.nextActions;
     if (options.meta) envelope.meta = options.meta;
   }
@@ -109,7 +114,6 @@ export function makeErrorEnvelope(
     },
   };
   if (options.verbose) {
-    envelope.protocolVersion = POINK_PROTOCOL_VERSION;
     if (error.details !== undefined) envelope.error.details = error.details;
     if (options.meta) envelope.meta = options.meta;
   }

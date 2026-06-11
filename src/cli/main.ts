@@ -30,6 +30,11 @@ import {
   closeOpenAICodexProviderManager,
   withOpenAICodexProviderScope,
 } from "../services/OpenAICodexProvider.js";
+import {
+  createInvocationTiming,
+  createProcessInvocationTiming,
+  type InvocationTiming,
+} from "./timing.js";
 
 function isOutputFormat(value: unknown): value is OutputFormat {
   return typeof value === "string" && OUTPUT_FORMATS.includes(value as OutputFormat);
@@ -86,7 +91,7 @@ function writeCliError(
   globals: GlobalCLIOptions,
   command: string,
   error: CLIError,
-  startedAt: number,
+  timing: InvocationTiming,
 ): void {
   if (globals.format === "text") {
     try {
@@ -104,19 +109,19 @@ function writeCliError(
       { code: error.code, message: error.message, details: error.details },
       {
         verbose: globals.verbose,
-        meta: {
-          poinkVersion: VERSION,
-          timingMs: Date.now() - startedAt,
-        },
+        meta: timing.toAgentMeta(VERSION),
       },
     ),
     globals.pretty,
   );
 }
 
-async function executeParsed(parsed: ParsedCommandLine): Promise<number> {
-  const startedAt = Date.now();
-  const { args, globals } = parsed;
+async function executeParsed(
+  parsed: ParsedCommandLine,
+  timing: InvocationTiming,
+): Promise<number> {
+  const { args, globals: parsedGlobals } = parsed;
+  const globals: GlobalCLIOptions = { ...parsedGlobals, timing };
   setLogLevel(globals.logLevel);
 
   const command = args[0];
@@ -126,7 +131,11 @@ async function executeParsed(parsed: ParsedCommandLine): Promise<number> {
       await runMcpServer(buildCliAppLayer(), globals);
       return 0;
     } catch (error) {
-      process.stderr.write(`MCP server failed: ${error}\n`);
+      const cliErr =
+        error instanceof CLIError
+          ? error
+          : new CLIError("MCP_FAILED", String(error), error);
+      writeCliError(globals, "mcp", cliErr, timing);
       return 1;
     }
   }
@@ -140,7 +149,7 @@ async function executeParsed(parsed: ParsedCommandLine): Promise<number> {
         error instanceof CLIError
           ? error
           : new CLIError("SERVE_FAILED", String(error), error);
-      writeCliError(globals, "serve", cliErr, startedAt);
+      writeCliError(globals, "serve", cliErr, timing);
       return 1;
     }
   }
@@ -177,7 +186,7 @@ async function executeParsed(parsed: ParsedCommandLine): Promise<number> {
     } catch {
       // ignore cleanup errors while reporting the original failure
     }
-    writeCliError(globals, command || "cli", coerceCliError(error), startedAt);
+    writeCliError(globals, command || "cli", coerceCliError(error), timing);
     return 1;
   }
 
@@ -196,7 +205,7 @@ async function executeParsed(parsed: ParsedCommandLine): Promise<number> {
         makeSuccessEnvelope(out.command, out.result, {
           verbose: globals.verbose,
           nextActions: out.nextActions,
-          meta: out.meta ?? { poinkVersion: VERSION },
+          meta: timing.toAgentMeta(VERSION),
         }),
         globals.pretty,
       );
@@ -208,37 +217,48 @@ async function executeParsed(parsed: ParsedCommandLine): Promise<number> {
     globals,
     command || "cli",
     coerceCliError(outEither.left),
-    startedAt,
+    timing,
   );
   return 1;
 }
 
-export async function runCli(rawArgs: string[]): Promise<number> {
-  const startedAt = Date.now();
+async function runCliWithTiming(
+  rawArgs: string[],
+  timing: InvocationTiming,
+): Promise<number> {
   const configuredDefaultFormat = resolveConfiguredDefaultFormat();
 
   if (rawArgs.length === 0) {
-    return executeParsed({
-      args: ["--help"],
-      options: {},
-      globals: configuredGlobals(configuredDefaultFormat, rawArgs),
-    });
+    return executeParsed(
+      {
+        args: ["--help"],
+        options: {},
+        globals: configuredGlobals(configuredDefaultFormat, rawArgs),
+      },
+      timing,
+    );
   }
 
   if (rawArgs.length === 1 && (rawArgs[0] === "--help" || rawArgs[0] === "-h")) {
-    return executeParsed({
-      args: ["--help"],
-      options: {},
-      globals: configuredGlobals(configuredDefaultFormat, rawArgs),
-    });
+    return executeParsed(
+      {
+        args: ["--help"],
+        options: {},
+        globals: configuredGlobals(configuredDefaultFormat, rawArgs),
+      },
+      timing,
+    );
   }
 
   if (rawArgs.length === 1 && (rawArgs[0] === "--version" || rawArgs[0] === "-v")) {
-    return executeParsed({
-      args: ["--version"],
-      options: {},
-      globals: configuredGlobals(configuredDefaultFormat, rawArgs),
-    });
+    return executeParsed(
+      {
+        args: ["--version"],
+        options: {},
+        globals: configuredGlobals(configuredDefaultFormat, rawArgs),
+      },
+      timing,
+    );
   }
 
   let parsed: ParsedCommandLine;
@@ -250,12 +270,16 @@ export async function runCli(rawArgs: string[]): Promise<number> {
       globals,
       rawArgs[0] && !rawArgs[0].startsWith("-") ? rawArgs[0] : "cli",
       coerceCliError(error),
-      startedAt,
+      timing,
     );
     return 1;
   }
 
-  return executeParsed(parsed);
+  return executeParsed(parsed, timing);
+}
+
+export function runCli(rawArgs: string[]): Promise<number> {
+  return runCliWithTiming(rawArgs, createInvocationTiming());
 }
 
 export function isMainModule(metaUrl: string, argvPath: string | undefined): boolean {
@@ -270,6 +294,9 @@ export function isMainModule(metaUrl: string, argvPath: string | undefined): boo
 }
 
 export async function runMain(argv: string[] = process.argv): Promise<void> {
-  const exitCode = await runCli(argv.slice(2));
+  const exitCode = await runCliWithTiming(
+    argv.slice(2),
+    createProcessInvocationTiming(),
+  );
   process.exit(exitCode);
 }

@@ -42,7 +42,7 @@ export function addOutputOptions<T extends Command>(command: T): T {
   return command
     .option("--format <format>", "output format: text, json, or ndjson", parseOutputFormat)
     .option("--pretty", "pretty-print JSON output")
-    .option("--verbose", "include protocol metadata and next actions")
+    .option("--verbose", "include metadata, next actions, and command diagnostics")
     .option("-h, --help", "display command help")
     .option("--log-level <level>", "stderr log level: silent, error, info, or debug", parseLogLevel) as T;
 }

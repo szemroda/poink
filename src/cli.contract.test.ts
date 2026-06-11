@@ -148,6 +148,52 @@ function runCli(
   };
 }
 
+type TimingMetadata = {
+  totalMs: number;
+  commandMs?: number;
+};
+
+function expectDuration(value: unknown): number {
+  expect(typeof value).toBe("number");
+  if (typeof value !== "number") {
+    throw new Error("Expected duration to be a number");
+  }
+  expect(Number.isFinite(value)).toBe(true);
+  expect(value).toBeGreaterThanOrEqual(0);
+  const fractionalDigits = String(value).split(".")[1]?.length ?? 0;
+  expect(fractionalDigits).toBeLessThanOrEqual(3);
+  return value;
+}
+
+function expectTimingMetadata(
+  meta: unknown,
+  options: { command: boolean },
+): TimingMetadata {
+  expect(meta).toBeDefined();
+  if (typeof meta !== "object" || meta === null) {
+    throw new Error("Expected metadata object");
+  }
+  const metaRecord = meta as Record<string, unknown>;
+  expect(typeof metaRecord.poinkVersion).toBe("string");
+  expect("timingMs" in metaRecord).toBe(false);
+  expect("protocolVersion" in metaRecord).toBe(false);
+
+  if (typeof metaRecord.timing !== "object" || metaRecord.timing === null) {
+    throw new Error("Expected timing metadata object");
+  }
+  const timingRecord = metaRecord.timing as Record<string, unknown>;
+  const totalMs = expectDuration(timingRecord.totalMs);
+
+  if (!options.command) {
+    expect("commandMs" in timingRecord).toBe(false);
+    return { totalMs };
+  }
+
+  const commandMs = expectDuration(timingRecord.commandMs);
+  expect(totalMs).toBeGreaterThanOrEqual(commandMs);
+  return { totalMs, commandMs };
+}
+
 function withTempLibraryPath<T>(fn: (libraryPath: string) => T): T {
   const dir = mkdtempSync(join(tmpdir(), "poink-cli-contract-"));
   try {
@@ -278,7 +324,7 @@ describe("CLI JSON Envelope Contract", () => {
       expect(Object.keys(obj).sort()).toEqual(["command", "ok", "result"]);
     }));
 
-  test("stats with --verbose includes protocol metadata and nextActions", () =>
+  test("stats with --verbose includes timing metadata and nextActions", () =>
     withTempLibraryPath((libraryPath) => {
       const configPath = join(libraryPath, "config.json");
       writeTestConfig(configPath, libraryPath);
@@ -291,11 +337,30 @@ describe("CLI JSON Envelope Contract", () => {
       const obj = JSON.parse(res.stdout);
       expect(obj.ok).toBe(true);
       expect(obj.command).toBe("stats");
-      expect(obj.protocolVersion).toBe(1);
-      expect(obj.meta.poinkVersion).toBeDefined();
-      expect(typeof obj.meta.timingMs).toBe("number");
+      expect("protocolVersion" in obj).toBe(false);
+      const timing = expectTimingMetadata(obj.meta, { command: true });
+      if (timing.commandMs === undefined) {
+        throw new Error("Expected command timing");
+      }
+      expect(timing.totalMs - timing.commandMs).toBeGreaterThan(10);
       expect(Array.isArray(obj.nextActions)).toBe(true);
       expect(obj.nextActions.length).toBeGreaterThan(0);
+    }));
+
+  test("verbose text output does not expose timing metadata", () =>
+    withTempLibraryPath((libraryPath) => {
+      const configPath = join(libraryPath, "config.json");
+      writeTestConfig(configPath, libraryPath);
+      const env = envForConfig(configPath);
+
+      const compact = runCli(["stats", "--format", "text"], { env });
+      const verbose = runCli(["stats", "--format", "text", "--verbose"], {
+        env,
+      });
+
+      expect(verbose.exitCode).toBe(0);
+      expect(verbose.stdout).toBe(compact.stdout);
+      expect(verbose.stdout).not.toContain("timing");
     }));
 
   test("removed hint flags are rejected", () =>
@@ -402,10 +467,25 @@ describe("CLI JSON Envelope Contract", () => {
 
       expect(res.exitCode).not.toBe(0);
       const obj = JSON.parse(res.stdout);
-      expect(obj.protocolVersion).toBe(1);
-      expect(obj.meta.poinkVersion).toBeDefined();
-      expect(typeof obj.meta.timingMs).toBe("number");
-      expect(obj.meta.timingMs).toBeGreaterThanOrEqual(0);
+      expect("protocolVersion" in obj).toBe(false);
+      expectTimingMetadata(obj.meta, { command: false });
+    }));
+
+  test("verbose command failures include command timing", () =>
+    withTempLibraryPath((libraryPath) => {
+      const configPath = join(libraryPath, "config.json");
+      writeTestConfig(configPath, libraryPath);
+
+      const res = runCli(
+        ["read", "missing-document", "--format", "json", "--verbose"],
+        { env: envForConfig(configPath) },
+      );
+
+      expect(res.exitCode).not.toBe(0);
+      const obj = JSON.parse(res.stdout);
+      expect(obj.ok).toBe(false);
+      expect(obj.error.code).toBe("NOT_FOUND");
+      expectTimingMetadata(obj.meta, { command: true });
     }));
 
   test("missing required command argument returns a structured INVALID_ARGS envelope", () =>
@@ -1438,6 +1518,7 @@ describe("MCP Tool Output Contract", () => {
           expect(envelope.result).toBeDefined();
           expect(envelope.result.libraryPath).toBe(libraryPath);
           expect("protocolVersion" in envelope).toBe(false);
+          expect("meta" in envelope).toBe(false);
           expect(JSON.parse(textContent.text)).toEqual(envelope);
         } finally {
           try {
@@ -1481,18 +1562,25 @@ describe("MCP Tool Output Contract", () => {
 
         try {
           await client.connect(transport);
+          const successCall = await client.callTool({
+            name: "stats",
+            arguments: {},
+          });
+          const successEnvelope =
+            successCall.structuredContent as Record<string, unknown>;
+          expect(successEnvelope.ok).toBe(true);
+          expect("protocolVersion" in successEnvelope).toBe(false);
+          expectTimingMetadata(successEnvelope.meta, { command: true });
+
           const call = await client.callTool({
             name: "read",
             arguments: { idOrTitle: "missing-document" },
           });
           const envelope = call.structuredContent as Record<string, unknown>;
-          const meta = envelope.meta as Record<string, unknown>;
 
           expect(envelope.ok).toBe(false);
-          expect(envelope.protocolVersion).toBe(1);
-          expect(meta.poinkVersion).toBeDefined();
-          expect(typeof meta.timingMs).toBe("number");
-          expect(meta.timingMs).toBeGreaterThanOrEqual(0);
+          expect("protocolVersion" in envelope).toBe(false);
+          expectTimingMetadata(envelope.meta, { command: true });
         } finally {
           try {
             await client.close();
@@ -1581,7 +1669,7 @@ describe("HTTP MCP Server", () => {
   );
 
   test(
-    "serve refusal is a structured envelope in JSON mode",
+    "verbose serve startup failures include total timing only",
     async () =>
       withTempLibraryPathAsync(async (libraryPath) => {
         const configPath = join(libraryPath, "config.json");
@@ -1604,6 +1692,7 @@ describe("HTTP MCP Server", () => {
             String(port),
             "--format",
             "json",
+            "--verbose",
           ]),
           {
             cwd: process.cwd(),
@@ -1618,6 +1707,7 @@ describe("HTTP MCP Server", () => {
         expect(obj.ok).toBe(false);
         expect(obj.command).toBe("serve");
         expect("protocolVersion" in obj).toBe(false);
+        expectTimingMetadata(obj.meta, { command: false });
         expect(obj.error.code).toBe("INVALID_CONFIG");
         expect(String(obj.error.message)).toContain("Refusing to bind HTTP MCP server");
       }),

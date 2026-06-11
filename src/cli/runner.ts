@@ -76,7 +76,6 @@ import {
   DEFAULT_CLI_OUTPUT_FORMAT,
   DEFAULT_SERVER_CONFIG,
   OUTPUT_FORMATS,
-  POINK_PROTOCOL_VERSION,
   type LogLevel,
   type NextAction,
   type OutputFormat,
@@ -103,6 +102,7 @@ import { CONFIG_JSON_SCHEMA } from "./configValues.js";
 import { runConfigCommand } from "./commands/config.js";
 import { runLibraryCommand } from "./commands/library.js";
 import { runProvidersCommand } from "./commands/providers.js";
+import type { InvocationTiming } from "./timing.js";
 
 export {
   assertURLDownloadAllowed,
@@ -626,6 +626,7 @@ export type GlobalCLIOptions = {
   pretty: boolean;
   verbose: boolean;
   logLevel: LogLevel;
+  timing?: InvocationTiming;
 };
 
 export type CommandExecutionContext = {
@@ -634,7 +635,6 @@ export type CommandExecutionContext = {
   globals: GlobalCLIOptions;
   command: string;
   format: OutputFormat;
-  startedAt: number;
   Console: {
     log: (message: string) => Effect.Effect<void, never, never>;
     error: (message: string) => Effect.Effect<void, never, never>;
@@ -651,7 +651,6 @@ export type CommandBodyOutput = {
   command?: string;
   resultPayload: unknown;
   agentResult: CommandResult | null;
-  meta?: Record<string, unknown> | null;
 };
 
 export function runCommandWithContext(
@@ -664,7 +663,7 @@ export function runCommandWithContext(
 ) {
   return Effect.gen(function* () {
     const { format, verbose } = globals;
-    const startedAt = Date.now();
+    globals.timing?.startCommand();
     const command = args[0] ?? "cli";
     let loadedLibrary: PDFLibrary | undefined;
 
@@ -700,19 +699,19 @@ export function runCommandWithContext(
       globals,
       command,
       format,
-      startedAt,
       Console,
       library,
       getLoadedLibraryStats: () =>
         loadedLibrary
           ? Effect.either(loadedLibrary.stats()) as Effect.Effect<any, never, never>
           : Effect.succeed({ _tag: "Left" as const }),
-    });
-
-    const meta = output.meta ?? {
-      poinkVersion: VERSION,
-      timingMs: Date.now() - startedAt,
-    };
+    }).pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          globals.timing?.finishCommand();
+        }),
+      ),
+    );
 
     let nextActions: NextAction[] | undefined = undefined;
     if (output.agentResult) {
@@ -738,7 +737,6 @@ export function runCommandWithContext(
       result: output.resultPayload ?? output.agentResult,
       agentResult: output.agentResult,
       nextActions,
-      meta,
     };
   });
 }

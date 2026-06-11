@@ -21,6 +21,10 @@ import {
 } from "./runner.js";
 import { dispatchCommand } from "./commands.js";
 import { withConfiguredLogging } from "./runtime.js";
+import {
+  createInvocationTiming,
+  type InvocationTiming,
+} from "./timing.js";
 
 type MCPTransport =
   | StdioServerTransport
@@ -52,7 +56,6 @@ export async function connectMcpServer<ROut, E>(
   const EnvelopeSchema = z.object({
     ok: z.boolean(),
     command: z.string(),
-    protocolVersion: z.number().optional(),
     result: z.any().optional(),
     error: z
       .object({
@@ -62,7 +65,15 @@ export async function connectMcpServer<ROut, E>(
       })
       .optional(),
     nextActions: z.array(NextActionSchema).optional(),
-    meta: z.record(z.string(), z.any()).optional(),
+    meta: z
+      .object({
+        poinkVersion: z.string(),
+        timing: z.object({
+          totalMs: z.number(),
+          commandMs: z.number().optional(),
+        }),
+      })
+      .optional(),
   });
 
   const scope = await Effect.runPromise(Scope.make());
@@ -88,9 +99,9 @@ export async function connectMcpServer<ROut, E>(
 
   const runCommand = async (
     invocation: CommandInvocation,
+    timing: InvocationTiming,
   ): Promise<z.infer<typeof EnvelopeSchema>> => {
-    const startedAt = Date.now();
-    const cmdGlobals = forceJsonGlobals(globals);
+    const cmdGlobals = { ...forceJsonGlobals(globals), timing };
     const { argv, options = {} } = invocation;
 
     const outEither: any = await withOpenAICodexProviderScope(() =>
@@ -108,7 +119,7 @@ export async function connectMcpServer<ROut, E>(
       return makeSuccessEnvelope(out.command, out.result, {
         verbose: cmdGlobals.verbose,
         nextActions: out.nextActions,
-        meta: out.meta ?? { poinkVersion: VERSION },
+        meta: timing.toAgentMeta(VERSION),
       });
     }
 
@@ -118,10 +129,7 @@ export async function connectMcpServer<ROut, E>(
       { code: err.code, message: err.message, details: err.details },
       {
         verbose: cmdGlobals.verbose,
-        meta: {
-          poinkVersion: VERSION,
-          timingMs: Date.now() - startedAt,
-        },
+        meta: timing.toAgentMeta(VERSION),
       },
     );
   };
@@ -144,7 +152,8 @@ export async function connectMcpServer<ROut, E>(
         outputSchema: EnvelopeSchema as any,
       },
       (async (input: any) => {
-        const envelope = await runCommand(toCommand(input));
+        const timing = createInvocationTiming();
+        const envelope = await runCommand(toCommand(input), timing);
         return {
           content: [{ type: "text", text: JSON.stringify(envelope) }],
           structuredContent: envelope,

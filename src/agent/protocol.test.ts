@@ -36,12 +36,17 @@ describe("agent envelopes", () => {
       makeSuccessEnvelope("stats", {}, {
         verbose: true,
         nextActions: [{ kind: "shell", argv: ["poink", "list"] }],
-        meta: { poinkVersion: "1.0.0" },
+        meta: {
+          poinkVersion: "1.0.0",
+          timing: { totalMs: 12.345, commandMs: 1.234 },
+        },
       }),
     ).toMatchObject({
-      protocolVersion: 1,
       nextActions: [{ kind: "shell", argv: ["poink", "list"] }],
-      meta: { poinkVersion: "1.0.0" },
+      meta: {
+        poinkVersion: "1.0.0",
+        timing: { totalMs: 12.345, commandMs: 1.234 },
+      },
     });
     expect(
       makeErrorEnvelope(
@@ -54,7 +59,6 @@ describe("agent envelopes", () => {
         { verbose: true },
       ),
     ).toMatchObject({
-      protocolVersion: 1,
       error: {
         code: "NOT_FOUND",
         message: "Missing",

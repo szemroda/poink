@@ -95,7 +95,7 @@ npx skills add https://github.com/szemroda/poink --skill poink-semantic-search
 
 - `--format text|json|ndjson` (default: `text`)
 - `--pretty` pretty-print JSON
-- `--verbose` include protocol metadata, next actions, and command diagnostics
+- `--verbose` include metadata, next actions, and command diagnostics in structured output
 - `--log-level silent|error|info|debug` (logs go to stderr)
 
 You can change the CLI default format in config:

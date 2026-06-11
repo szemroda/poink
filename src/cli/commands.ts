@@ -44,7 +44,7 @@ export function dispatchCommand(
   options: Record<string, unknown> = {},
 ): Effect.Effect<any, any, any> {
   if (args.length === 0 || args.includes("--help") || args.includes("-h")) {
-    return runCommandWithContext(args, globals, ({ Console, format, getLoadedLibraryStats, startedAt }) =>
+    return runCommandWithContext(args, globals, ({ Console, format, getLoadedLibraryStats }) =>
       Effect.gen(function* () {
         const serviceFreeHelp = args[0] === "config" || args[0] === "providers";
         const stats = serviceFreeHelp
@@ -53,30 +53,28 @@ export function dispatchCommand(
         const statsData = stats._tag === "Right" ? stats.right : undefined;
         if (format === "text") {
           yield* Console.log(renderHelp(statsData));
-          return { command: "help", resultPayload: null, agentResult: null, meta: null };
+          return { command: "help", resultPayload: null, agentResult: null };
         }
         return {
           command: "help",
           resultPayload: { help: renderHelp(statsData) },
           agentResult: null,
-          meta: { poinkVersion: VERSION, timingMs: Date.now() - startedAt },
         };
       }),
     options);
   }
 
   if (args.includes("--version") || args.includes("-v")) {
-    return runCommandWithContext(args, globals, ({ Console, format, startedAt }) =>
+    return runCommandWithContext(args, globals, ({ Console, format }) =>
       Effect.gen(function* () {
         if (format === "text") {
           yield* Console.log(`poink v${VERSION}`);
-          return { command: "version", resultPayload: null, agentResult: null, meta: null };
+          return { command: "version", resultPayload: null, agentResult: null };
         }
         return {
           command: "version",
           resultPayload: { version: VERSION },
           agentResult: null,
-          meta: { poinkVersion: VERSION, timingMs: Date.now() - startedAt },
         };
       }),
     options);
@@ -84,34 +82,32 @@ export function dispatchCommand(
 
   switch (args[0]) {
     case "--help":
-      return runCommandWithContext(args, globals, ({ Console, format, getLoadedLibraryStats, startedAt }) =>
+      return runCommandWithContext(args, globals, ({ Console, format, getLoadedLibraryStats }) =>
         Effect.gen(function* () {
           const stats = yield* getLoadedLibraryStats();
           const statsData = stats._tag === "Right" ? stats.right : undefined;
           if (format === "text") {
             yield* Console.log(renderHelp(statsData));
-            return { command: "help", resultPayload: null, agentResult: null, meta: null };
+            return { command: "help", resultPayload: null, agentResult: null };
           }
           return {
             command: "help",
             resultPayload: { help: renderHelp(statsData) },
             agentResult: null,
-            meta: { poinkVersion: VERSION, timingMs: Date.now() - startedAt },
           };
         }),
       );
     case "--version":
-      return runCommandWithContext(args, globals, ({ Console, format, startedAt }) =>
+      return runCommandWithContext(args, globals, ({ Console, format }) =>
         Effect.gen(function* () {
           if (format === "text") {
             yield* Console.log(`poink v${VERSION}`);
-            return { command: "version", resultPayload: null, agentResult: null, meta: null };
+            return { command: "version", resultPayload: null, agentResult: null };
           }
           return {
             command: "version",
             resultPayload: { version: VERSION },
             agentResult: null,
-            meta: { poinkVersion: VERSION, timingMs: Date.now() - startedAt },
           };
         }),
       );
