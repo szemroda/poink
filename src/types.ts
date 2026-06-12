@@ -42,12 +42,6 @@ export class Document extends Schema.Class<Document>("Document")({
   ),
 }) {}
 
-/**
- * @deprecated Use Document instead. Kept for backwards compatibility.
- */
-export type PDFDocument = Document;
-export const PDFDocument = Document;
-
 export class PDFChunk extends Schema.Class<PDFChunk>("PDFChunk")({
   id: Schema.String,
   docId: Schema.String,
@@ -61,75 +55,6 @@ export class PDFChunk extends Schema.Class<PDFChunk>("PDFChunk")({
  * Entity type discriminator for unified search results
  */
 export type EntityType = "document" | "concept";
-
-/**
- * @deprecated Use DocumentSearchResult for unified search. Kept for backwards compatibility.
- */
-export class SearchResult extends Schema.Class<SearchResult>("SearchResult")({
-  chunkId: Schema.String,
-  docId: Schema.String,
-  title: Schema.String,
-  page: Schema.Number,
-  chunkIndex: Schema.Number,
-  content: Schema.String,
-  /** Normalized score in 0..1 for ranking across match types */
-  score: Schema.Number,
-  /** Raw score from the underlying engine (e.g. cosine similarity, FTS rank) */
-  rawScore: Schema.Number,
-  /** What rawScore represents (do not assume one score meaning across engines) */
-  scoreType: Schema.Literal("cosine_similarity", "fts_rank", "hybrid"),
-  /** Optional component score for vector results */
-  vectorScore: Schema.optional(Schema.Number),
-  /** Optional component score for FTS results (raw FTS rank; often negative, more negative = better) */
-  ftsRank: Schema.optional(Schema.Number),
-  matchType: Schema.Literal("vector", "fts", "hybrid"),
-  /** Expanded context around the match (only populated when expandChars > 0) */
-  expandedContent: Schema.optional(Schema.String),
-  /** Range of chunk indices included in expandedContent */
-  expandedRange: Schema.optional(
-    Schema.Struct({ start: Schema.Number, end: Schema.Number })
-  ),
-}) {
-  /**
-   * Backwards-compatible constructor:
-   * Older callers used `SearchResult` without chunkId/rawScore/scoreType.
-   *
-   * This type is deprecated in favor of `DocumentSearchResult`, but we keep
-   * legacy input working so downstream code doesn't explode.
-   */
-  constructor(props: any) {
-    const docId = props?.docId;
-    const page = props?.page;
-    const chunkIndex = props?.chunkIndex;
-
-    const matchType: "vector" | "fts" | "hybrid" = props?.matchType;
-    const score: number = props?.score;
-
-    const chunkId =
-      props?.chunkId ?? `legacy:${String(docId)}:${String(page)}:${String(chunkIndex)}`;
-
-    const rawScore = props?.rawScore ?? score;
-
-    const scoreType =
-      props?.scoreType ??
-      (matchType === "fts"
-        ? "fts_rank"
-        : matchType === "hybrid"
-          ? "hybrid"
-          : "cosine_similarity");
-
-    const vectorScore =
-      props?.vectorScore ?? (matchType === "vector" ? score : undefined);
-
-    super({
-      ...props,
-      chunkId,
-      rawScore,
-      scoreType,
-      vectorScore,
-    });
-  }
-}
 
 /**
  * Document search result with entity type discriminator

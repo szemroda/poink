@@ -1,9 +1,9 @@
 import { Context, Duration, Effect, Layer } from "effect";
 import {
   type Config,
+  DocumentSearchResult,
   DocumentNotFoundError,
   SearchOptions,
-  SearchResult,
   type Document,
   type PDFChunk,
 } from "../types.js";
@@ -72,7 +72,7 @@ const makeSemanticLibraryService = (_config: Config) =>
       ) =>
         Effect.gen(function* () {
           const { hybrid, limit, expandChars = 0 } = options;
-          const results: SearchResult[] = [];
+          const results: DocumentSearchResult[] = [];
           const healthCheck = yield* Effect.either(embedProvider.checkHealth());
 
           if (healthCheck._tag === "Right") {
@@ -98,7 +98,7 @@ const makeSemanticLibraryService = (_config: Config) =>
                 1,
                 Math.max(vectorScore, fts.score) * 1.05,
               );
-              results[results.indexOf(existing)] = new SearchResult({
+              results[results.indexOf(existing)] = new DocumentSearchResult({
                 ...existing,
                 score: combined,
                 matchType: "hybrid",
@@ -124,7 +124,7 @@ const makeSemanticLibraryService = (_config: Config) =>
                     { maxChars: effectiveExpand },
                   ),
                   (expanded) =>
-                    new SearchResult({
+                    new DocumentSearchResult({
                       ...result,
                       expandedContent: expanded.content,
                       expandedRange: { start: 0, end: 0 },

@@ -11,9 +11,9 @@ import { Database } from "./Database.js";
 import {
   DatabaseError,
   Document,
+  DocumentSearchResult,
   PDFChunk,
   type DocumentFileType,
-  type SearchResult,
 } from "../types.js";
 import { inferFileTypeFromPath } from "../chunking.js";
 
@@ -614,7 +614,7 @@ export class QdrantDatabase {
               const raw = fullTextRank(content, query);
               const score = raw / (1 + raw);
 
-              return {
+              return new DocumentSearchResult({
                 chunkId: resolvePayloadId(point.id, payload),
                 docId: asString(payload.docId),
                 title: asString(payload.title),
@@ -626,7 +626,8 @@ export class QdrantDatabase {
                 scoreType: "fts_rank",
                 ftsRank: raw,
                 matchType: "fts",
-              } as SearchResult;
+                entityType: "document",
+              });
             })
             .sort((a, b) => b.score - a.score)
             .slice(0, limit);
@@ -1033,11 +1034,11 @@ function payloadToChunk(id: string | number, payload: QdrantPayload): PDFChunk {
   });
 }
 
-function pointToVectorResult(point: QdrantPoint): SearchResult {
+function pointToVectorResult(point: QdrantPoint): DocumentSearchResult {
   const payload = point.payload ?? {};
   const score = typeof point.score === "number" ? point.score : 0;
 
-  return {
+  return new DocumentSearchResult({
     chunkId: resolvePayloadId(point.id, payload),
     docId: asString(payload.docId),
     title: asString(payload.title),
@@ -1049,7 +1050,8 @@ function pointToVectorResult(point: QdrantPoint): SearchResult {
     scoreType: "cosine_similarity",
     vectorScore: score,
     matchType: "vector",
-  } as SearchResult;
+    entityType: "document",
+  });
 }
 
 function resolvePayloadId(id: string | number, payload?: QdrantPayload): string {

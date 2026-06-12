@@ -1,5 +1,8 @@
 import { Effect } from "effect";
-import { SearchOptions, type SearchResult } from "../../types.js";
+import {
+  SearchOptions,
+  type DocumentSearchResult,
+} from "../../types.js";
 import { type Concept, TaxonomyService } from "../../services/TaxonomyService.js";
 import { EmbeddingProvider } from "../../services/EmbeddingProvider.js";
 import { CLIError, runCommandWithContext, splitPositionalsAndFlags, type GlobalCLIOptions } from "../runner.js";
@@ -27,12 +30,12 @@ export type SearchDocumentOutput = {
   title: string;
   page: number;
   score: number;
-  matchType: SearchResult["matchType"];
+  matchType: DocumentSearchResult["matchType"];
   content: string;
   diagnostics?: {
     chunkIndex: number;
     rawScore: number;
-    scoreType: SearchResult["scoreType"];
+    scoreType: DocumentSearchResult["scoreType"];
     vectorScore?: number;
     ftsRank?: number;
     expandedRange?: { start: number; end: number };
@@ -40,7 +43,7 @@ export type SearchDocumentOutput = {
 };
 
 export function toSearchDocumentOutput(
-  result: SearchResult,
+  result: DocumentSearchResult,
   expandChars: number,
   verbose = false,
 ): SearchDocumentOutput {
@@ -358,7 +361,7 @@ export function runSearchCommand(
             diagnostics?: SearchDocumentOutput["diagnostics"];
           };
 
-          const toHandle = (r: SearchResult): ChunkHandle => {
+          const toHandle = (r: DocumentSearchResult): ChunkHandle => {
             const projected = toSearchDocumentOutput(
               r,
               expandChars,

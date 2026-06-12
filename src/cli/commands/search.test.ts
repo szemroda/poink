@@ -1,9 +1,11 @@
 import { describe, expect, test } from "vitest";
-import { SearchResult } from "../../types.js";
+import { DocumentSearchResult } from "../../types.js";
 import { toSearchDocumentOutput } from "./search.js";
 
-function makeResult(overrides: Partial<SearchResult> = {}): SearchResult {
-  return new SearchResult({
+function makeResult(
+  overrides: Partial<DocumentSearchResult> = {},
+): DocumentSearchResult {
+  return new DocumentSearchResult({
     chunkId: "chunk-1",
     docId: "doc-1",
     title: "Example",
@@ -15,6 +17,7 @@ function makeResult(overrides: Partial<SearchResult> = {}): SearchResult {
     scoreType: "cosine_similarity",
     vectorScore: 0.75,
     matchType: "vector",
+    entityType: "document",
     expandedContent: "context before\nmatching chunk\ncontext after",
     expandedRange: { start: 2, end: 4 },
     ...overrides,

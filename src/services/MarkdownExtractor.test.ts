@@ -539,7 +539,7 @@ Content with emojis and unicode: café, naïve, résumé.
   test("returns error for non-existent file", async () => {
     const path = join(tempDir, "does-not-exist.md");
 
-    expect(runExtract(path)).rejects.toThrow();
+    await expect(runExtract(path)).rejects.toThrow();
   });
 });
 

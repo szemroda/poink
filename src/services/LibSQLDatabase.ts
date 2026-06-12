@@ -11,6 +11,7 @@ import { Database } from "./Database.js";
 import {
   DatabaseError,
   Document,
+  DocumentSearchResult,
   PDFChunk,
   type DocumentFileType,
 } from "../types.js";
@@ -465,7 +466,7 @@ export class LibSQLDatabase {
 
                   // Merge and sort by score
                   return [...chunkResults.rows, ...clusterResults.rows]
-                    .map((row: any) => ({
+                    .map((row: any) => new DocumentSearchResult({
                       chunkId: row.chunk_id,
                       docId: row.doc_id,
                       title: row.title,
@@ -475,9 +476,10 @@ export class LibSQLDatabase {
                       // Convert distance to similarity score: score = 1 - distance/2
                       score: 1 - Number(row.distance) / 2,
                       rawScore: 1 - Number(row.distance) / 2,
-                      scoreType: "cosine_similarity" as const,
+                      scoreType: "cosine_similarity",
                       vectorScore: 1 - Number(row.distance) / 2,
-                      matchType: "vector" as const,
+                      matchType: "vector",
+                      entityType: "document",
                     }))
                     .sort((a, b) => b.score - a.score)
                     .slice(0, limit);
@@ -539,8 +541,8 @@ export class LibSQLDatabase {
                 const result = await client.execute({ sql, args });
 
                 return result.rows.map(
-                  (row: any) =>
-                    ({
+                    (row: any) =>
+                    new DocumentSearchResult({
                       chunkId: row.chunk_id,
                       docId: row.doc_id,
                       title: row.title,
@@ -553,7 +555,8 @@ export class LibSQLDatabase {
                       scoreType: "cosine_similarity",
                       vectorScore: 1 - Number(row.distance) / 2,
                       matchType: "vector",
-                    }) as any,
+                      entityType: "document",
+                    }),
                 );
               },
               catch: (e) => new DatabaseError({ reason: String(e) }),
@@ -613,8 +616,8 @@ export class LibSQLDatabase {
                 };
 
                 return result.rows.map(
-                  (row: any) =>
-                    ({
+                    (row: any) =>
+                    new DocumentSearchResult({
                       chunkId: row.chunk_id,
                       docId: row.doc_id,
                       title: row.title,
@@ -627,7 +630,8 @@ export class LibSQLDatabase {
                       scoreType: "fts_rank",
                       ftsRank: Number(row.rank),
                       matchType: "fts",
-                    }) as any,
+                      entityType: "document",
+                    }),
                 );
               },
               catch: (e) => new DatabaseError({ reason: String(e) }),

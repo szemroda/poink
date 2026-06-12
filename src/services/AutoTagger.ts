@@ -82,7 +82,8 @@ export interface EnrichmentResult {
   documentType: DocumentType;
   /** Primary category */
   category: string;
-  /** Semantic tags (5-10) - DEPRECATED: use concepts instead */
+  /** Semantic tags (5-10) persisted on the document. */
+  // TODO: Remove once enrichment assigns concepts directly to documents.
   tags: string[];
   /** Matched concept IDs from taxonomy */
   concepts: string[];
@@ -312,7 +313,7 @@ const EnrichmentSchema = z.object({
     .array(z.string())
     .min(3)
     .max(10)
-    .describe("5-10 descriptive tags (DEPRECATED: use concepts)"),
+    .describe("5-10 descriptive tags persisted on the document"),
   concepts: z.array(z.string()).describe("Matched concept IDs from taxonomy"),
   proposedConcepts: z
     .array(ProposedConceptSchema)

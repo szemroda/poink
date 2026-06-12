@@ -11,7 +11,6 @@ import {
   ConceptSearchResult,
   DocumentSearchResult,
   UnifiedSearchResult,
-  SearchResult,
   SearchOptions,
   LibraryConfig,
   Document,
@@ -198,38 +197,6 @@ describe("Unified Search Types", () => {
     });
   });
 
-  describe("Backward compatibility", () => {
-    test("SearchResult should still work as before", () => {
-      const result = new SearchResult({
-        docId: "doc-123",
-        title: "Test Document",
-        page: 1,
-        chunkIndex: 0,
-        content: "Test content",
-        score: 0.95,
-        matchType: "vector",
-      });
-
-      expect(result.docId).toBe("doc-123");
-      expect(result.title).toBe("Test Document");
-      expect(result.score).toBe(0.95);
-    });
-
-    test("SearchResult should NOT have entityType", () => {
-      const result = new SearchResult({
-        docId: "doc-123",
-        title: "Test Document",
-        page: 1,
-        chunkIndex: 0,
-        content: "Test content",
-        score: 0.95,
-        matchType: "vector",
-      });
-
-      // @ts-expect-error - entityType should not exist on SearchResult
-      expect(result.entityType).toBeUndefined();
-    });
-  });
 });
 
 describe("LibraryConfig path resolution", () => {

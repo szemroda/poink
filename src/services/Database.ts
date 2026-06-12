@@ -9,9 +9,9 @@ import { Context, Effect } from "effect";
 import type {
   DatabaseError,
   Document,
+  DocumentSearchResult,
   PDFChunk,
   SearchOptions,
-  SearchResult,
 } from "../types.js";
 
 // ============================================================================
@@ -79,11 +79,11 @@ export class Database extends Context.Tag("Database")<
     readonly vectorSearch: (
       embedding: number[],
       options?: SearchOptions
-    ) => Effect.Effect<SearchResult[], DatabaseError>;
+    ) => Effect.Effect<DocumentSearchResult[], DatabaseError>;
     readonly ftsSearch: (
       query: string,
       options?: SearchOptions
-    ) => Effect.Effect<SearchResult[], DatabaseError>;
+    ) => Effect.Effect<DocumentSearchResult[], DatabaseError>;
 
     // Context expansion
     readonly getExpandedContext: (
