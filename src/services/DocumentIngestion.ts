@@ -30,7 +30,10 @@ import {
   type VisualDescriptionChunk,
   type VisualsMode,
 } from "./VisualEnrichment.js";
-import { Database } from "./Database.js";
+import {
+  DocumentRepository,
+  LibraryMaintenance,
+} from "./StorageRepositories.js";
 import { buildChunkerMetadata, inferFileTypeFromPath } from "../chunking.js";
 
 // ============================================================================
@@ -57,7 +60,8 @@ const makeDocumentIngestionService = (appConfig: Config) =>
     const markdownExtractor = yield* MarkdownExtractor;
     const officeExtractor = yield* OfficeExtractor;
     const visualEnrichment = yield* VisualEnrichment;
-    const db = yield* Database;
+    const documents = yield* DocumentRepository;
+    const maintenance = yield* LibraryMaintenance;
     const config = LibraryConfig.fromConfig(appConfig);
 
     const fallbackTitle = (path: string) =>
@@ -263,7 +267,8 @@ const makeDocumentIngestionService = (appConfig: Config) =>
           const resolvedPath = expandHomePath(pdfPath);
 
           // Check if already exists
-          const existing = yield* db.getDocumentByPath(resolvedPath);
+          const existing =
+            yield* documents.getDocumentByPath(resolvedPath);
           if (existing) {
             return yield* new DocumentExistsError({
               title: existing.title,
@@ -415,8 +420,12 @@ const makeDocumentIngestionService = (appConfig: Config) =>
 
           // Commit document + chunks + embeddings atomically only after all
           // embeddings have been generated.
-          yield* db.replaceDocument(doc, chunkRecords, embeddingRecords);
-          yield* db.checkpoint();
+          yield* documents.replaceDocument(
+            doc,
+            chunkRecords,
+            embeddingRecords,
+          );
+          yield* maintenance.checkpoint();
 
           return doc;
         }),
@@ -434,7 +443,8 @@ const makeDocumentIngestionService = (appConfig: Config) =>
           const resolvedPath = expandHomePath(pdfPath);
 
           // Require existing doc (this is "replace", not "add")
-          const existing = yield* db.getDocumentByPath(resolvedPath);
+          const existing =
+            yield* documents.getDocumentByPath(resolvedPath);
           if (!existing) {
             return yield* new DocumentNotFoundError({ query: resolvedPath });
           }
@@ -545,8 +555,12 @@ const makeDocumentIngestionService = (appConfig: Config) =>
           }
 
           // Atomic DB replacement
-          yield* db.replaceDocument(doc, chunkRecords, embeddingRecords);
-          yield* db.checkpoint();
+          yield* documents.replaceDocument(
+            doc,
+            chunkRecords,
+            embeddingRecords,
+          );
+          yield* maintenance.checkpoint();
 
           return doc;
         }),

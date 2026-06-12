@@ -17,7 +17,14 @@ import {
   Document,
   OllamaError,
 } from "../types.js";
-import { Database } from "./Database.js";
+import {
+  DocumentRepository,
+  LibraryMaintenance,
+  SearchRepository,
+  type DocumentRepositoryService,
+  type LibraryMaintenanceService,
+  type SearchRepositoryService,
+} from "./StorageRepositories.js";
 import { EmbeddingProvider } from "./EmbeddingProvider.js";
 import { MarkdownExtractor } from "./MarkdownExtractor.js";
 import { PDFExtractor } from "./PDFExtractor.js";
@@ -25,7 +32,9 @@ import { OfficeExtractor } from "./OfficeExtractor.js";
 import { VisualEnrichment } from "./VisualEnrichment.js";
 import { DEFAULT_QUEUE_CONFIG } from "./EmbeddingQueue.js";
 
-type DatabaseService = Context.Tag.Service<typeof Database>;
+type DatabaseService = DocumentRepositoryService &
+  SearchRepositoryService &
+  LibraryMaintenanceService;
 type EmbeddingProviderService = Context.Tag.Service<typeof EmbeddingProvider>;
 type MarkdownExtractorService = Context.Tag.Service<typeof MarkdownExtractor>;
 type PDFExtractorService = Context.Tag.Service<typeof PDFExtractor>;
@@ -64,9 +73,6 @@ function makeDatabase(
         zeroVectorEmbeddings: 0,
       }),
     checkpoint: () => Effect.void,
-    dumpDataDir: () => Effect.succeed(new Blob()),
-    streamEmbeddings: async function* (_batchSize: number) {},
-    bulkInsertClusterAssignments: () => Effect.void,
     ...overrides,
   };
 }
@@ -160,7 +166,9 @@ describe("DocumentIngestion.add", () => {
     };
 
     const deps = Layer.mergeAll(
-      Layer.succeed(Database, database),
+      Layer.succeed(DocumentRepository, database),
+      Layer.succeed(SearchRepository, database),
+      Layer.succeed(LibraryMaintenance, database),
       Layer.succeed(EmbeddingProvider, embeddingProvider),
       Layer.succeed(MarkdownExtractor, markdownExtractor),
       Layer.succeed(PDFExtractor, pdfExtractor),
@@ -237,7 +245,9 @@ describe("DocumentIngestion.add", () => {
     };
 
     const deps = Layer.mergeAll(
-      Layer.succeed(Database, database),
+      Layer.succeed(DocumentRepository, database),
+      Layer.succeed(SearchRepository, database),
+      Layer.succeed(LibraryMaintenance, database),
       Layer.succeed(EmbeddingProvider, embeddingProvider),
       Layer.succeed(MarkdownExtractor, markdownExtractor),
       Layer.succeed(PDFExtractor, unusedPDFExtractor()),
@@ -321,7 +331,9 @@ describe("DocumentIngestion.add", () => {
     };
 
     const deps = Layer.mergeAll(
-      Layer.succeed(Database, database),
+      Layer.succeed(DocumentRepository, database),
+      Layer.succeed(SearchRepository, database),
+      Layer.succeed(LibraryMaintenance, database),
       Layer.succeed(EmbeddingProvider, embeddingProvider),
       Layer.succeed(MarkdownExtractor, markdownExtractor),
       Layer.succeed(PDFExtractor, unusedPDFExtractor()),
@@ -396,7 +408,9 @@ describe("DocumentIngestion.add", () => {
     };
 
     const deps = Layer.mergeAll(
-      Layer.succeed(Database, database),
+      Layer.succeed(DocumentRepository, database),
+      Layer.succeed(SearchRepository, database),
+      Layer.succeed(LibraryMaintenance, database),
       Layer.succeed(EmbeddingProvider, embeddingProvider),
     );
 

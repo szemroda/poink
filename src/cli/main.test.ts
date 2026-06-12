@@ -92,8 +92,7 @@ describe("CLI command family routing", () => {
         ...Config.Default,
         library: { path: directory },
         storage: {
-          ...Config.Default.storage,
-          backend: "qdrant",
+          libsql: { url: ":memory:" },
         },
         models: {
           ...Config.Default.models,

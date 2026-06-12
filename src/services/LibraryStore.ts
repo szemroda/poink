@@ -5,19 +5,25 @@ import {
   LibraryConfig,
   SearchOptions,
 } from "../types.js";
-import { Database } from "./Database.js";
+import {
+  DocumentRepository,
+  LibraryMaintenance,
+  SearchRepository,
+} from "./StorageRepositories.js";
 
 const makeLibraryStoreService = (appConfig: Config) =>
   Effect.gen(function* () {
-    const db = yield* Database;
+    const documents = yield* DocumentRepository;
+    const search = yield* SearchRepository;
+    const maintenance = yield* LibraryMaintenance;
     const config = LibraryConfig.fromConfig(appConfig);
 
     const get = (idOrTitle: string) =>
       Effect.gen(function* () {
-        const byId = yield* db.getDocument(idOrTitle);
+        const byId = yield* documents.getDocument(idOrTitle);
         if (byId) return byId;
 
-        const docs = yield* db.listDocuments();
+        const docs = yield* documents.listDocuments();
         return (
           docs.find(
             (doc) =>
@@ -31,11 +37,11 @@ const makeLibraryStoreService = (appConfig: Config) =>
       ftsSearch: (
         query: string,
         options: SearchOptions = new SearchOptions({}),
-      ) => db.ftsSearch(query, options),
-      getChunk: (chunkId: string) => db.getChunk(chunkId),
+      ) => search.ftsSearch(query, options),
+      getChunk: (chunkId: string) => documents.getChunk(chunkId),
       listChunksByDocument: (docId: string, opts?: { page?: number }) =>
-        db.listChunksByDocument(docId, opts),
-      list: (tag?: string) => db.listDocuments(tag),
+        documents.listChunksByDocument(docId, opts),
+      list: (tag?: string) => documents.listDocuments(tag),
       get,
       remove: (idOrTitle: string) =>
         Effect.gen(function* () {
@@ -43,7 +49,7 @@ const makeLibraryStoreService = (appConfig: Config) =>
           if (!doc) {
             return yield* new DocumentNotFoundError({ query: idOrTitle });
           }
-          yield* db.deleteDocument(doc.id);
+          yield* documents.deleteDocument(doc.id);
           return doc;
         }),
       tag: (idOrTitle: string, tags: string[]) =>
@@ -52,18 +58,18 @@ const makeLibraryStoreService = (appConfig: Config) =>
           if (!doc) {
             return yield* new DocumentNotFoundError({ query: idOrTitle });
           }
-          yield* db.updateTags(doc.id, tags);
+          yield* documents.updateTags(doc.id, tags);
           return doc;
         }),
       stats: () =>
-        Effect.map(db.getStats(), (stats) => ({
+        Effect.map(maintenance.getStats(), (stats) => ({
           ...stats,
           libraryPath: config.libraryPath,
         })),
       countChunksByDocumentIds: (docIds: string[]) =>
-        db.countChunksByDocumentIds(docIds),
-      repair: () => db.repair(),
-      checkpoint: () => db.checkpoint(),
+        maintenance.countChunksByDocumentIds(docIds),
+      repair: () => maintenance.repair(),
+      checkpoint: () => maintenance.checkpoint(),
     };
   });
 

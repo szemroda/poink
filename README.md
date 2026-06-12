@@ -548,14 +548,8 @@ poink config set models.enrichment.model anthropic/claude-haiku-4-5
     }
   },
   "storage": {
-    "backend": "libsql",
     "libsql": {
       "url": "file:~/.poink/library.db"
-    },
-    "qdrant": {
-      "url": "http://localhost:6333",
-      "collection": "poink",
-      "apiKeyEnv": "QDRANT_API_KEY"
     }
   },
   "server": {
@@ -601,9 +595,9 @@ poink config set models.enrichment.model anthropic/claude-haiku-4-5
 | `providers.google.baseUrl`                       | `https://generativelanguage.googleapis.com/v1beta` | Optional Google Generative AI base URL                                                    |
 | `providers.anthropic.apiKey`                     | -                                                  | Anthropic API key                                                                         |
 | `providers.anthropic.baseUrl`                    | `https://api.anthropic.com/v1`                     | Optional Anthropic API base URL                                                           |
-| `storage.backend`                                | `libsql`                                           | Storage backend: `libsql` or `qdrant`                                                     |
-| `storage.qdrant.url`                             | `http://localhost:6333`                            | Qdrant endpoint when using Qdrant                                                         |
-| `storage.qdrant.collection`                      | `poink`                                            | Qdrant collection prefix                                                                  |
+| `storage.libsql.url`                             | `file:~/.poink/library.db`                         | Local file or remote libSQL database URL                                                  |
+| `storage.libsql.authToken`                       | -                                                  | Direct authentication token for remote libSQL                                             |
+| `storage.libsql.authTokenEnv`                    | -                                                  | Environment variable containing the remote libSQL token                                   |
 | `server.host`                                    | `127.0.0.1`                                        | Host/interface for `poink serve`                                                          |
 | `server.port`                                    | `3838`                                             | HTTP port for `poink serve`                                                               |
 | `server.auth.enabled`                            | `false`                                            | Require bearer auth on `/mcp`                                                             |
@@ -613,6 +607,19 @@ poink config set models.enrichment.model anthropic/claude-haiku-4-5
 Embedding dimensions are not user configuration. poink derives the vector
 dimension from embeddings returned by the configured provider and records it in
 database metadata, then rejects later embeddings with a different dimension.
+
+For a remote database, configure both its URL and token source:
+
+```json
+{
+  "storage": {
+    "libsql": {
+      "url": "libsql://your-database.turso.io",
+      "authTokenEnv": "TURSO_AUTH_TOKEN"
+    }
+  }
+}
+```
 
 For language models that support configurable reasoning or thinking, set
 `models.enrichment.reasoning` or `models.judge.reasoning` to `low`, `medium`, or
@@ -758,7 +765,7 @@ SELECT COUNT(chunk_id) FROM embeddings  -- correct
 2. **Enrich** (optional) - LLM extracts metadata, matches taxonomy concepts
 3. **Chunk** - Text split into ~512 token chunks with overlap
 4. **Embed** - Each chunk embedded via the configured embedding provider
-5. **Store** - libSQL by default, or Qdrant when configured
+5. **Store** - Documents, embeddings, taxonomy, and mappings in one libSQL database
 6. **Search** - Query embedded, compared via cosine similarity
 
 ## MCP Integration

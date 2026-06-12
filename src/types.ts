@@ -481,9 +481,6 @@ export class Config extends Schema.Class<Config>("Config")({
   }),
   storage: Schema.optionalWith(
     Schema.Struct({
-      backend: Schema.optionalWith(Schema.Literal("libsql", "qdrant"), {
-        default: () => "libsql" as const,
-      }),
       libsql: Schema.optionalWith(
         Schema.Struct({
           url: Schema.optionalWith(Schema.String, {
@@ -498,34 +495,11 @@ export class Config extends Schema.Class<Config>("Config")({
           }),
         },
       ),
-      qdrant: Schema.optionalWith(
-        Schema.Struct({
-          url: Schema.String,
-          collection: Schema.String,
-          apiKey: Schema.optional(Schema.String),
-          apiKeyEnv: Schema.optionalWith(Schema.String, {
-            default: () => "QDRANT_API_KEY",
-          }),
-        }),
-        {
-          default: () => ({
-            url: "http://localhost:6333",
-            collection: "poink",
-            apiKeyEnv: "QDRANT_API_KEY",
-          }),
-        }
-      ),
     }),
     {
       default: () => ({
-        backend: "libsql" as const,
         libsql: {
           url: "file:~/.poink/library.db",
-        },
-        qdrant: {
-          url: "http://localhost:6333",
-          collection: "poink",
-          apiKeyEnv: "QDRANT_API_KEY",
         },
       }),
     }
@@ -641,14 +615,8 @@ export class Config extends Schema.Class<Config>("Config")({
       },
     },
     storage: {
-      backend: "libsql",
       libsql: {
         url: DEFAULT_LIBSQL_URL,
-      },
-      qdrant: {
-        url: "http://localhost:6333",
-        collection: "poink",
-        apiKeyEnv: "QDRANT_API_KEY",
       },
     },
     server: {
@@ -751,6 +719,20 @@ export function resolveLibsqlUrl(config: Config): string {
   return configured;
 }
 
+export function resolveLibsqlAuthToken(config: Config): string | undefined {
+  const { authToken, authTokenEnv } = config.storage.libsql;
+  if (authToken !== undefined) return authToken;
+  if (authTokenEnv === undefined) return undefined;
+
+  const resolved = readConfiguredEnv(authTokenEnv);
+  if (resolved === undefined || resolved.length === 0) {
+    throw new Error(
+      `Missing libSQL authentication token: environment variable ${authTokenEnv} is not set`,
+    );
+  }
+  return resolved;
+}
+
 export function resolveChunkingConfig(config: Config) {
   assertValidChunking(config.chunking.size, config.chunking.overlap);
   return {
@@ -796,13 +778,6 @@ export function resolveVisualsConfig(config: Config): {
   };
 }
 
-export function resolveStorageApiKey(value: {
-  apiKey?: string;
-  apiKeyEnv?: string;
-}): string | undefined {
-  return value.apiKey ?? readConfiguredEnv(value.apiKeyEnv);
-}
-
 // ============================================================================
 // Config Helpers
 // ============================================================================
@@ -828,9 +803,48 @@ export function resolveConfigPath(): string {
  * Decode config data and apply schema defaults for missing fields.
  */
 export function normalizeConfig(configData: unknown): Config {
-  const config = Schema.decodeUnknownSync(Config)(configData);
+  const config = Schema.decodeUnknownSync(Config)(
+    normalizeLegacyStorageConfig(configData),
+  );
   resolveChunkingConfig(config);
   return config;
+}
+
+function normalizeLegacyStorageConfig(configData: unknown): unknown {
+  if (
+    typeof configData !== "object" ||
+    configData === null ||
+    Array.isArray(configData)
+  ) {
+    return configData;
+  }
+
+  const root = { ...configData } as Record<string, unknown>;
+  const storageValue = root.storage;
+  if (
+    typeof storageValue !== "object" ||
+    storageValue === null ||
+    Array.isArray(storageValue)
+  ) {
+    return root;
+  }
+
+  const storage = { ...storageValue } as Record<string, unknown>;
+  if (storage.backend === "qdrant") {
+    throw new Error(
+      "Qdrant storage is no longer supported. Configure storage.libsql and re-ingest your documents.",
+    );
+  }
+  if (storage.backend !== undefined && storage.backend !== "libsql") {
+    throw new Error(
+      `Unsupported storage backend: ${String(storage.backend)}. Only libSQL is supported.`,
+    );
+  }
+
+  delete storage.backend;
+  delete storage.qdrant;
+  root.storage = storage;
+  return root;
 }
 
 /**

@@ -1,25 +1,16 @@
-/**
- * TaxonomyService - SKOS Taxonomy Operations
- *
- * Implements W3C SKOS (Simple Knowledge Organization System) for controlled vocabulary.
- * Supports polyhierarchy (multiple parents), transitive queries, and document mappings.
- */
-
+import type { InStatement, InValue } from "@libsql/client";
 import { Context, Effect, Layer } from "effect";
-import { createClient, type Client, type InValue } from "@libsql/client";
-import { DatabaseError } from "../types.js";
 import { EmbeddingProvider } from "./EmbeddingProvider.js";
-import type { EmbeddingError } from "./EmbeddingProvider.js";
 import {
-  ensureVectorSchemaForDimension,
-  ensureVectorSchemaForQuery,
-} from "./LibSQLVectorSchema.js";
+  StorageError,
+  storageEffect,
+} from "./StorageRepositories.js";
+import { LibSQLClient } from "./LibSQLClient.js";
+import {
+  decodeAssignmentRow,
+  decodeConceptRow,
+} from "./LibSQLRows.js";
 
-// ============================================================================
-// Types
-// ============================================================================
-
-/** SKOS Concept */
 export interface Concept {
   id: string;
   prefLabel: string;
@@ -28,7 +19,6 @@ export interface Concept {
   createdAt: Date;
 }
 
-/** Concept-Document assignment */
 export interface ConceptAssignment {
   docId: string;
   conceptId: string;
@@ -36,7 +26,6 @@ export interface ConceptAssignment {
   source: string;
 }
 
-/** Taxonomy JSON structure for bulk import */
 export interface TaxonomyJSON {
   concepts: Array<{
     id: string;
@@ -55,7 +44,6 @@ export interface TaxonomyJSON {
   }>;
 }
 
-/** Concept creation params */
 export interface CreateConceptParams {
   id: string;
   prefLabel: string;
@@ -63,611 +51,476 @@ export interface CreateConceptParams {
   definition?: string;
 }
 
-/** Concept update params */
 export interface UpdateConceptParams {
   prefLabel?: string;
   altLabels?: string[];
   definition?: string;
 }
 
-/** Custom error for taxonomy operations */
 export class TaxonomyError {
   readonly _tag = "TaxonomyError";
   constructor(readonly reason: string) {}
 }
 
-// ============================================================================
-// Service Definition
-// ============================================================================
-
-/**
- * TaxonomyService interface
- */
 export interface TaxonomyService {
-  // Concept CRUD
   readonly addConcept: (
-    params: CreateConceptParams
+    params: CreateConceptParams,
   ) => Effect.Effect<void, TaxonomyError>;
   readonly getConcept: (
-    id: string
+    id: string,
   ) => Effect.Effect<Concept | null, TaxonomyError>;
   readonly listConcepts: () => Effect.Effect<Concept[], TaxonomyError>;
   readonly updateConcept: (
     id: string,
-    updates: UpdateConceptParams
+    updates: UpdateConceptParams,
   ) => Effect.Effect<void, TaxonomyError>;
-
-  // Hierarchy (polyhierarchy - multiple parents allowed)
   readonly addBroader: (
     conceptId: string,
-    broaderId: string
+    broaderId: string,
   ) => Effect.Effect<void, TaxonomyError>;
   readonly removeBroader: (
     conceptId: string,
-    broaderId: string
+    broaderId: string,
   ) => Effect.Effect<void, TaxonomyError>;
   readonly getBroader: (
-    conceptId: string
+    conceptId: string,
   ) => Effect.Effect<Concept[], TaxonomyError>;
   readonly getNarrower: (
-    conceptId: string
+    conceptId: string,
   ) => Effect.Effect<Concept[], TaxonomyError>;
   readonly getAncestors: (
-    conceptId: string
+    conceptId: string,
   ) => Effect.Effect<Concept[], TaxonomyError>;
   readonly getDescendants: (
-    conceptId: string
+    conceptId: string,
   ) => Effect.Effect<Concept[], TaxonomyError>;
-
-  // Relations (SKOS 'related' - symmetric)
   readonly addRelated: (
     conceptId: string,
     relatedId: string,
-    type?: string
+    type?: string,
   ) => Effect.Effect<void, TaxonomyError>;
   readonly removeRelated: (
     conceptId: string,
-    relatedId: string
+    relatedId: string,
   ) => Effect.Effect<void, TaxonomyError>;
   readonly getRelated: (
-    conceptId: string
+    conceptId: string,
   ) => Effect.Effect<Concept[], TaxonomyError>;
-
-  // Document mappings
   readonly assignToDocument: (
     docId: string,
     conceptId: string,
     confidence?: number,
-    source?: string
+    source?: string,
   ) => Effect.Effect<void, TaxonomyError>;
   readonly removeFromDocument: (
     docId: string,
-    conceptId: string
+    conceptId: string,
   ) => Effect.Effect<void, TaxonomyError>;
   readonly getDocumentConcepts: (
-    docId: string
+    docId: string,
   ) => Effect.Effect<ConceptAssignment[], TaxonomyError>;
   readonly getConceptDocuments: (
-    conceptId: string
+    conceptId: string,
   ) => Effect.Effect<ConceptAssignment[], TaxonomyError>;
-
-  // Bulk operations
   readonly seedFromJSON: (
-    taxonomy: TaxonomyJSON
+    taxonomy: TaxonomyJSON,
   ) => Effect.Effect<void, TaxonomyError>;
-
-  // Concept Embeddings (vector search)
   readonly storeConceptEmbedding: (
     conceptId: string,
-    embedding: number[]
+    embedding: number[],
   ) => Effect.Effect<void, TaxonomyError>;
   readonly findSimilarConcepts: (
     embedding: number[],
     threshold?: number,
-    limit?: number
+    limit?: number,
   ) => Effect.Effect<Concept[], TaxonomyError>;
 }
 
 export const TaxonomyService = Context.GenericTag<TaxonomyService>(
-  "@services/TaxonomyService"
+  "@services/TaxonomyService",
 );
 
-// ============================================================================
-// Implementation
-// ============================================================================
+function mapStorageError(error: StorageError): TaxonomyError {
+  return new TaxonomyError(`${error.operation}: ${error.reason}`);
+}
 
-/**
- * Parse row from concepts table
- */
-const parseConceptRow = (row: {
-  id: string;
-  pref_label: string;
-  alt_labels: string;
-  definition: string | null;
-  created_at: string;
-}): Concept => ({
-  id: row.id,
-  prefLabel: row.pref_label,
-  altLabels: JSON.parse(row.alt_labels) as string[],
-  definition: row.definition || undefined,
-  createdAt: new Date(row.created_at),
-});
+export function makeTaxonomyService(embeddingIdentity: {
+  provider: string;
+  model: string;
+}) {
+  return Layer.effect(
+    TaxonomyService,
+    Effect.gen(function* () {
+      const { client, vectors } = yield* LibSQLClient;
 
-/**
- * Parse row from document_concepts table
- */
-const parseAssignmentRow = (row: {
-  doc_id: string;
-  concept_id: string;
-  confidence: number;
-  source: string;
-}): ConceptAssignment => ({
-  docId: row.doc_id,
-  conceptId: row.concept_id,
-  confidence: row.confidence,
-  source: row.source,
-});
+      const execute = (
+        operation: string,
+        sql: string,
+        args: InValue[] = [],
+      ) => storageEffect(operation, () => client.execute({ sql, args }));
 
-/**
- * TaxonomyService static factory (mirrors LibSQLDatabase pattern)
- */
-export class TaxonomyServiceImpl {
-  /**
-   * Create a TaxonomyService layer
-   *
-   * @param config - LibSQL client configuration
-   *   - url: ":memory:" for in-memory, "file:./path.db" for local file, or remote URL
-   *   - authToken: Optional auth token for Turso/remote databases
-   *
-   * Requires: the configured embedding provider for concept embeddings
-   */
-  static make(config: { url: string; authToken?: string }) {
-    return Layer.scoped(
-      TaxonomyService,
-      Effect.gen(function* () {
-        // Create libSQL client
-        const client = createClient({
-          url: config.url,
-          authToken: config.authToken,
+      const batch = (operation: string, statements: InStatement[]) =>
+        storageEffect(operation, async () => {
+          if (statements.length > 0) {
+            await client.batch(statements, "write");
+          }
         });
 
-        // Cleanup on scope close
-        yield* Effect.addFinalizer(() =>
-          Effect.promise(async () => {
-            await client.close();
-          })
+      const readConcepts = (operation: string, sql: string, args: InValue[]) =>
+        Effect.map(execute(operation, sql, args), (result) =>
+          result.rows.map((row) => decodeConceptRow(row, operation)),
         );
 
-        // Helper to execute queries
-        const execute = (
-          sql: string,
-          args: InValue[]
-        ): Effect.Effect<{ rows: Record<string, unknown>[] }, DatabaseError> =>
-          Effect.tryPromise({
-            try: async () => {
-              const result = await client.execute({ sql, args });
-              return {
-                rows: result.rows as Record<string, unknown>[],
-              };
-            },
-            catch: (e) => new DatabaseError({ reason: String(e) }),
-          });
-
-        const mapError = (e: DatabaseError): TaxonomyError =>
-          new TaxonomyError(e.reason);
-
-        return TaxonomyService.of({
-          // ======================================================================
-          // Concept CRUD
-          // ======================================================================
-
-          addConcept: (params) =>
-            Effect.gen(function* () {
-              const { id, prefLabel, altLabels = [], definition } = params;
-
-              yield* execute(
-                `INSERT INTO concepts (id, pref_label, alt_labels, definition, created_at)
+      return TaxonomyService.of({
+        addConcept: (params) =>
+          execute(
+            "add concept",
+            `INSERT INTO concepts
+               (id, pref_label, alt_labels, definition, created_at)
              VALUES (?, ?, ?, ?, ?)`,
-                [
-                  id,
-                  prefLabel,
-                  JSON.stringify(altLabels),
-                  definition || null,
-                  new Date().toISOString(),
-                ]
-              );
-            }).pipe(Effect.mapError(mapError)),
+            [
+              params.id,
+              params.prefLabel,
+              JSON.stringify(params.altLabels ?? []),
+              params.definition ?? null,
+              new Date().toISOString(),
+            ],
+          ).pipe(Effect.asVoid, Effect.mapError(mapStorageError)),
 
-          getConcept: (id) =>
-            Effect.gen(function* () {
-              const result = yield* execute(
-                "SELECT * FROM concepts WHERE id = ?",
-                [id]
-              );
+        getConcept: (id) =>
+          readConcepts(
+            "get concept",
+            "SELECT * FROM concepts WHERE id = ?",
+            [id],
+          ).pipe(
+            Effect.map((concepts) => concepts[0] ?? null),
+            Effect.mapError(mapStorageError),
+          ),
 
-              if (result.rows.length === 0) {
-                return null;
-              }
+        listConcepts: () =>
+          readConcepts(
+            "list concepts",
+            "SELECT * FROM concepts ORDER BY pref_label ASC",
+            [],
+          ).pipe(Effect.mapError(mapStorageError)),
 
-              return parseConceptRow(
-                result.rows[0] as Parameters<typeof parseConceptRow>[0]
-              );
-            }).pipe(Effect.mapError(mapError)),
+        updateConcept: (id, updates) => {
+          const fields: string[] = [];
+          const args: InValue[] = [];
+          if (updates.prefLabel !== undefined) {
+            fields.push("pref_label = ?");
+            args.push(updates.prefLabel);
+          }
+          if (updates.altLabels !== undefined) {
+            fields.push("alt_labels = ?");
+            args.push(JSON.stringify(updates.altLabels));
+          }
+          if (updates.definition !== undefined) {
+            fields.push("definition = ?");
+            args.push(updates.definition);
+          }
+          if (fields.length === 0) return Effect.void;
+          args.push(id);
+          return execute(
+            "update concept",
+            `UPDATE concepts SET ${fields.join(", ")} WHERE id = ?`,
+            args,
+          ).pipe(Effect.asVoid, Effect.mapError(mapStorageError));
+        },
 
-          listConcepts: () =>
-            Effect.gen(function* () {
-              const result = yield* execute(
-                "SELECT * FROM concepts ORDER BY pref_label ASC",
-                []
-              );
-
-              return result.rows.map((row) =>
-                parseConceptRow(row as Parameters<typeof parseConceptRow>[0])
-              );
-            }).pipe(Effect.mapError(mapError)),
-
-          updateConcept: (id, updates) =>
-            Effect.gen(function* () {
-              const fields: string[] = [];
-              const args: InValue[] = [];
-
-              if (updates.prefLabel !== undefined) {
-                fields.push("pref_label = ?");
-                args.push(updates.prefLabel);
-              }
-
-              if (updates.altLabels !== undefined) {
-                fields.push("alt_labels = ?");
-                args.push(JSON.stringify(updates.altLabels));
-              }
-
-              if (updates.definition !== undefined) {
-                fields.push("definition = ?");
-                args.push(updates.definition);
-              }
-
-              if (fields.length === 0) {
-                return;
-              }
-
-              args.push(id);
-              const sql = `UPDATE concepts SET ${fields.join(
-                ", "
-              )} WHERE id = ?`;
-
-              yield* execute(sql, args);
-            }).pipe(Effect.mapError(mapError)),
-
-          // ======================================================================
-          // Hierarchy
-          // ======================================================================
-
-          addBroader: (conceptId, broaderId) =>
-            execute(
-              `INSERT INTO concept_hierarchy (concept_id, broader_id)
+        addBroader: (conceptId, broaderId) =>
+          execute(
+            "add broader concept",
+            `INSERT INTO concept_hierarchy (concept_id, broader_id)
              VALUES (?, ?)
              ON CONFLICT DO NOTHING`,
-              [conceptId, broaderId]
-            ).pipe(Effect.mapError(mapError)),
+            [conceptId, broaderId],
+          ).pipe(Effect.asVoid, Effect.mapError(mapStorageError)),
 
-          removeBroader: (conceptId, broaderId) =>
-            execute(
-              `DELETE FROM concept_hierarchy
+        removeBroader: (conceptId, broaderId) =>
+          execute(
+            "remove broader concept",
+            `DELETE FROM concept_hierarchy
              WHERE concept_id = ? AND broader_id = ?`,
-              [conceptId, broaderId]
-            ).pipe(Effect.mapError(mapError)),
+            [conceptId, broaderId],
+          ).pipe(Effect.asVoid, Effect.mapError(mapStorageError)),
 
-          getBroader: (conceptId) =>
-            Effect.gen(function* () {
-              const result = yield* execute(
-                `SELECT c.* FROM concepts c
+        getBroader: (conceptId) =>
+          readConcepts(
+            "get broader concepts",
+            `SELECT c.* FROM concepts c
              JOIN concept_hierarchy ch ON c.id = ch.broader_id
              WHERE ch.concept_id = ?`,
-                [conceptId]
-              );
+            [conceptId],
+          ).pipe(Effect.mapError(mapStorageError)),
 
-              return result.rows.map((row) =>
-                parseConceptRow(row as Parameters<typeof parseConceptRow>[0])
-              );
-            }).pipe(Effect.mapError(mapError)),
-
-          getNarrower: (conceptId) =>
-            Effect.gen(function* () {
-              const result = yield* execute(
-                `SELECT c.* FROM concepts c
+        getNarrower: (conceptId) =>
+          readConcepts(
+            "get narrower concepts",
+            `SELECT c.* FROM concepts c
              JOIN concept_hierarchy ch ON c.id = ch.concept_id
              WHERE ch.broader_id = ?`,
-                [conceptId]
-              );
+            [conceptId],
+          ).pipe(Effect.mapError(mapStorageError)),
 
-              return result.rows.map((row) =>
-                parseConceptRow(row as Parameters<typeof parseConceptRow>[0])
-              );
-            }).pipe(Effect.mapError(mapError)),
-
-          getAncestors: (conceptId) =>
-            Effect.gen(function* () {
-              const result = yield* execute(
-                `WITH RECURSIVE ancestors AS (
-               SELECT broader_id FROM concept_hierarchy WHERE concept_id = ?
+        getAncestors: (conceptId) =>
+          readConcepts(
+            "get concept ancestors",
+            `WITH RECURSIVE ancestors AS (
+               SELECT broader_id
+               FROM concept_hierarchy
+               WHERE concept_id = ?
                UNION
-               SELECT ch.broader_id FROM concept_hierarchy ch
+               SELECT ch.broader_id
+               FROM concept_hierarchy ch
                JOIN ancestors a ON ch.concept_id = a.broader_id
              )
              SELECT c.* FROM concepts c
              WHERE c.id IN (SELECT broader_id FROM ancestors)`,
-                [conceptId]
-              );
+            [conceptId],
+          ).pipe(Effect.mapError(mapStorageError)),
 
-              return result.rows.map((row) =>
-                parseConceptRow(row as Parameters<typeof parseConceptRow>[0])
-              );
-            }).pipe(Effect.mapError(mapError)),
-
-          getDescendants: (conceptId) =>
-            Effect.gen(function* () {
-              const result = yield* execute(
-                `WITH RECURSIVE descendants AS (
-               SELECT concept_id FROM concept_hierarchy WHERE broader_id = ?
+        getDescendants: (conceptId) =>
+          readConcepts(
+            "get concept descendants",
+            `WITH RECURSIVE descendants AS (
+               SELECT concept_id
+               FROM concept_hierarchy
+               WHERE broader_id = ?
                UNION
-               SELECT ch.concept_id FROM concept_hierarchy ch
+               SELECT ch.concept_id
+               FROM concept_hierarchy ch
                JOIN descendants d ON ch.broader_id = d.concept_id
              )
              SELECT c.* FROM concepts c
              WHERE c.id IN (SELECT concept_id FROM descendants)`,
-                [conceptId]
-              );
+            [conceptId],
+          ).pipe(Effect.mapError(mapStorageError)),
 
-              return result.rows.map((row) =>
-                parseConceptRow(row as Parameters<typeof parseConceptRow>[0])
-              );
-            }).pipe(Effect.mapError(mapError)),
+        addRelated: (conceptId, relatedId, type = "related") =>
+          batch("add related concepts", [
+            {
+              sql: `INSERT INTO concept_relations
+                      (concept_id, related_id, relation_type)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT DO NOTHING`,
+              args: [conceptId, relatedId, type],
+            },
+            {
+              sql: `INSERT INTO concept_relations
+                      (concept_id, related_id, relation_type)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT DO NOTHING`,
+              args: [relatedId, conceptId, type],
+            },
+          ]).pipe(Effect.mapError(mapStorageError)),
 
-          // ======================================================================
-          // Relations
-          // ======================================================================
+        removeRelated: (conceptId, relatedId) =>
+          batch("remove related concepts", [
+            {
+              sql: `DELETE FROM concept_relations
+                    WHERE concept_id = ? AND related_id = ?`,
+              args: [conceptId, relatedId],
+            },
+            {
+              sql: `DELETE FROM concept_relations
+                    WHERE concept_id = ? AND related_id = ?`,
+              args: [relatedId, conceptId],
+            },
+          ]).pipe(Effect.mapError(mapStorageError)),
 
-          addRelated: (conceptId, relatedId, type = "related") =>
-            Effect.gen(function* () {
-              // Add both directions for symmetric relationship
-              yield* execute(
-                `INSERT INTO concept_relations (concept_id, related_id, relation_type)
-             VALUES (?, ?, ?)
-             ON CONFLICT DO NOTHING`,
-                [conceptId, relatedId, type]
-              );
-
-              yield* execute(
-                `INSERT INTO concept_relations (concept_id, related_id, relation_type)
-             VALUES (?, ?, ?)
-             ON CONFLICT DO NOTHING`,
-                [relatedId, conceptId, type]
-              );
-            }).pipe(Effect.mapError(mapError)),
-
-          removeRelated: (conceptId, relatedId) =>
-            execute(
-              `DELETE FROM concept_relations
-             WHERE (concept_id = ? AND related_id = ?) 
-                OR (concept_id = ? AND related_id = ?)`,
-              [conceptId, relatedId, relatedId, conceptId]
-            ).pipe(Effect.mapError(mapError)),
-
-          getRelated: (conceptId) =>
-            Effect.gen(function* () {
-              const result = yield* execute(
-                `SELECT c.* FROM concepts c
+        getRelated: (conceptId) =>
+          readConcepts(
+            "get related concepts",
+            `SELECT c.* FROM concepts c
              JOIN concept_relations cr ON c.id = cr.related_id
              WHERE cr.concept_id = ?`,
-                [conceptId]
-              );
+            [conceptId],
+          ).pipe(Effect.mapError(mapStorageError)),
 
-              return result.rows.map((row) =>
-                parseConceptRow(row as Parameters<typeof parseConceptRow>[0])
-              );
-            }).pipe(Effect.mapError(mapError)),
-
-          // ======================================================================
-          // Document Mappings
-          // ======================================================================
-
-          assignToDocument: (
-            docId,
-            conceptId,
-            confidence = 1.0,
-            source = "llm"
-          ) =>
-            execute(
-              `INSERT INTO document_concepts (doc_id, concept_id, confidence, source)
+        assignToDocument: (
+          docId,
+          conceptId,
+          confidence = 1,
+          source = "llm",
+        ) =>
+          execute(
+            "assign concept to document",
+            `INSERT INTO document_concepts
+               (doc_id, concept_id, confidence, source)
              VALUES (?, ?, ?, ?)
              ON CONFLICT (doc_id, concept_id) DO UPDATE SET
                confidence = excluded.confidence,
                source = excluded.source`,
-              [docId, conceptId, confidence, source]
-            ).pipe(Effect.mapError(mapError)),
+            [docId, conceptId, confidence, source],
+          ).pipe(Effect.asVoid, Effect.mapError(mapStorageError)),
 
-          removeFromDocument: (docId, conceptId) =>
-            execute(
-              `DELETE FROM document_concepts
+        removeFromDocument: (docId, conceptId) =>
+          execute(
+            "remove concept from document",
+            `DELETE FROM document_concepts
              WHERE doc_id = ? AND concept_id = ?`,
-              [docId, conceptId]
-            ).pipe(Effect.mapError(mapError)),
+            [docId, conceptId],
+          ).pipe(Effect.asVoid, Effect.mapError(mapStorageError)),
 
-          getDocumentConcepts: (docId) =>
-            Effect.gen(function* () {
-              const result = yield* execute(
-                `SELECT * FROM document_concepts WHERE doc_id = ?`,
-                [docId]
+        getDocumentConcepts: (docId) =>
+          execute(
+            "get document concepts",
+            "SELECT * FROM document_concepts WHERE doc_id = ?",
+            [docId],
+          ).pipe(
+            Effect.map((result) =>
+              result.rows.map((row) =>
+                decodeAssignmentRow(row, "get document concepts"),
+              ),
+            ),
+            Effect.mapError(mapStorageError),
+          ),
+
+        getConceptDocuments: (conceptId) =>
+          execute(
+            "get concept documents",
+            "SELECT * FROM document_concepts WHERE concept_id = ?",
+            [conceptId],
+          ).pipe(
+            Effect.map((result) =>
+              result.rows.map((row) =>
+                decodeAssignmentRow(row, "get concept documents"),
+              ),
+            ),
+            Effect.mapError(mapStorageError),
+          ),
+
+        seedFromJSON: (taxonomy) => {
+          const timestamp = new Date().toISOString();
+          const statements: InStatement[] = taxonomy.concepts.map(
+            (concept) => ({
+              sql: `INSERT INTO concepts
+                      (id, pref_label, alt_labels, definition, created_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT DO NOTHING`,
+              args: [
+                concept.id,
+                concept.prefLabel,
+                JSON.stringify(concept.altLabels ?? []),
+                concept.definition ?? null,
+                timestamp,
+              ],
+            }),
+          );
+          for (const relation of taxonomy.hierarchy ?? []) {
+            statements.push({
+              sql: `INSERT INTO concept_hierarchy (concept_id, broader_id)
+                    VALUES (?, ?)
+                    ON CONFLICT DO NOTHING`,
+              args: [relation.conceptId, relation.broaderId],
+            });
+          }
+          for (const relation of taxonomy.relations ?? []) {
+            const type = relation.relationType ?? "related";
+            statements.push(
+              {
+                sql: `INSERT INTO concept_relations
+                        (concept_id, related_id, relation_type)
+                      VALUES (?, ?, ?)
+                      ON CONFLICT DO NOTHING`,
+                args: [relation.conceptId, relation.relatedId, type],
+              },
+              {
+                sql: `INSERT INTO concept_relations
+                        (concept_id, related_id, relation_type)
+                      VALUES (?, ?, ?)
+                      ON CONFLICT DO NOTHING`,
+                args: [relation.relatedId, relation.conceptId, type],
+              },
+            );
+          }
+          return batch("seed taxonomy", statements).pipe(
+            Effect.mapError(mapStorageError),
+          );
+        },
+
+        storeConceptEmbedding: (conceptId, embedding) =>
+          Effect.tryPromise({
+            try: async () => {
+              await vectors.ensureForDimension(
+                embedding.length,
+                embeddingIdentity,
               );
-
-              return result.rows.map((row) =>
-                parseAssignmentRow(
-                  row as Parameters<typeof parseAssignmentRow>[0]
-                )
-              );
-            }).pipe(Effect.mapError(mapError)),
-
-          getConceptDocuments: (conceptId) =>
-            Effect.gen(function* () {
-              const result = yield* execute(
-                `SELECT * FROM document_concepts WHERE concept_id = ?`,
-                [conceptId]
-              );
-
-              return result.rows.map((row) =>
-                parseAssignmentRow(
-                  row as Parameters<typeof parseAssignmentRow>[0]
-                )
-              );
-            }).pipe(Effect.mapError(mapError)),
-
-          // ======================================================================
-          // Bulk Operations
-          // ======================================================================
-
-          seedFromJSON: (taxonomy) =>
-            Effect.gen(function* () {
-              // Add all concepts
-              for (const concept of taxonomy.concepts) {
-                yield* execute(
-                  `INSERT INTO concepts (id, pref_label, alt_labels, definition, created_at)
-               VALUES (?, ?, ?, ?, ?)
-               ON CONFLICT DO NOTHING`,
-                  [
-                    concept.id,
-                    concept.prefLabel,
-                    JSON.stringify(concept.altLabels || []),
-                    concept.definition || null,
-                    new Date().toISOString(),
-                  ]
-                );
-              }
-
-              // Add hierarchy relationships
-              if (taxonomy.hierarchy) {
-                for (const rel of taxonomy.hierarchy) {
-                  yield* execute(
-                    `INSERT INTO concept_hierarchy (concept_id, broader_id)
-                 VALUES (?, ?)
-                 ON CONFLICT DO NOTHING`,
-                    [rel.conceptId, rel.broaderId]
-                  );
-                }
-              }
-
-              // Add associative relations
-              if (taxonomy.relations) {
-                for (const rel of taxonomy.relations) {
-                  const relType = rel.relationType || "related";
-
-                  // Add both directions for symmetry
-                  yield* execute(
-                    `INSERT INTO concept_relations (concept_id, related_id, relation_type)
-                 VALUES (?, ?, ?)
-                 ON CONFLICT DO NOTHING`,
-                    [rel.conceptId, rel.relatedId, relType]
-                  );
-
-                  yield* execute(
-                    `INSERT INTO concept_relations (concept_id, related_id, relation_type)
-                 VALUES (?, ?, ?)
-                 ON CONFLICT DO NOTHING`,
-                    [rel.relatedId, rel.conceptId, relType]
-                  );
-                }
-              }
-            }).pipe(Effect.mapError(mapError)),
-
-          // ======================================================================
-          // Concept Embeddings (Vector Search)
-          // ======================================================================
-
-          storeConceptEmbedding: (conceptId, embedding) =>
-            Effect.gen(function* () {
-              yield* Effect.tryPromise({
-                try: () => ensureVectorSchemaForDimension(client, embedding.length),
-                catch: (e) => new DatabaseError({ reason: String(e) }),
+              await client.execute({
+                sql: `INSERT INTO concept_embeddings (concept_id, embedding)
+                      VALUES (?, vector32(?))
+                      ON CONFLICT (concept_id) DO UPDATE SET
+                        embedding = excluded.embedding`,
+                args: [conceptId, JSON.stringify(embedding)],
               });
+            },
+            catch: (error) =>
+              new TaxonomyError(
+                error instanceof Error ? error.message : String(error),
+              ),
+          }),
 
-              // Store embedding as F32_BLOB using vector32() function
-              yield* execute(
-                `INSERT INTO concept_embeddings (concept_id, embedding)
-             VALUES (?, vector32(?))
-             ON CONFLICT (concept_id) DO UPDATE SET
-               embedding = excluded.embedding`,
-                [conceptId, JSON.stringify(embedding)]
-              );
-            }).pipe(Effect.mapError(mapError)),
-
-          findSimilarConcepts: (embedding, threshold = 0.85, limit = 5) =>
-            Effect.gen(function* () {
-              const hasVectorSchema = yield* Effect.tryPromise({
-                try: () => ensureVectorSchemaForQuery(client, embedding.length),
-                catch: (e) => new DatabaseError({ reason: String(e) }),
+        findSimilarConcepts: (embedding, threshold = 0.85, limit = 5) =>
+          Effect.tryPromise({
+            try: async () => {
+              if (!(await vectors.ensureForQuery(embedding.length))) return [];
+              const queryVector = JSON.stringify(embedding);
+              const result = await client.execute({
+                sql: `SELECT
+                        c.id,
+                        c.pref_label,
+                        c.alt_labels,
+                        c.definition,
+                        c.created_at,
+                        vector_distance_cos(
+                          e.embedding,
+                          vector32(?)
+                        ) AS distance
+                      FROM vector_top_k(
+                        'concept_embeddings_idx',
+                        vector32(?),
+                        ?
+                      ) AS top
+                      JOIN concept_embeddings e ON e.rowid = top.id
+                      JOIN concepts c ON c.id = e.concept_id
+                      WHERE vector_distance_cos(
+                        e.embedding,
+                        vector32(?)
+                      ) <= ?
+                      ORDER BY distance ASC`,
+                args: [
+                  queryVector,
+                  queryVector,
+                  limit * 2,
+                  queryVector,
+                  2 * (1 - threshold),
+                ],
               });
-              if (!hasVectorSchema) return [];
-
-              const queryVec = JSON.stringify(embedding);
-
-              // Use vector_top_k with DiskANN index for fast ANN search
-              // Convert distance to similarity score: score = 1 - distance/2
-              // Filter by threshold: if score >= threshold, then distance <= 2*(1-threshold)
-              const maxDistance = 2 * (1 - threshold);
-
-              const result = yield* execute(
-                `SELECT 
-                c.id,
-                c.pref_label,
-                c.alt_labels,
-                c.definition,
-                c.created_at,
-                vector_distance_cos(e.embedding, vector32(?)) as distance
-              FROM vector_top_k('concept_embeddings_idx', vector32(?), ?) AS top
-              JOIN concept_embeddings e ON e.rowid = top.id
-              JOIN concepts c ON c.id = e.concept_id
-              WHERE vector_distance_cos(e.embedding, vector32(?)) <= ?
-              ORDER BY distance ASC`,
-                [queryVec, queryVec, limit * 2, queryVec, maxDistance]
-              );
-
               return result.rows.map((row) =>
-                parseConceptRow(row as Parameters<typeof parseConceptRow>[0])
+                decodeConceptRow(row, "find similar concepts"),
               );
-            }).pipe(Effect.mapError(mapError)),
-        });
-      })
-    );
-  }
+            },
+            catch: (error) =>
+              new TaxonomyError(
+                error instanceof Error ? error.message : String(error),
+              ),
+          }),
+      });
+    }),
+  );
 }
 
-/**
- * Generate embedding for a concept using EmbeddingProvider
- * Standalone function that requires EmbeddingProvider service
- */
 export const generateConceptEmbedding = (concept: Concept) =>
   Effect.gen(function* () {
     const embedProvider = yield* EmbeddingProvider;
-
-    // Create text from prefLabel + definition for embedding
-    // This ensures concepts are embedded in the same vector space as documents
     const text = concept.definition
       ? `${concept.prefLabel}: ${concept.definition}`
       : concept.prefLabel;
-
-    // Generate embedding using EmbeddingProvider
-    const embedding = yield* embedProvider.embed(text);
-
-    return embedding;
+    return yield* embedProvider.embed(text);
   }).pipe(
     Effect.mapError(
-      (e): TaxonomyError =>
-        new TaxonomyError(
-          `Failed to generate embedding: ${String(e)}`
-        )
-    )
+      (error): TaxonomyError =>
+        new TaxonomyError(`Failed to generate embedding: ${String(error)}`),
+    ),
   );
-
-/**
- * Default TaxonomyService layer - for testing with in-memory DB
- */
-export const Default = TaxonomyServiceImpl.make({ url: ":memory:" });

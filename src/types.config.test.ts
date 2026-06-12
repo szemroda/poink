@@ -7,6 +7,7 @@ import {
   LibraryConfig,
   loadConfig,
   normalizeConfig,
+  resolveLibsqlAuthToken,
   resolveVisualsConfig,
 } from "./types.js";
 
@@ -65,9 +66,7 @@ describe("loadConfig path and database defaults", () => {
 
       expect(existsSync(configPath)).toBe(false);
       expect(config.version).toBe(1);
-      expect(config.storage.backend).toBe("libsql");
-      expect(config.storage.qdrant.url).toBe("http://localhost:6333");
-      expect(config.storage.qdrant.collection).toBe("poink");
+      expect(config.storage.libsql.url).toBe("file:~/.poink/library.db");
       expect(config.chunking.size).toBe(2000);
       expect(config.chunking.overlap).toBe(200);
       expect(config.cli.globalFlags.format).toBe("text");
@@ -105,6 +104,50 @@ describe("loadConfig path and database defaults", () => {
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }
+  });
+
+  test("accepts legacy libsql backend fields and strips stale qdrant config", () => {
+    const config = normalizeConfig({
+      ...Config.Default,
+      storage: {
+        backend: "libsql",
+        libsql: { url: ":memory:" },
+        qdrant: {
+          url: "http://localhost:6333",
+          collection: "poink",
+        },
+      },
+    });
+
+    expect(config.storage).toEqual({ libsql: { url: ":memory:" } });
+  });
+
+  test("rejects an explicitly selected qdrant backend with re-ingest guidance", () => {
+    expect(() =>
+      normalizeConfig({
+        ...Config.Default,
+        storage: {
+          backend: "qdrant",
+          libsql: { url: ":memory:" },
+        },
+      }),
+    ).toThrow(/Qdrant storage is no longer supported.*re-ingest/i);
+  });
+
+  test("requires a configured libsql auth token environment variable", () => {
+    const variable = "POINK_TEST_MISSING_AUTH_TOKEN";
+    delete process.env[variable];
+    const config = new Config({
+      ...Config.Default,
+      storage: {
+        libsql: {
+          url: "libsql://example.invalid",
+          authTokenEnv: variable,
+        },
+      },
+    });
+
+    expect(() => resolveLibsqlAuthToken(config)).toThrow(variable);
   });
 
   test("resolves OpenRouter config from environment variables", () => {

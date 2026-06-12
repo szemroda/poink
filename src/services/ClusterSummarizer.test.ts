@@ -63,13 +63,7 @@ describe("ClusterSummarizerService - LLM Abstractive Summarization", () => {
           },
         },
         storage: {
-          backend: "libsql",
           libsql: { url: `file:${join(tempDir, "library", "library.db")}` },
-          qdrant: {
-            url: "http://localhost:6333",
-            collection: "poink",
-            apiKeyEnv: "QDRANT_API_KEY",
-          },
         },
         server: {
           host: "127.0.0.1",

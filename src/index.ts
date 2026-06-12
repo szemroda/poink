@@ -1,7 +1,26 @@
 export * from "./types.js";
-export { Database } from "./services/Database.js";
-export { DatabaseRegistry } from "./services/DatabaseRegistry.js";
-export { LibSQLDatabase } from "./services/LibSQLDatabase.js";
+export { makeStorageLayer } from "./services/StorageLayer.js";
+export { makeLibraryLayer } from "./services/LibraryLayer.js";
+export {
+  DocumentRepository,
+  LibraryMaintenance,
+  SearchRepository,
+  StorageError,
+  type ChunkInput,
+  type DocumentRepositoryService,
+  type EmbeddingInput,
+  type LibraryMaintenanceService,
+  type SearchRepositoryService,
+} from "./services/StorageRepositories.js";
+export {
+  TaxonomyService,
+  TaxonomyError,
+  type Concept,
+  type ConceptAssignment,
+  type CreateConceptParams,
+  type TaxonomyJSON,
+  type UpdateConceptParams,
+} from "./services/TaxonomyService.js";
 export {
   DocumentIngestion,
   makeDocumentIngestion,

@@ -87,13 +87,7 @@ function makeTestConfig(
       },
     },
     storage: {
-      backend: "libsql",
       libsql: { url: `file:${join(libraryPath, "library.db")}` },
-      qdrant: {
-        url: "http://localhost:6333",
-        collection: "poink",
-        apiKeyEnv: "QDRANT_API_KEY",
-      },
     },
     server: {
       host: "127.0.0.1",
@@ -691,6 +685,9 @@ describe("CLI JSON Envelope Contract", () => {
       expect(schema.properties.models).toBeDefined();
       expect(schema.properties.providers).toBeDefined();
       expect(schema.properties.storage).toBeDefined();
+      expect(schema.properties.storage.properties.libsql).toBeDefined();
+      expect(schema.properties.storage.properties.backend).toBeUndefined();
+      expect(schema.properties.storage.properties.qdrant).toBeUndefined();
     }));
 
   test("taxonomy list is compact and taxonomy get returns details", async () =>
@@ -943,7 +940,7 @@ describe("CLI JSON Envelope Contract", () => {
       }
     }));
 
-  test("config show text output includes database backend details", () =>
+  test("config show text output includes libSQL database details", () =>
     withTempLibraryPath((libraryPath) => {
       const configPath = join(libraryPath, "config.json");
       writeTestConfig(configPath, libraryPath);
@@ -954,8 +951,8 @@ describe("CLI JSON Envelope Contract", () => {
 
       expect(res.exitCode).toBe(0);
       expect(res.stdout).toContain("Storage:");
-      expect(res.stdout).toContain("libsql");
-      expect(res.stdout).toContain("Qdrant:");
+      expect(res.stdout).toContain("libSQL");
+      expect(res.stdout).toContain("Database:");
       expect(res.stdout).toContain("OpenAI Codex:");
     }));
 
@@ -980,7 +977,6 @@ describe("CLI JSON Envelope Contract", () => {
       const config: any = makeTestConfig(libraryPath);
       config.providers.openrouter.apiKey = "openrouter-secret";
       config.storage.libsql.authToken = "libsql-secret";
-      config.storage.qdrant.apiKey = "qdrant-secret";
       config.server.auth.token = "server-secret";
       writeFileSync(configPath, JSON.stringify(config, null, 2), "utf-8");
 
@@ -991,13 +987,11 @@ describe("CLI JSON Envelope Contract", () => {
       expect(res.exitCode).toBe(0);
       expect(res.stdout).not.toContain("openrouter-secret");
       expect(res.stdout).not.toContain("libsql-secret");
-      expect(res.stdout).not.toContain("qdrant-secret");
       expect(res.stdout).not.toContain("server-secret");
 
       const obj = JSON.parse(res.stdout);
       expect(obj.result.config.providers.openrouter.apiKey).toBe("[redacted]");
       expect(obj.result.config.storage.libsql.authToken).toBe("[redacted]");
-      expect(obj.result.config.storage.qdrant.apiKey).toBe("[redacted]");
       expect(obj.result.config.server.auth.token).toBe("[redacted]");
       expect(obj.result.config.providers.openrouter.apiKeyEnv).toBe("OPENROUTER_API_KEY");
       expect(obj.result.config.server.auth.tokenEnv).toBe("POINK_SERVER_TOKEN");

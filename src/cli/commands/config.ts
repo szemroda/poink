@@ -85,10 +85,8 @@ export function runConfigCommand(
         })`,
       );
       yield* Console.log("");
-      yield* Console.log(`Storage:     ${config.storage.backend}`);
-      yield* Console.log(
-        `Qdrant:      ${config.storage.qdrant.url} / ${config.storage.qdrant.collection}`,
-      );
+      yield* Console.log("Storage:     libSQL");
+      yield* Console.log(`Database:    ${config.storage.libsql.url}`);
       yield* Console.log("");
       yield* Console.log(`CLI Format:  ${config.cli.globalFlags.format}`);
       yield* Console.log(

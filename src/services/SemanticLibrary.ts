@@ -8,7 +8,11 @@ import {
   type Document,
   type PDFChunk,
 } from "../types.js";
-import { Database } from "./Database.js";
+import {
+  DocumentRepository,
+  LibraryMaintenance,
+  SearchRepository,
+} from "./StorageRepositories.js";
 import { EmbeddingProvider } from "./EmbeddingProvider.js";
 import { DEFAULT_QUEUE_CONFIG } from "./EmbeddingQueue.js";
 
@@ -75,7 +79,9 @@ function providerFailureReason(error: unknown): string {
 
 const makeSemanticLibraryService = (_config: Config) =>
   Effect.gen(function* () {
-    const db = yield* Database;
+    const documents = yield* DocumentRepository;
+    const search = yield* SearchRepository;
+    const maintenance = yield* LibraryMaintenance;
     const embedProvider = yield* EmbeddingProvider;
 
     return {
@@ -97,10 +103,12 @@ const makeSemanticLibraryService = (_config: Config) =>
           const queryEmbedding = yield* embedProvider.embed(query).pipe(
             Effect.mapError(mapProviderFailure),
           );
-          results.push(...(yield* db.vectorSearch(queryEmbedding, options)));
+          results.push(
+            ...(yield* search.vectorSearch(queryEmbedding, options)),
+          );
 
           if (hybrid) {
-            const ftsResults = yield* db.ftsSearch(query, options);
+            const ftsResults = yield* search.ftsSearch(query, options);
             for (const fts of ftsResults) {
               const existing = results.find(
                 (result) =>
@@ -136,7 +144,7 @@ const makeSemanticLibraryService = (_config: Config) =>
               .slice(0, limit)
               .map((result) =>
                 Effect.map(
-                  db.getExpandedContext(
+                  search.getExpandedContext(
                     result.docId,
                     result.page,
                     result.chunkIndex,
@@ -155,11 +163,11 @@ const makeSemanticLibraryService = (_config: Config) =>
       reindexEmbeddings: (docId: string) =>
         Effect.gen(function* () {
           yield* embedProvider.checkHealth();
-          const existing = yield* db.getDocument(docId);
+          const existing = yield* documents.getDocument(docId);
           if (!existing) {
             return yield* new DocumentNotFoundError({ query: docId });
           }
-          const chunks = yield* db.listChunksByDocument(docId);
+          const chunks = yield* documents.listChunksByDocument(docId);
           if (chunks.length === 0) {
             return yield* new DocumentNotFoundError({
               query: `No chunks found for document ${docId}`,
@@ -201,8 +209,8 @@ const makeSemanticLibraryService = (_config: Config) =>
             }
           }
 
-          yield* db.addEmbeddings(embeddingRecords);
-          yield* db.checkpoint();
+          yield* documents.addEmbeddings(embeddingRecords);
+          yield* maintenance.checkpoint();
           return {
             docId: existing.id,
             title: existing.title,

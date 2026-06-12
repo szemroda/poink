@@ -5,7 +5,6 @@ import { fileURLToPath } from "url";
 import { LibraryConfig } from "../../types.js";
 import {
   TaxonomyService,
-  TaxonomyServiceImpl,
   type TaxonomyJSON,
 } from "../../services/TaxonomyService.js";
 import {
@@ -47,12 +46,9 @@ export function initializePoinkLibrary(
       yield* Console.log("    ollama pull llama3.2:3b");
     }
 
-    const taxonomyLayer = TaxonomyServiceImpl.make({
-      url: `file:${config.dbPath}`,
-    });
+    const taxonomy = yield* TaxonomyService;
     const seedResult = yield* Effect.either(
       Effect.gen(function* () {
-        const taxonomy = yield* TaxonomyService;
         const concepts = yield* taxonomy.listConcepts();
 
         if (concepts.length === 0) {
@@ -75,7 +71,7 @@ export function initializePoinkLibrary(
             `OK Taxonomy already has ${concepts.length} concepts`,
           );
         }
-      }).pipe(Effect.provide(taxonomyLayer)),
+      }),
     );
 
     if (seedResult._tag === "Left") {

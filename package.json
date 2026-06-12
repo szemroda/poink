@@ -29,7 +29,8 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "clean": "node -e \"const fs=require('node:fs');const path=require('node:path');const target=path.resolve('dist');if(path.dirname(target)!==process.cwd()||path.basename(target)!=='dist')throw new Error('Refusing to clean unexpected path: '+target);fs.rmSync(target,{recursive:true,force:true});\"",
+    "build": "npm run clean && tsc -p tsconfig.build.json",
     "dev": "tsx src/cli.ts",
     "test": "vitest run",
     "typecheck": "effect-language-service patch && tsc --noEmit",
@@ -46,7 +47,6 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@openai/codex": "^0.137.0",
     "@openrouter/ai-sdk-provider": "^2.9.0",
-    "@qdrant/js-client-rest": "^1.18.0",
     "@xmldom/xmldom": "^0.9.10",
     "ai": "^6.0.180",
     "ai-sdk-provider-codex-cli": "^1.2.0",
