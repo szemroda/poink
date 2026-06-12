@@ -1,11 +1,18 @@
 import { Effect } from "effect";
 import {
   SearchOptions,
+  SemanticSearchProviderError,
   type DocumentSearchResult,
 } from "../../types.js";
 import { type Concept, TaxonomyService } from "../../services/TaxonomyService.js";
 import { EmbeddingProvider } from "../../services/EmbeddingProvider.js";
-import { CLIError, runCommandWithContext, splitPositionalsAndFlags, type GlobalCLIOptions } from "../runner.js";
+import {
+  CLIError,
+  runCommandWithContext,
+  splitPositionalsAndFlags,
+  type CliLibrary,
+  type GlobalCLIOptions,
+} from "../runner.js";
 
 interface SearchCommandOptions extends Record<string, unknown> {
   limit?: string | number;
@@ -41,6 +48,37 @@ export type SearchDocumentOutput = {
     expandedRange?: { start: number; end: number };
   };
 };
+
+type DocumentRetrievalMode = "hybrid" | "fts";
+type RetrievalMode = DocumentRetrievalMode | "none";
+
+function mapSemanticSearchFailure(error: unknown): unknown {
+  if (error instanceof SemanticSearchProviderError) {
+    return new CLIError(
+      "PROVIDER_NOT_READY",
+      `Embedding provider not ready (${error.provider}): ${error.reason}`,
+      {
+        provider: error.provider,
+        reason: error.reason,
+        requestedRetrievalMode: "hybrid" satisfies DocumentRetrievalMode,
+      },
+    );
+  }
+  return error;
+}
+
+function searchDocuments(
+  library: CliLibrary,
+  query: string,
+  options: SearchOptions,
+  retrievalMode: DocumentRetrievalMode,
+) {
+  return (
+    retrievalMode === "fts"
+      ? library.ftsSearch(query, options)
+      : library.search(query, options)
+  ).pipe(Effect.mapError(mapSemanticSearchFailure));
+}
 
 export function toSearchDocumentOutput(
   result: DocumentSearchResult,
@@ -112,6 +150,11 @@ export function runSearchCommand(
       // Determine what to search
       const searchDocs = !conceptsOnly;
       const searchConcepts = !docsOnly;
+      const retrievalMode: RetrievalMode = searchDocs
+        ? ftsOnly
+          ? "fts"
+          : "hybrid"
+        : "none";
 
       const modeLabel = conceptsOnly
         ? " (concepts only)"
@@ -185,18 +228,18 @@ export function runSearchCommand(
 
 	      // Search documents (if enabled)
 	      if (searchDocs) {
-	        const results = ftsOnly
-	          ? yield* library.ftsSearch(query, new SearchOptions({ limit, tags }))
-	          : yield* library.search(
-	              query,
-	              new SearchOptions({
-	                limit,
-	                tags,
-	                hybrid: true,
-	                expandChars,
-	                includeClusterSummaries: includeClusters,
-	              })
-	            );
+	        const results = yield* searchDocuments(
+            library,
+            query,
+            new SearchOptions({
+              limit,
+              tags,
+              hybrid: !ftsOnly,
+              expandChars,
+              includeClusterSummaries: includeClusters,
+            }),
+            ftsOnly ? "fts" : "hybrid",
+          );
 	        docResults = results.map((result) =>
 	          toSearchDocumentOutput(result, expandChars, globals.verbose)
 	        );
@@ -249,6 +292,7 @@ export function runSearchCommand(
 	        ...(globals.verbose ? { altLabels: [...concept.altLabels] } : {}),
 	      }));
 	      const compactPayload = {
+          retrievalMode,
 	        concepts,
 	        documents: docResults,
 	      };
@@ -288,6 +332,7 @@ export function runSearchCommand(
           const limit = opts.limit ? parseInt(String(opts.limit), 10) : 10;
           const tags = opts.tag ? [String(opts.tag)] : undefined;
           const ftsOnly = opts.fts === true;
+          const retrievalMode: RetrievalMode = ftsOnly ? "fts" : "hybrid";
           const expandChars = opts.expand
             ? Math.min(4000, Math.max(0, parseInt(String(opts.expand), 10)))
             : 0;
@@ -388,20 +433,17 @@ export function runSearchCommand(
           >();
 
           for (const query of queries) {
-            const results = ftsOnly
-              ? yield* library.ftsSearch(
-                  query,
-                  new SearchOptions({ limit, tags })
-                )
-              : yield* library.search(
-                  query,
-                  new SearchOptions({
-                    limit,
-                    tags,
-                    hybrid: true,
-                    expandChars,
-                  })
-                );
+            const results = yield* searchDocuments(
+              library,
+              query,
+              new SearchOptions({
+                limit,
+                tags,
+                hybrid: !ftsOnly,
+                expandChars,
+              }),
+              retrievalMode,
+            );
 
             const handles = results.map(toHandle);
             perQuery.push({ query, documents: handles });
@@ -429,7 +471,7 @@ export function runSearchCommand(
             deduped = deduped.slice(0, globalLimit);
           }
 
-          const compactPayload = { perQuery, deduped };
+          const compactPayload = { retrievalMode, perQuery, deduped };
           resultPayload = globals.verbose
             ? {
             queries,

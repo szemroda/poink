@@ -167,6 +167,7 @@ export async function connectMcpServer<E>(
         return {
           content: [{ type: "text", text: JSON.stringify(envelope) }],
           structuredContent: envelope,
+          isError: !envelope.ok,
         };
       }) as any,
     );
@@ -200,7 +201,7 @@ export async function connectMcpServer<E>(
     "search",
     {
       description:
-        "Search documents (vector/hybrid/FTS) and optionally concepts. Use docsOnly/conceptsOnly for control.",
+        "Search documents and optionally concepts. Document search is hybrid by default and fails if embeddings are unavailable; set fts=true for explicit full-text search.",
       inputSchema: z.object({
         query: z.string(),
         limit: z.number().int().positive().optional(),
@@ -235,7 +236,7 @@ export async function connectMcpServer<E>(
     "search_pack",
     {
       description:
-        "Run multiple searches and aggregate results. Uses progressive disclosure: chunk IDs first, content optional.",
+        "Run multiple hybrid searches and aggregate results. Fails if embeddings are unavailable unless fts=true. Uses progressive disclosure: chunk IDs first, content optional.",
       inputSchema: z.object({
         queries: z.array(z.string()).min(1),
         limit: z.number().int().positive().optional(),

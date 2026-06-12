@@ -978,6 +978,14 @@ export class DocumentExistsError extends Schema.TaggedError<DocumentExistsError>
   { title: Schema.String, path: Schema.String }
 ) {}
 
+export class SemanticSearchProviderError extends Schema.TaggedError<SemanticSearchProviderError>()(
+  "SemanticSearchProviderError",
+  {
+    provider: Schema.String,
+    reason: Schema.String,
+  },
+) {}
+
 export class URLFetchError extends Schema.TaggedError<URLFetchError>()(
   "URLFetchError",
   { url: Schema.String, reason: Schema.String }

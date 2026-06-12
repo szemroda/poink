@@ -3,6 +3,7 @@ import {
   type Config,
   DocumentSearchResult,
   DocumentNotFoundError,
+  SemanticSearchProviderError,
   SearchOptions,
   type Document,
   type PDFChunk,
@@ -60,6 +61,18 @@ function buildEmbeddingContent(doc: Document, chunk: PDFChunk): string {
   return `${context.join("\n")}\n\n${body}`;
 }
 
+function providerFailureReason(error: unknown): string {
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "reason" in error &&
+    typeof error.reason === "string"
+  ) {
+    return error.reason;
+  }
+  return error instanceof Error ? error.message : String(error);
+}
+
 const makeSemanticLibraryService = (_config: Config) =>
   Effect.gen(function* () {
     const db = yield* Database;
@@ -73,14 +86,20 @@ const makeSemanticLibraryService = (_config: Config) =>
         Effect.gen(function* () {
           const { hybrid, limit, expandChars = 0 } = options;
           const results: DocumentSearchResult[] = [];
-          const healthCheck = yield* Effect.either(embedProvider.checkHealth());
+          const mapProviderFailure = (error: unknown) =>
+            new SemanticSearchProviderError({
+              provider: embedProvider.provider,
+              reason: providerFailureReason(error),
+            });
+          yield* embedProvider.checkHealth().pipe(
+            Effect.mapError(mapProviderFailure),
+          );
+          const queryEmbedding = yield* embedProvider.embed(query).pipe(
+            Effect.mapError(mapProviderFailure),
+          );
+          results.push(...(yield* db.vectorSearch(queryEmbedding, options)));
 
-          if (healthCheck._tag === "Right") {
-            const queryEmbedding = yield* embedProvider.embed(query);
-            results.push(...(yield* db.vectorSearch(queryEmbedding, options)));
-          }
-
-          if (hybrid || healthCheck._tag === "Left") {
+          if (hybrid) {
             const ftsResults = yield* db.ftsSearch(query, options);
             for (const fts of ftsResults) {
               const existing = results.find(

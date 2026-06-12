@@ -27,8 +27,8 @@ export function runCapabilitiesCommand(
         "--log-level": ["silent", "error", "info", "debug"] as const,
       },
       commands: [
-        { name: "search", argv: ["search", "<query>"], description: "Search documents (vector + hybrid + FTS) and optionally concepts" },
-        { name: "search-pack", argv: ["search-pack", "<query1>", "<query2>", "..."], description: "Multi-query search sweep + dedupe (agent-optimized aggregation)" },
+        { name: "search", argv: ["search", "<query>"], description: "Hybrid document search and optional concept search; use --fts for explicit full-text retrieval" },
+        { name: "search-pack", argv: ["search-pack", "<query1>", "<query2>", "..."], description: "Multi-query hybrid search sweep + dedupe; use --fts for explicit full-text retrieval" },
         { name: "chunk", argv: ["chunk", "get", "<chunkId>"], description: "Fetch a chunk's full text by ID (progressive disclosure)" },
         { name: "doc", argv: ["doc", "chunks", "<docId>"], description: "List chunk IDs for a document (optionally by page)" },
         { name: "page", argv: ["page", "get", "<docId>", "<page>"], description: "Reconstruct full page text by concatenating chunks" },

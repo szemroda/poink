@@ -516,6 +516,7 @@ describe("CLI JSON Envelope Contract", () => {
       );
       expect(compact.exitCode).toBe(0);
       expect(JSON.parse(compact.stdout).result).toEqual({
+        retrievalMode: "fts",
         concepts: [],
         documents: [],
       });
@@ -527,6 +528,7 @@ describe("CLI JSON Envelope Contract", () => {
       expect(verbose.exitCode).toBe(0);
       const result = JSON.parse(verbose.stdout).result;
       expect(result.query).toBe("absent");
+      expect(result.retrievalMode).toBe("fts");
       expect(result.options.ftsOnly).toBe(true);
       expect(result.concepts).toEqual([]);
       expect(result.documents).toEqual([]);
@@ -544,7 +546,12 @@ describe("CLI JSON Envelope Contract", () => {
       );
       expect(compact.exitCode).toBe(0);
       const compactResult = JSON.parse(compact.stdout).result;
-      expect(Object.keys(compactResult).sort()).toEqual(["deduped", "perQuery"]);
+      expect(Object.keys(compactResult).sort()).toEqual([
+        "deduped",
+        "perQuery",
+        "retrievalMode",
+      ]);
+      expect(compactResult.retrievalMode).toBe("fts");
       expect(compactResult.perQuery[0]).toEqual({
         query: "absent",
         documents: [],
@@ -564,7 +571,36 @@ describe("CLI JSON Envelope Contract", () => {
       expect(verbose.exitCode).toBe(0);
       const verboseResult = JSON.parse(verbose.stdout).result;
       expect(verboseResult.queries).toEqual(["absent"]);
+      expect(verboseResult.retrievalMode).toBe("fts");
       expect(verboseResult.options.ftsOnly).toBe(true);
+    }));
+
+  test("semantic search reports provider failure instead of falling back to FTS", () =>
+    withTempLibraryPath((libraryPath) => {
+      const configPath = join(libraryPath, "config.json");
+      writeTestConfig(configPath, libraryPath);
+
+      const res = runCli(
+        [
+          "search",
+          "absent",
+          "--docs-only",
+          "--format",
+          "json",
+          "--verbose",
+        ],
+        { env: envForConfig(configPath) },
+      );
+
+      expect(res.exitCode).not.toBe(0);
+      const obj = JSON.parse(res.stdout);
+      expect(obj.ok).toBe(false);
+      expect(obj.command).toBe("search");
+      expect(obj.error.code).toBe("PROVIDER_NOT_READY");
+      expect(obj.error.details).toMatchObject({
+        provider: "ollama",
+        requestedRetrievalMode: "hybrid",
+      });
     }));
 
   test("rechunk flag validation: --max-docs requires a numeric value", () =>
@@ -1521,6 +1557,37 @@ describe("MCP Tool Output Contract", () => {
           expect("protocolVersion" in envelope).toBe(false);
           expect("meta" in envelope).toBe(false);
           expect(JSON.parse(textContent.text)).toEqual(envelope);
+
+          const ftsSearchCall = await client.callTool({
+            name: "search",
+            arguments: {
+              query: "absent",
+              docsOnly: true,
+              fts: true,
+            },
+          });
+          const ftsSearchEnvelope =
+            ftsSearchCall.structuredContent as Record<string, unknown>;
+          expect(ftsSearchEnvelope.ok).toBe(true);
+          expect(ftsSearchEnvelope.result).toMatchObject({
+            retrievalMode: "fts",
+            documents: [],
+          });
+
+          const semanticSearchCall = await client.callTool({
+            name: "search",
+            arguments: {
+              query: "absent",
+              docsOnly: true,
+            },
+          });
+          const semanticSearchEnvelope =
+            semanticSearchCall.structuredContent as Record<string, unknown>;
+          expect(semanticSearchCall.isError).toBe(true);
+          expect(semanticSearchEnvelope.ok).toBe(false);
+          expect(semanticSearchEnvelope.error).toMatchObject({
+            code: "PROVIDER_NOT_READY",
+          });
         } finally {
           try {
             await client.close();
