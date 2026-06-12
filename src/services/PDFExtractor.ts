@@ -460,9 +460,7 @@ export function makePDFExtractor(config: LibraryConfig) {
           const resolvedPath = resolvePath(path);
 
           if (!fileExists(resolvedPath)) {
-            return yield* Effect.fail(
-              new PDFNotFoundError({ path: resolvedPath }),
-            );
+            return yield* new PDFNotFoundError({ path: resolvedPath });
           }
 
           const result = yield* Effect.tryPromise({
@@ -479,9 +477,7 @@ export function makePDFExtractor(config: LibraryConfig) {
           const resolvedPath = resolvePath(path);
 
           if (!fileExists(resolvedPath)) {
-            return yield* Effect.fail(
-              new PDFNotFoundError({ path: resolvedPath }),
-            );
+            return yield* new PDFNotFoundError({ path: resolvedPath });
           }
 
           return yield* Effect.tryPromise({
@@ -496,9 +492,7 @@ export function makePDFExtractor(config: LibraryConfig) {
           const resolvedPath = resolvePath(path);
 
           if (!fileExists(resolvedPath)) {
-            return yield* Effect.fail(
-              new PDFNotFoundError({ path: resolvedPath }),
-            );
+            return yield* new PDFNotFoundError({ path: resolvedPath });
           }
 
           const extracted = yield* Effect.tryPromise({

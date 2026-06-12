@@ -221,7 +221,7 @@ export function runIngestCommand(
 
         const progress = renderIngestProgress(state);
 
-        try {
+        yield* Effect.gen(function* () {
           for (let i = 0; i < files.length; i++) {
             if (progress.isCancelled()) {
               progress.cleanup();
@@ -240,7 +240,7 @@ export function runIngestCommand(
 
             progress.update({ currentFile });
 
-            try {
+            const fileResult = yield* Effect.either(Effect.gen(function* () {
               // Get tags - either manual, auto-generated, or none
               let fileTags = manualTags ? [...manualTags] : [];
               let title: string | undefined;
@@ -333,10 +333,10 @@ export function runIngestCommand(
                   lastCheckpointAt: i + 1,
                 });
               }
-            } catch (error) {
+            }));
+            if (fileResult._tag === "Left") {
               currentFile.status = "error";
-              currentFile.error =
-                error instanceof Error ? error.message : String(error);
+              currentFile.error = String(fileResult.left);
 
               progress.update({
                 processedFiles: i + 1,
@@ -377,10 +377,7 @@ export function runIngestCommand(
             autoTag,
             manualTags: manualTags ?? null,
           };
-        } catch (error) {
-          progress.cleanup();
-          throw error;
-        }
+        }).pipe(Effect.ensuring(Effect.sync(() => progress.cleanup())));
       } else {
         // Simple console mode
         let processed = 0;
@@ -390,7 +387,7 @@ export function runIngestCommand(
           const filename = basename(filePath);
           processed++;
 
-          try {
+          const fileResult = yield* Effect.either(Effect.gen(function* () {
             const mode = enrich ? "enrich" : autoTag ? "auto-tag" : "manual";
             yield* Console.log(
               `[${processed}/${files.length}] Adding: ${filename}${
@@ -503,10 +500,10 @@ export function runIngestCommand(
                 );
               }
             }
-          } catch (error) {
+          }));
+          if (fileResult._tag === "Left") {
             errors++;
-            const msg = error instanceof Error ? error.message : String(error);
-            yield* Console.error(`  FAIL Failed: ${msg}`);
+            yield* Console.error(`  FAIL Failed: ${String(fileResult.left)}`);
           }
         }
 

@@ -265,12 +265,10 @@ const makeDocumentIngestionService = (appConfig: Config) =>
           // Check if already exists
           const existing = yield* db.getDocumentByPath(resolvedPath);
           if (existing) {
-            return yield* Effect.fail(
-              new DocumentExistsError({
-                title: existing.title,
-                path: resolvedPath,
-              }),
-            );
+            return yield* new DocumentExistsError({
+              title: existing.title,
+              path: resolvedPath,
+            });
           }
 
           // Check embedding provider
@@ -303,11 +301,9 @@ const makeDocumentIngestionService = (appConfig: Config) =>
           const { pageCount, chunks } = processResult.right;
 
           if (chunks.length === 0) {
-            return yield* Effect.fail(
-              new DocumentNotFoundError({
-                query: `No text content extracted from ${fileType}`,
-              }),
-            );
+            return yield* new DocumentNotFoundError({
+              query: `No text content extracted from ${fileType}`,
+            });
           }
 
           // Create document
@@ -440,9 +436,7 @@ const makeDocumentIngestionService = (appConfig: Config) =>
           // Require existing doc (this is "replace", not "add")
           const existing = yield* db.getDocumentByPath(resolvedPath);
           if (!existing) {
-            return yield* Effect.fail(
-              new DocumentNotFoundError({ query: resolvedPath }),
-            );
+            return yield* new DocumentNotFoundError({ query: resolvedPath });
           }
 
           // Check embedding provider before doing any work
@@ -470,11 +464,9 @@ const makeDocumentIngestionService = (appConfig: Config) =>
           const { pageCount, chunks } = processResult.right;
 
           if (chunks.length === 0) {
-            return yield* Effect.fail(
-              new DocumentNotFoundError({
-                query: `No text content extracted from ${fileType}`,
-              }),
-            );
+            return yield* new DocumentNotFoundError({
+              query: `No text content extracted from ${fileType}`,
+            });
           }
 
           // Stamp current chunker metadata (always overwrite)

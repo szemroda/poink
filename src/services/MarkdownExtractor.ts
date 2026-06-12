@@ -455,9 +455,7 @@ export function makeMarkdownExtractor(config: LibraryConfig) {
           const resolvedPath = resolvePath(path);
 
           if (!existsSync(resolvedPath)) {
-            return yield* Effect.fail(
-              new MarkdownNotFoundError({ path: resolvedPath }),
-            );
+            return yield* new MarkdownNotFoundError({ path: resolvedPath });
           }
 
           const result = yield* Effect.try({
@@ -487,9 +485,7 @@ export function makeMarkdownExtractor(config: LibraryConfig) {
           const resolvedPath = resolvePath(path);
 
           if (!existsSync(resolvedPath)) {
-            return yield* Effect.fail(
-              new MarkdownNotFoundError({ path: resolvedPath }),
-            );
+            return yield* new MarkdownNotFoundError({ path: resolvedPath });
           }
 
           const { frontmatter, sections } = yield* Effect.try({
@@ -541,9 +537,7 @@ export function makeMarkdownExtractor(config: LibraryConfig) {
           const resolvedPath = resolvePath(path);
 
           if (!existsSync(resolvedPath)) {
-            return yield* Effect.fail(
-              new MarkdownNotFoundError({ path: resolvedPath }),
-            );
+            return yield* new MarkdownNotFoundError({ path: resolvedPath });
           }
 
           const result = yield* Effect.try({

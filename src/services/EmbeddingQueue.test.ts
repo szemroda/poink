@@ -6,7 +6,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { Effect } from "effect";
+import { Data, Effect } from "effect";
 import {
   processInBatches,
   createEmbeddingProcessor,
@@ -17,6 +17,10 @@ import {
 } from "./EmbeddingQueue.js";
 
 describe("EmbeddingQueue", () => {
+  class TestProcessError extends Data.TaggedError("TestProcessError")<{
+    readonly message: string;
+  }> {}
+
   describe("processInBatches", () => {
     it("processes all items", async () => {
       const items = [1, 2, 3, 4, 5];
@@ -191,7 +195,9 @@ describe("EmbeddingQueue", () => {
     it("propagates errors from process function", async () => {
       const items = [1, 2, 3];
       const process = (n: number) =>
-        n === 2 ? Effect.fail(new Error("boom")) : Effect.succeed(n);
+        n === 2
+          ? Effect.fail(new TestProcessError({ message: "boom" }))
+          : Effect.succeed(n);
 
       const result = await Effect.runPromise(
         processInBatches(items, process, {

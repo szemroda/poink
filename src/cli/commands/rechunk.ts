@@ -76,20 +76,18 @@ export function runRechunkCommand(
           return Math.floor(n);
         };
 
-        let parsedMaxDocs: number | undefined = undefined;
-        let parsedMaxChunks: number | undefined = undefined;
-        try {
-          parsedMaxDocs = parsePositiveIntFlag(opts["max-docs"] ?? opts.maxDocs, "--max-docs");
-          parsedMaxChunks = parsePositiveIntFlag(opts["max-chunks"] ?? opts.maxChunks, "--max-chunks");
-        } catch (e) {
-          // Avoid throwing inside Effect.gen (becomes a defect / FiberFailure die).
-          if (e instanceof CLIError) {
-            return yield* Effect.fail(e);
-          }
-          return yield* Effect.fail(
-            new CLIError("INVALID_ARGS", String(e), { command: "rechunk" }),
-          );
-        }
+        const [parsedMaxDocs, parsedMaxChunks] = yield* Effect.try({
+          try: () => [
+            parsePositiveIntFlag(opts["max-docs"] ?? opts.maxDocs, "--max-docs"),
+            parsePositiveIntFlag(opts["max-chunks"] ?? opts.maxChunks, "--max-chunks"),
+          ] as const,
+          catch: (error) =>
+            error instanceof CLIError
+              ? error
+              : new CLIError("INVALID_ARGS", String(error), {
+                  command: "rechunk",
+                }),
+        });
 
 	        const config = LibraryConfig.fromConfig(rechunkAppConfig);
 	
@@ -186,15 +184,16 @@ export function runRechunkCommand(
 
         // Enrich plan with cost estimates (current chunk counts).
         let totalCurrentChunks = 0;
-        try {
-          const counts = yield* library.countChunksByDocumentIds(planned.map((p) => p.id));
+        const countsResult = yield* Effect.either(
+          library.countChunksByDocumentIds(planned.map((p) => p.id)),
+        );
+        if (countsResult._tag === "Right") {
+          const counts = countsResult.right;
           for (const p of planned) {
             const count = counts[p.id] ?? 0;
             p.currentChunkCount = count;
             totalCurrentChunks += count;
           }
-        } catch {
-          // best-effort; cost estimates are optional
         }
 
         const warnings: Array<{ code: string; message: string; details?: unknown }> = [];
@@ -352,17 +351,15 @@ export function runRechunkCommand(
 	        let errors = 0;
 	        for (const item of planned) {
           processed++;
-          try {
+          const itemResult = yield* Effect.either(Effect.gen(function* () {
             const doc = yield* library.get(item.id);
             if (!doc) {
-              errors++;
-              continue;
+              return false;
             }
 
             // Guard: don't delete the DB record if the source file is missing.
             if (!existsSync(doc.path)) {
-              errors++;
-              continue;
+              return false;
             }
 
             // Non-destructive: perform an atomic in-place rebuild (doc upsert + chunk/embedding replace).
@@ -383,10 +380,11 @@ export function runRechunkCommand(
               yield* Effect.logInfo(
                 `WARN Rechunk failed for "${doc.title}": ${String(replaceResult.left)}`,
               );
-              errors++;
-              continue;
+              return false;
             }
-          } catch {
+            return true;
+          }));
+          if (itemResult._tag === "Left" || !itemResult.right) {
             errors++;
           }
         }

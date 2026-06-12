@@ -1,10 +1,10 @@
-import { Console as EffectConsole, Effect } from "effect";
+import { Effect, Console as EffectConsole } from "effect";
 import { readFileSync } from "node:fs";
 import { dirname, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { formatHintBlock } from "../agent/format.js";
 import type { CommandResult } from "../agent/hints.js";
 import { generateHints, generateNextActions } from "../agent/hints.js";
-import { formatHintBlock } from "../agent/format.js";
 import {
   DEFAULT_CLI_OUTPUT_FORMAT,
   OUTPUT_FORMATS,
@@ -12,12 +12,12 @@ import {
   type NextAction,
   type OutputFormat,
 } from "../agent/protocol.js";
-import type { Concept, TaxonomyService } from "../services/TaxonomyService.js";
+import { readFileText } from "../runtime.js";
 import type { DocumentIngestionService } from "../services/DocumentIngestion.js";
 import type { LibraryStoreService } from "../services/LibraryStore.js";
 import type { SemanticLibraryService } from "../services/SemanticLibrary.js";
+import type { Concept, TaxonomyService } from "../services/TaxonomyService.js";
 import type { Config } from "../types.js";
-import { readFileText } from "../runtime.js";
 import type { InvocationTiming } from "./timing.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -294,7 +294,7 @@ export function extractEnrichmentPreview(
       ),
     );
   }
-  if (!options.enrich) return Effect.succeed(undefined);
+  if (!options.enrich) return Effect.as(Effect.void, undefined);
   if (fileType === "pdf") {
     return Effect.either(options.pdfExtractor.extract(path)).pipe(
       Effect.map((result) =>
@@ -327,7 +327,7 @@ export function extractEnrichmentPreview(
       ),
     );
   }
-  return Effect.succeed(undefined);
+  return Effect.as(Effect.void, undefined);
 }
 
 type TaxonomyTreeNode = {
@@ -340,9 +340,7 @@ export function renderConceptTree(
   prefix = "",
   isLast = true,
 ): string[] {
-  const lines = [
-    `${prefix}${isLast ? "-- " : "|- "}${node.concept.prefLabel}`,
-  ];
+  const lines = [`${prefix}${isLast ? "-- " : "|- "}${node.concept.prefLabel}`];
   const childPrefix = isLast ? "    " : "|  ";
   node.children.forEach((child, index) => {
     lines.push(
@@ -384,7 +382,9 @@ export async function buildTreeStructure(
     };
   };
   const ids = rootId ? [rootId] : roots;
-  return ids.map(buildNode).filter((node): node is TaxonomyTreeNode => node !== null);
+  return ids
+    .map(buildNode)
+    .filter((node): node is TaxonomyTreeNode => node !== null);
 }
 
 export function resolveConfiguredDefaultFormat(config: Config): OutputFormat {
@@ -428,7 +428,9 @@ export function parseServeCommandOptions(args: string[]): {
 }
 
 export function isOutputFormat(value: unknown): value is OutputFormat {
-  return typeof value === "string" && OUTPUT_FORMATS.includes(value as OutputFormat);
+  return (
+    typeof value === "string" && OUTPUT_FORMATS.includes(value as OutputFormat)
+  );
 }
 
 export function installOpenAICodexShutdownHandlers(): () => void {
@@ -438,9 +440,8 @@ export function installOpenAICodexShutdownHandlers(): () => void {
     shuttingDown = true;
     removeHandlers();
     try {
-      const { closeOpenAICodexProviderManager } = await import(
-        "../services/OpenAICodexProvider.js"
-      );
+      const { closeOpenAICodexProviderManager } =
+        await import("../services/OpenAICodexProvider.js");
       await closeOpenAICodexProviderManager();
     } catch {
       // Ignore cleanup errors during signal shutdown.

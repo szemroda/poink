@@ -41,9 +41,7 @@ const makeLibraryStoreService = (appConfig: Config) =>
         Effect.gen(function* () {
           const doc = yield* get(idOrTitle);
           if (!doc) {
-            return yield* Effect.fail(
-              new DocumentNotFoundError({ query: idOrTitle }),
-            );
+            return yield* new DocumentNotFoundError({ query: idOrTitle });
           }
           yield* db.deleteDocument(doc.id);
           return doc;
@@ -52,9 +50,7 @@ const makeLibraryStoreService = (appConfig: Config) =>
         Effect.gen(function* () {
           const doc = yield* get(idOrTitle);
           if (!doc) {
-            return yield* Effect.fail(
-              new DocumentNotFoundError({ query: idOrTitle }),
-            );
+            return yield* new DocumentNotFoundError({ query: idOrTitle });
           }
           yield* db.updateTags(doc.id, tags);
           return doc;

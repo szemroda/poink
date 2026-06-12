@@ -77,17 +77,16 @@ export function runReindexCommand(
         processed++;
         yield* Console.log(`[${processed}/${docs.length}] ${doc.title}`);
 
-        try {
-          const result = yield* library.reindexEmbeddings(doc.id);
-          totalChunks += result.chunks;
-          totalEmbeddings += result.embeddings;
+        const result = yield* Effect.either(library.reindexEmbeddings(doc.id));
+        if (result._tag === "Right") {
+          totalChunks += result.right.chunks;
+          totalEmbeddings += result.right.embeddings;
           yield* Console.log(
-            `  OK Reindexed ${result.embeddings}/${result.chunks} embeddings`,
+            `  OK Reindexed ${result.right.embeddings}/${result.right.chunks} embeddings`,
           );
-        } catch (error) {
+        } else {
           errors++;
-          const msg = error instanceof Error ? error.message : String(error);
-          yield* Console.error(`  FAIL Failed: ${msg}`);
+          yield* Console.error(`  FAIL Failed: ${String(result.left)}`);
         }
       }
 

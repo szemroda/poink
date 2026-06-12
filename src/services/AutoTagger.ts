@@ -631,7 +631,11 @@ function autoAcceptProposals(
         // Use LLM to judge if it's actually a duplicate
         const isDuplicate = yield* Effect.tryPromise({
           try: () => llmJudgeDuplicate(config, proposal, similar[0]),
-          catch: (error) => error,
+          catch: (error) =>
+            new EnrichmentError(
+              `Duplicate check failed: ${describeEnrichmentCause(error)}`,
+              error,
+            ),
         });
 
         if (isDuplicate) {

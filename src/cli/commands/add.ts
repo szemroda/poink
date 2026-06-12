@@ -100,7 +100,7 @@ function extractEnrichmentPreview(
   }
 
   if (!options.enrich) {
-    return Effect.succeed(undefined);
+    return Effect.as(Effect.void, undefined);
   }
 
   if (fileType === "pdf") {
@@ -127,7 +127,7 @@ function extractEnrichmentPreview(
     );
   }
 
-  return Effect.succeed(undefined);
+  return Effect.as(Effect.void, undefined);
 }
 
 export function runAddCommand(
@@ -158,20 +158,17 @@ export function runAddCommand(
       if (isURL(pathOrUrl)) {
         const appConfig = globals.config!;
         const config = LibraryConfig.fromConfig(appConfig);
-        let downloadOptions: ResolvedURLDownloadOptions;
-        try {
-          downloadOptions = resolveURLDownloadOptions(
+        const downloadOptions = yield* Effect.try({
+          try: () => resolveURLDownloadOptions(
             appConfig,
             opts as Record<string, string | boolean>,
             (code, message, details) => new CLIError(code, message, details),
-          );
-        } catch (error) {
-          return yield* Effect.fail(
+          ),
+          catch: (error) =>
             error instanceof CLIError
               ? error
               : new CLIError("INVALID_ARGS", describeCliFailure(error)),
-          );
-        }
+        });
         const downloadsDir = join(config.libraryPath, "downloads");
 
         if (!existsSync(downloadsDir)) {

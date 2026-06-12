@@ -157,17 +157,13 @@ const makeSemanticLibraryService = (_config: Config) =>
           yield* embedProvider.checkHealth();
           const existing = yield* db.getDocument(docId);
           if (!existing) {
-            return yield* Effect.fail(
-              new DocumentNotFoundError({ query: docId }),
-            );
+            return yield* new DocumentNotFoundError({ query: docId });
           }
           const chunks = yield* db.listChunksByDocument(docId);
           if (chunks.length === 0) {
-            return yield* Effect.fail(
-              new DocumentNotFoundError({
-                query: `No chunks found for document ${docId}`,
-              }),
-            );
+            return yield* new DocumentNotFoundError({
+              query: `No chunks found for document ${docId}`,
+            });
           }
 
           const embeddingRecords: Array<{

@@ -1,6 +1,6 @@
 import { Effect } from "effect";
 import { runOpenAICodexLogin } from "../../services/OpenAICodexProvider.js";
-import { CLIError } from "../runner.js";
+import { CLIError, describeCliFailure } from "../runner.js";
 import type { OutputFormat } from "../../agent/protocol.js";
 import type { CliCommandOutput, CliConsole } from "./types.js";
 
@@ -53,15 +53,13 @@ export function runProvidersCommand(
       );
     }
 
-    let opts: ProvidersLoginOptions;
-    try {
-      opts = providersLoginOptions(options);
-    } catch (error) {
-      if (error instanceof CLIError) {
-        return yield* Effect.fail(error);
-      }
-      throw error;
-    }
+    const opts = yield* Effect.try({
+      try: () => providersLoginOptions(options),
+      catch: (error) =>
+        error instanceof CLIError
+          ? error
+          : new CLIError("INVALID_ARGS", describeCliFailure(error)),
+    });
 
     if (opts.provider !== "openai-codex") {
       return yield* Effect.fail(
@@ -95,7 +93,8 @@ export function runProvidersCommand(
           stdio: "inherit",
           deviceAuth: opts.deviceAuth,
         }),
-      catch: (error) => error,
+      catch: (error) =>
+        new CLIError("AUTH_FAILED", describeCliFailure(error), { cause: error }),
     });
     yield* Console.log("OpenAI Codex login complete");
 

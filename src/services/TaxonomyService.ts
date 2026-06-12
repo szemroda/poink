@@ -343,23 +343,19 @@ export class TaxonomyServiceImpl {
           // ======================================================================
 
           addBroader: (conceptId, broaderId) =>
-            Effect.gen(function* () {
-              yield* execute(
-                `INSERT INTO concept_hierarchy (concept_id, broader_id)
+            execute(
+              `INSERT INTO concept_hierarchy (concept_id, broader_id)
              VALUES (?, ?)
              ON CONFLICT DO NOTHING`,
-                [conceptId, broaderId]
-              );
-            }).pipe(Effect.mapError(mapError)),
+              [conceptId, broaderId]
+            ).pipe(Effect.mapError(mapError)),
 
           removeBroader: (conceptId, broaderId) =>
-            Effect.gen(function* () {
-              yield* execute(
-                `DELETE FROM concept_hierarchy 
+            execute(
+              `DELETE FROM concept_hierarchy
              WHERE concept_id = ? AND broader_id = ?`,
-                [conceptId, broaderId]
-              );
-            }).pipe(Effect.mapError(mapError)),
+              [conceptId, broaderId]
+            ).pipe(Effect.mapError(mapError)),
 
           getBroader: (conceptId) =>
             Effect.gen(function* () {
@@ -450,15 +446,12 @@ export class TaxonomyServiceImpl {
             }).pipe(Effect.mapError(mapError)),
 
           removeRelated: (conceptId, relatedId) =>
-            Effect.gen(function* () {
-              // Remove both directions
-              yield* execute(
-                `DELETE FROM concept_relations 
+            execute(
+              `DELETE FROM concept_relations
              WHERE (concept_id = ? AND related_id = ?) 
                 OR (concept_id = ? AND related_id = ?)`,
-                [conceptId, relatedId, relatedId, conceptId]
-              );
-            }).pipe(Effect.mapError(mapError)),
+              [conceptId, relatedId, relatedId, conceptId]
+            ).pipe(Effect.mapError(mapError)),
 
           getRelated: (conceptId) =>
             Effect.gen(function* () {
@@ -484,25 +477,21 @@ export class TaxonomyServiceImpl {
             confidence = 1.0,
             source = "llm"
           ) =>
-            Effect.gen(function* () {
-              yield* execute(
-                `INSERT INTO document_concepts (doc_id, concept_id, confidence, source)
+            execute(
+              `INSERT INTO document_concepts (doc_id, concept_id, confidence, source)
              VALUES (?, ?, ?, ?)
              ON CONFLICT (doc_id, concept_id) DO UPDATE SET
                confidence = excluded.confidence,
                source = excluded.source`,
-                [docId, conceptId, confidence, source]
-              );
-            }).pipe(Effect.mapError(mapError)),
+              [docId, conceptId, confidence, source]
+            ).pipe(Effect.mapError(mapError)),
 
           removeFromDocument: (docId, conceptId) =>
-            Effect.gen(function* () {
-              yield* execute(
-                `DELETE FROM document_concepts 
+            execute(
+              `DELETE FROM document_concepts
              WHERE doc_id = ? AND concept_id = ?`,
-                [docId, conceptId]
-              );
-            }).pipe(Effect.mapError(mapError)),
+              [docId, conceptId]
+            ).pipe(Effect.mapError(mapError)),
 
           getDocumentConcepts: (docId) =>
             Effect.gen(function* () {

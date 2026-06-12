@@ -78,11 +78,9 @@ function validateEmbedding(
 ): Effect.Effect<number[], OllamaError> {
   return Effect.gen(function* () {
     if (embedding.length === 0) {
-      return yield* Effect.fail(
-        new OllamaError({
-          reason: "Invalid embedding: dimension 0 (empty vector)",
-        }),
-      );
+      return yield* new OllamaError({
+        reason: "Invalid embedding: dimension 0 (empty vector)",
+      });
     }
 
     // First embedding sets the expected dimension
@@ -93,20 +91,16 @@ function validateEmbedding(
       );
     } else if (embedding.length !== detectedEmbeddingDimension) {
       // Subsequent embeddings must match
-      return yield* Effect.fail(
-        new OllamaError({
-          reason: `Invalid embedding: dimension ${embedding.length} (expected ${detectedEmbeddingDimension})`,
-        }),
-      );
+      return yield* new OllamaError({
+        reason: `Invalid embedding: dimension ${embedding.length} (expected ${detectedEmbeddingDimension})`,
+      });
     }
 
     if (embedding.some((v) => !Number.isFinite(v))) {
-      return yield* Effect.fail(
-        new OllamaError({
-          reason:
-            "Invalid embedding: contains non-finite values (NaN or Infinity)",
-        }),
-      );
+      return yield* new OllamaError({
+        reason:
+          "Invalid embedding: contains non-finite values (NaN or Infinity)",
+      });
     }
 
     return embedding;
@@ -209,7 +203,7 @@ export function probeEmbeddingDimension(
         catch: () =>
           new OllamaError({ reason: "Failed to read error response" }),
       });
-      return yield* Effect.fail(new OllamaError({ reason: error }));
+      return yield* new OllamaError({ reason: error });
     }
 
     const data = yield* Effect.tryPromise({
@@ -219,9 +213,7 @@ export function probeEmbeddingDimension(
 
     const dimension = data.embedding?.length ?? 0;
     if (dimension === 0) {
-      return yield* Effect.fail(
-        new OllamaError({ reason: "Probe returned empty embedding" }),
-      );
+      return yield* new OllamaError({ reason: "Probe returned empty embedding" });
     }
 
     // Cache the detected dimension
@@ -258,7 +250,7 @@ export const OllamaLive = Layer.effect(
             catch: () =>
               new OllamaError({ reason: "Failed to read error response" }),
           });
-          return yield* Effect.fail(new OllamaError({ reason: error }));
+          return yield* new OllamaError({ reason: error });
         }
 
         const data = yield* Effect.tryPromise({
@@ -298,9 +290,7 @@ export const OllamaLive = Layer.effect(
           });
 
           if (!response.ok) {
-            return yield* Effect.fail(
-              new OllamaError({ reason: "Ollama not responding" }),
-            );
+            return yield* new OllamaError({ reason: "Ollama not responding" });
           }
 
           const data = yield* Effect.tryPromise({
@@ -319,11 +309,9 @@ export const OllamaLive = Layer.effect(
               // Auto-install the model
               yield* autoInstallModel(modelName, ollamaHost);
             } else {
-              return yield* Effect.fail(
-                new OllamaError({
-                  reason: `Model ${modelName} not found. Run: ollama pull ${modelName}`,
-                }),
-              );
+              return yield* new OllamaError({
+                reason: `Model ${modelName} not found. Run: ollama pull ${modelName}`,
+              });
             }
           }
         }),

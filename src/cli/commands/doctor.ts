@@ -148,12 +148,10 @@ export function runDoctorCommand(
 
       let walHealth: WALHealthResult;
       if (existsSync(walPath)) {
-        let totalSizeBytes = 0;
-        try {
-          totalSizeBytes = statSync(walPath).size;
-        } catch {
-          totalSizeBytes = 0;
-        }
+        const totalSizeBytes = yield* Effect.try({
+          try: () => statSync(walPath).size,
+          catch: () => undefined,
+        }).pipe(Effect.orElseSucceed(() => 0));
         walHealth = assessWALHealth({ fileCount: 1, totalSizeBytes });
       } else {
         walHealth = { healthy: true, warnings: [] };

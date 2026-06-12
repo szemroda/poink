@@ -32,8 +32,8 @@
     "build": "tsc -p tsconfig.build.json",
     "dev": "tsx src/cli.ts",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit",
-    "prepare": "husky || true",
+    "typecheck": "effect-language-service patch && tsc --noEmit",
+    "prepare": "(husky || true) && effect-language-service patch",
     "prepack": "npm run build"
   },
   "dependencies": {
@@ -68,6 +68,7 @@
     "yauzl": "^3.3.1"
   },
   "devDependencies": {
+    "@effect/language-service": "^0.86.2",
     "@secretlint/secretlint-rule-preset-recommend": "^13.0.0",
     "@types/mdast": "^4.0.4",
     "@types/node": "^24.12.4",

@@ -474,9 +474,10 @@ describe("ClusteringService - Error Handling", () => {
         return yield* service.clusterSoft(invalidEmbeddings, {
           maxClusters: 2,
         });
-      })
-        .pipe(Effect.provide(ClusteringServiceImpl.Default))
-        .pipe(Effect.either)
+      }).pipe(
+        Effect.provide(ClusteringServiceImpl.Default),
+        Effect.either,
+      )
     );
 
     expect(result._tag).toBe("Left");
@@ -492,9 +493,10 @@ describe("ClusteringService - Error Handling", () => {
       Effect.gen(function* () {
         const service = yield* ClusteringService;
         return yield* service.cluster(embeddings, { k: 5 });
-      })
-        .pipe(Effect.provide(ClusteringServiceImpl.Default))
-        .pipe(Effect.either)
+      }).pipe(
+        Effect.provide(ClusteringServiceImpl.Default),
+        Effect.either,
+      )
     );
 
     expect(result._tag).toBe("Left");

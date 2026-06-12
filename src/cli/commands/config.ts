@@ -227,18 +227,21 @@ export function runConfigCommand(
       const parsedValue = parseConfigValue(path, newValue, schemaNode);
       target[lastPart] = parsedValue;
 
-      let validatedConfig: Config;
-      try {
-        validatedConfig = normalizeConfig(updatedConfig);
-      } catch {
+      const validationResult = yield* Effect.either(
+        Effect.try({
+          try: () => normalizeConfig(updatedConfig),
+          catch: () =>
+            new CLIError("INVALID_ARGS", `Invalid value for config path: ${path}`, {
+              path,
+              value: newValue,
+            }),
+        }),
+      );
+      if (validationResult._tag === "Left") {
         yield* Console.error(`Invalid value for config path: ${path}`);
-        return yield* Effect.fail(
-          new CLIError("INVALID_ARGS", `Invalid value for config path: ${path}`, {
-            path,
-            value: newValue,
-          }),
-        );
+        return yield* Effect.fail(validationResult.left);
       }
+      const validatedConfig: Config = validationResult.right;
 
       saveConfig(validatedConfig);
       const outputValue = redactConfigValue(path, parsedValue, showSecrets);

@@ -15,6 +15,7 @@ import {
 import { runOpenAICodexLogin } from "../../services/OpenAICodexProvider.js";
 import {
   CLIError,
+  describeCliFailure,
   runCommandWithContext,
   type CliLibrary,
   type GlobalCLIOptions,
@@ -599,7 +600,8 @@ export function runSetupCommand(
 
       const plan = yield* Effect.tryPromise({
         try: () => runSetupWizard(subcommand, dryRun),
-        catch: (error) => error,
+        catch: (error) =>
+          new CLIError("SETUP_FAILED", describeCliFailure(error), { cause: error }),
       });
 
       if (!plan) {
@@ -625,17 +627,21 @@ export function runSetupCommand(
 
       saveConfig(plan.config);
       if (plan.shouldInitialize) {
-        yield* Effect.promise(async () => {
+        yield* Effect.gen(function* () {
           const [
             { buildDiagnosticsLayer },
             { LibraryStore },
             { EmbeddingProvider },
-          ] = await Promise.all([
-            import("../runtime.js"),
-            import("../../services/LibraryStore.js"),
-            import("../../services/EmbeddingProvider.js"),
-          ]);
-          const layer = await buildDiagnosticsLayer(plan.config);
+          ] = yield* Effect.promise(() =>
+            Promise.all([
+              import("../runtime.js"),
+              import("../../services/LibraryStore.js"),
+              import("../../services/EmbeddingProvider.js"),
+            ]),
+          );
+          const layer = yield* Effect.promise(() =>
+            buildDiagnosticsLayer(plan.config),
+          );
           const initialize = Effect.gen(function* () {
             const store = yield* LibraryStore;
             const embedding = yield* EmbeddingProvider;
@@ -653,19 +659,18 @@ export function runSetupCommand(
               }),
             );
           });
-          return Effect.runPromise(
-            initialize.pipe(
-              Effect.provide(
-                layer as unknown as Layer.Layer<unknown, unknown, never>,
-              ),
-              Effect.scoped,
-            ) as Effect.Effect<unknown, unknown, never>,
-          );
+          yield* initialize.pipe(
+            Effect.provide(
+              layer as unknown as Layer.Layer<unknown, unknown, never>,
+            ),
+            Effect.scoped,
+          ) as Effect.Effect<unknown, unknown, never>;
         });
       }
       yield* Effect.tryPromise({
         try: () => runCodexAuth(plan.codexAuthAction),
-        catch: (error) => error,
+        catch: (error) =>
+          new CLIError("AUTH_FAILED", describeCliFailure(error), { cause: error }),
       });
 
       yield* Console.log("Setup complete.");

@@ -681,9 +681,7 @@ export function makeOfficeExtractor(config: LibraryConfig) {
         Effect.gen(function* () {
           const resolvedPath = resolvePath(path);
           if (!existsSync(resolvedPath)) {
-            return yield* Effect.fail(
-              new OfficeNotFoundError({ path: resolvedPath }),
-            );
+            return yield* new OfficeNotFoundError({ path: resolvedPath });
           }
 
           return yield* Effect.tryPromise({
@@ -700,9 +698,7 @@ export function makeOfficeExtractor(config: LibraryConfig) {
         Effect.gen(function* () {
           const resolvedPath = resolvePath(path);
           if (!existsSync(resolvedPath)) {
-            return yield* Effect.fail(
-              new OfficeNotFoundError({ path: resolvedPath }),
-            );
+            return yield* new OfficeNotFoundError({ path: resolvedPath });
           }
 
           return yield* Effect.tryPromise({
@@ -719,9 +715,7 @@ export function makeOfficeExtractor(config: LibraryConfig) {
         Effect.gen(function* () {
           const resolvedPath = resolvePath(path);
           if (!existsSync(resolvedPath)) {
-            return yield* Effect.fail(
-              new OfficeNotFoundError({ path: resolvedPath }),
-            );
+            return yield* new OfficeNotFoundError({ path: resolvedPath });
           }
 
           const extracted = yield* Effect.tryPromise({
