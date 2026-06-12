@@ -272,8 +272,7 @@ export class LibraryConfig extends Schema.Class<LibraryConfig>("LibraryConfig")(
     getLibraryConfigProps(getDefaultLibraryPath()),
   );
 
-  static fromEnv(): LibraryConfig {
-    const config = loadConfig();
+  static fromConfig(config: Config): LibraryConfig {
     const libraryPath = resolveLibraryPath(config);
     const props = getLibraryConfigProps(libraryPath);
     const chunking = resolveChunkingConfig(config);
@@ -282,6 +281,10 @@ export class LibraryConfig extends Schema.Class<LibraryConfig>("LibraryConfig")(
       chunkSize: chunking.chunkSize,
       chunkOverlap: chunking.chunkOverlap,
     });
+  }
+
+  static fromEnv(): LibraryConfig {
+    return LibraryConfig.fromConfig(loadConfig());
   }
 }
 
@@ -907,15 +910,12 @@ export function normalizeConfig(configData: unknown): Config {
 
 /**
  * Load config from resolved path.
- * Creates config.json with defaults if it doesn't exist.
+ * Missing config is represented by in-memory defaults and does not write disk.
  */
 export function loadConfig(): Config {
   const configPath = resolveConfigPath();
 
-  // Create config file with defaults if missing.
   if (!existsSync(configPath)) {
-    mkdirSync(dirname(configPath), { recursive: true });
-    writeFileSync(configPath, JSON.stringify(Config.Default, null, 2), "utf-8");
     return Config.Default;
   }
 

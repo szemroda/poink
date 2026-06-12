@@ -317,9 +317,6 @@ export function parseCommandLine(
     configuredDefaultFormat,
     setResult,
   );
-  executable(program.command("export"), rawArgs, configuredDefaultFormat, setResult);
-  executable(program.command("import"), rawArgs, configuredDefaultFormat, setResult);
-
   try {
     program.parse(rawArgs, { from: "user" });
   } catch (error) {

@@ -1,8 +1,11 @@
 import { Effect } from "effect";
 import { existsSync, mkdirSync } from "fs";
 import { basename, extname, join } from "path";
-import { AddOptions, LibraryConfig } from "../../index.js";
-import { resolveVisualsConfig, loadConfig } from "../../types.js";
+import {
+  AddOptions,
+  LibraryConfig,
+  resolveVisualsConfig,
+} from "../../types.js";
 import { AutoTagger } from "../../services/AutoTagger.js";
 import { PDFExtractor } from "../../services/PDFExtractor.js";
 import { OfficeExtractor } from "../../services/OfficeExtractor.js";
@@ -132,7 +135,7 @@ export function runAddCommand(
   globals: GlobalCLIOptions,
   options: AddCommandOptions = {},
 ) {
-  return runCommandWithContext(args, globals, ({ Console, library }) =>
+  return runCommandWithContext(args, globals, ({ Console, library, globals }) =>
     Effect.gen(function* () {
       const pathOrUrl = args[1];
       if (!pathOrUrl) {
@@ -153,8 +156,8 @@ export function runAddCommand(
       let title = opts.title as string | undefined;
 
       if (isURL(pathOrUrl)) {
-        const config = LibraryConfig.fromEnv();
-        const appConfig = loadConfig();
+        const appConfig = globals.config!;
+        const config = LibraryConfig.fromConfig(appConfig);
         let downloadOptions: ResolvedURLDownloadOptions;
         try {
           downloadOptions = resolveURLDownloadOptions(
@@ -198,7 +201,7 @@ export function runAddCommand(
 
       const autoTag = opts["auto-tag"] === true;
       const enrich = opts.enrich === true;
-      const addConfig = loadConfig();
+      const addConfig = globals.config!;
       const visualsExplicit = opts.visuals === true;
       const visualsEnabled =
         visualsExplicit || resolveVisualsConfig(addConfig).enabled;

@@ -672,11 +672,10 @@ async function extractFromResolvedPath(
   return fileType === "docx" ? extractDocx(path) : extractOdt(path);
 }
 
-export const OfficeExtractorLive = Layer.effect(
-  OfficeExtractor,
-  Effect.gen(function* () {
-    const config = LibraryConfig.fromEnv();
-
+export function makeOfficeExtractor(config: LibraryConfig) {
+  return Layer.effect(
+    OfficeExtractor,
+    Effect.gen(function* () {
     return {
       extract: (path: string) =>
         Effect.gen(function* () {
@@ -750,5 +749,10 @@ export const OfficeExtractorLive = Layer.effect(
           return { pageCount: extracted.sectionCount, chunks: allChunks };
         }),
     };
-  }),
+    }),
+  );
+}
+
+export const OfficeExtractorLive = Layer.unwrapEffect(
+  Effect.sync(() => makeOfficeExtractor(LibraryConfig.fromEnv())),
 );

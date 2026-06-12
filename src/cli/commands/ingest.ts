@@ -1,8 +1,7 @@
 import { Effect } from "effect";
 import { basename, extname, join } from "path";
 import { existsSync, readdirSync, statSync } from "fs";
-import { AddOptions } from "../../index.js";
-import { loadConfig, resolveVisualsConfig } from "../../types.js";
+import { AddOptions, resolveVisualsConfig } from "../../types.js";
 import { resolveUserPath } from "../../pathUtils.js";
 import { fileTypeFromExtension } from "../../urlDownloads.js";
 import { AutoTagger } from "../../services/AutoTagger.js";
@@ -27,7 +26,10 @@ export function runIngestCommand(
   globals: GlobalCLIOptions,
   options: IngestCommandOptions = {},
 ) {
-  return runCommandWithContext(args, globals, ({ Console, format, library }) =>
+  return runCommandWithContext(
+    args,
+    globals,
+    ({ Console, format, library, globals }) =>
     Effect.gen(function* () {
       let resultPayload: unknown = null;
       let agentResult: any = null;
@@ -106,7 +108,7 @@ export function runIngestCommand(
       const useProgress = format === "text" && opts.progress !== false;
       const autoTag = opts["auto-tag"] === true;
       const enrich = opts.enrich === true;
-      const ingestConfig = loadConfig();
+      const ingestConfig = globals.config!;
       const visualsExplicit = opts.visuals === true;
       const visualsEnabled =
         visualsExplicit || resolveVisualsConfig(ingestConfig).enabled;
@@ -534,5 +536,6 @@ export function runIngestCommand(
       }
       return { resultPayload, agentResult };
     }),
-    options);
+    options,
+  );
 }

@@ -445,11 +445,10 @@ function resolvePath(path: string): string {
 // Service Layer
 // ============================================================================
 
-export const MarkdownExtractorLive = Layer.effect(
-  MarkdownExtractor,
-  Effect.gen(function* () {
-    const config = LibraryConfig.fromEnv();
-
+export function makeMarkdownExtractor(config: LibraryConfig) {
+  return Layer.effect(
+    MarkdownExtractor,
+    Effect.gen(function* () {
     return {
       extract: (path: string) =>
         Effect.gen(function* () {
@@ -562,5 +561,10 @@ export const MarkdownExtractorLive = Layer.effect(
           return result;
         }),
     };
-  }),
+    }),
+  );
+}
+
+export const MarkdownExtractorLive = Layer.unwrapEffect(
+  Effect.sync(() => makeMarkdownExtractor(LibraryConfig.fromEnv())),
 );

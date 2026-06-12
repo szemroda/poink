@@ -449,11 +449,10 @@ export function chunkText(
   return chunkNormalizedText(cleaned, chunkSize, chunkOverlap);
 }
 
-export const PDFExtractorLive = Layer.effect(
-  PDFExtractor,
-  Effect.gen(function* () {
-    const config = LibraryConfig.fromEnv();
-
+export function makePDFExtractor(config: LibraryConfig) {
+  return Layer.effect(
+    PDFExtractor,
+    Effect.gen(function* () {
     return {
       extract: (path: string) =>
         Effect.gen(function* () {
@@ -526,5 +525,10 @@ export const PDFExtractorLive = Layer.effect(
           return { pageCount: extracted.pageCount, chunks: allChunks };
         }),
     };
-  }),
+    }),
+  );
+}
+
+export const PDFExtractorLive = Layer.unwrapEffect(
+  Effect.sync(() => makePDFExtractor(LibraryConfig.fromEnv())),
 );

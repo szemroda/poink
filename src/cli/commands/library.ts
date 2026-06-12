@@ -1,8 +1,7 @@
 import { Effect } from "effect";
 import type { OutputFormat } from "../../agent/protocol.js";
-import type { PDFLibrary } from "../../index.js";
 import type { Document } from "../../types.js";
-import { CLIError } from "../runner.js";
+import { CLIError, type CliLibrary } from "../runner.js";
 import type { CliCommandOutput, CliConsole } from "./types.js";
 
 export type DocumentSummary = Pick<
@@ -33,7 +32,7 @@ function optionValue(args: string[], name: string): string | undefined {
 export function runLibraryCommand(
   args: string[],
   format: OutputFormat,
-  library: PDFLibrary,
+  library: CliLibrary,
   Console: CliConsole,
   verbose = false,
   options: Record<string, unknown> = {},

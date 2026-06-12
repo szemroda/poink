@@ -2,7 +2,7 @@ import { Effect } from "effect";
 import { existsSync, mkdirSync, readFileSync } from "fs";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
-import { LibraryConfig, type PDFLibrary } from "../../index.js";
+import { LibraryConfig } from "../../types.js";
 import {
   TaxonomyService,
   TaxonomyServiceImpl,
@@ -10,6 +10,7 @@ import {
 } from "../../services/TaxonomyService.js";
 import {
   runCommandWithContext,
+  type CliLibrary,
   type GlobalCLIOptions,
 } from "../runner.js";
 import type { CliConsole } from "./types.js";
@@ -20,10 +21,10 @@ interface InitCommandOptions extends Record<string, unknown> {}
 
 export function initializePoinkLibrary(
   Console: CliConsole,
-  library: PDFLibrary,
+  library: CliLibrary,
+  config: LibraryConfig,
 ) {
   return Effect.gen(function* () {
-    const config = LibraryConfig.fromEnv();
     yield* Console.log("Initializing poink...\n");
 
     if (!existsSync(config.libraryPath)) {
@@ -108,9 +109,13 @@ export function runInitCommand(
   globals: GlobalCLIOptions,
   options: InitCommandOptions = {},
 ) {
-  return runCommandWithContext(args, globals, ({ Console, library }) =>
+  return runCommandWithContext(args, globals, ({ Console, library, globals }) =>
     Effect.gen(function* () {
-      const result = yield* initializePoinkLibrary(Console, library);
+      const result = yield* initializePoinkLibrary(
+        Console,
+        library,
+        LibraryConfig.fromConfig(globals.config!),
+      );
 
       return {
         resultPayload: {

@@ -7,10 +7,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   assessWALHealth,
+} from "./cli/health.js";
+import {
   getCheckpointInterval,
   shouldCheckpoint,
   parseArgs,
-} from "./cli.js";
+} from "./cli/runner.js";
 import { selectDefaultModel } from "./cli/commands/setup.js";
 import {
   filenameFromURL,

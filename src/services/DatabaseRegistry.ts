@@ -6,30 +6,30 @@
 
 import {
   type Config,
-  loadConfig,
   normalizeConfig,
   resolveLibsqlUrl,
   resolveStorageApiKey,
 } from "../types.js";
 import { Effect, Layer } from "effect";
-import { LibSQLDatabase } from "./LibSQLDatabase.js";
-import { QdrantDatabase } from "./QdrantDatabase.js";
 
 export class DatabaseRegistry {
-  static make(opts?: { config?: Config }) {
+  static make(opts: { config: Config }) {
     return Layer.unwrapEffect(
-      Effect.sync(() => {
-        const config = normalizeConfig(opts?.config ?? loadConfig());
+      Effect.promise(async () => {
+        const config = normalizeConfig(opts.config);
 
         switch (config.storage.backend) {
-          case "qdrant":
+          case "qdrant": {
+            const { QdrantDatabase } = await import("./QdrantDatabase.js");
             return QdrantDatabase.make({
               url: config.storage.qdrant.url,
               collection: config.storage.qdrant.collection,
               apiKey: resolveStorageApiKey(config.storage.qdrant),
             });
+          }
           case "libsql":
-          default:
+          default: {
+            const { LibSQLDatabase } = await import("./LibSQLDatabase.js");
             return LibSQLDatabase.make({
               url: resolveLibsqlUrl(config),
               authToken:
@@ -40,6 +40,7 @@ export class DatabaseRegistry {
               embeddingProvider: config.models.embedding.provider,
               embeddingModel: config.models.embedding.model,
             });
+          }
         }
       }),
     );

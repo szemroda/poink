@@ -1,9 +1,5 @@
 export { runCli } from "./main.js";
 export {
-  buildCliAppLayer,
-  buildCliAppLayer as createCliAppLayer,
-} from "./runtime.js";
-export {
   assessDoctorHealth,
   assessWALHealth,
   type HealthCheck,

@@ -1,7 +1,6 @@
-import { Effect } from "effect";
-import { fileURLToPath } from "url";
-import { realpathSync } from "fs";
-import { resolve } from "path";
+import { realpathSync } from "node:fs";
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   makeErrorEnvelope,
   makeSuccessEnvelope,
@@ -9,99 +8,177 @@ import {
   type OutputFormat,
 } from "../agent/protocol.js";
 import { setLogLevel } from "../logger.js";
+import { Config, loadConfig } from "../types.js";
+import { parseCommandLine, type ParsedCommandLine } from "./commander.js";
+import { writeEnvelope } from "./envelope.js";
+import { coerceCliError } from "./errors.js";
 import {
-  installOpenAICodexShutdownHandlers,
   resolveConfiguredDefaultFormat,
   VERSION,
   type GlobalCLIOptions,
 } from "./runner.js";
-import { dispatchCommand } from "./commands.js";
-import { writeEnvelope } from "./envelope.js";
-import { runMcpServer } from "./mcp.js";
-import {
-  buildCliAppLayer,
-  isServiceFreeCommand,
-  withConfiguredLogging,
-} from "./runtime.js";
-import { runServeCommand } from "./serve.js";
-import { parseCommandLine, type ParsedCommandLine } from "./commander.js";
-import { CLIError, coerceCliError } from "./errors.js";
-import {
-  closeOpenAICodexProviderManager,
-  withOpenAICodexProviderScope,
-} from "../services/OpenAICodexProvider.js";
 import {
   createInvocationTiming,
   createProcessInvocationTiming,
   type InvocationTiming,
 } from "./timing.js";
+import type { FamilyRunner } from "./families/types.js";
+
+export type CommandFamily =
+  | "lightweight"
+  | "store"
+  | "search"
+  | "ingestion"
+  | "setup"
+  | "diagnostics"
+  | "server";
+
+export const COMMAND_FAMILIES: Readonly<Record<string, CommandFamily>> = {
+  help: "lightweight",
+  version: "lightweight",
+  "--help": "lightweight",
+  "--version": "lightweight",
+  capabilities: "lightweight",
+  config: "lightweight",
+  chunk: "store",
+  doc: "store",
+  page: "store",
+  list: "store",
+  read: "store",
+  get: "store",
+  remove: "store",
+  tag: "store",
+  stats: "store",
+  repair: "store",
+  search: "search",
+  "search-pack": "search",
+  taxonomy: "search",
+  add: "ingestion",
+  ingest: "ingestion",
+  reindex: "ingestion",
+  rechunk: "ingestion",
+  providers: "setup",
+  setup: "setup",
+  doctor: "diagnostics",
+  check: "diagnostics",
+  init: "diagnostics",
+  mcp: "server",
+  serve: "server",
+};
 
 function isOutputFormat(value: unknown): value is OutputFormat {
   return typeof value === "string" && OUTPUT_FORMATS.includes(value as OutputFormat);
 }
 
+function isHelpOrVersionInvocation(rawArgs: string[]): boolean {
+  return (
+    rawArgs[0] === "help" ||
+    rawArgs[0] === "version" ||
+    rawArgs.some(
+      (arg) =>
+        arg === "--help" ||
+        arg === "-h" ||
+        arg === "--version" ||
+        arg === "-v",
+    )
+  );
+}
+
+function usesOpenAICodex(
+  family: CommandFamily,
+  parsed: ParsedCommandLine,
+  config: Config,
+): boolean {
+  const command = parsed.args[0];
+  const usesLanguageModel =
+    (command === "add" || command === "ingest" || command === "rechunk") &&
+    (parsed.options.enrich === true ||
+      parsed.options.visuals === true ||
+      parsed.options.autoTag === true ||
+      parsed.options["auto-tag"] === true ||
+      config.ingest.visuals.enabled);
+  return (
+    family === "ingestion" &&
+    usesLanguageModel &&
+    (parsed.options.provider === "openai-codex" ||
+      config.models.enrichment.provider === "openai-codex" ||
+      config.models.judge.provider === "openai-codex")
+  );
+}
+
+async function runFamilyRunner(
+  runner: FamilyRunner,
+  input: Parameters<FamilyRunner>[0],
+  family: CommandFamily,
+): Promise<unknown> {
+  if (!usesOpenAICodex(family, input.parsed, input.config)) {
+    return runner(input);
+  }
+
+  const { withOpenAICodexProviderScope } = await import(
+    "../services/OpenAICodexProvider.js"
+  );
+  return withOpenAICodexProviderScope(() => runner(input));
+}
+
 function configuredGlobals(
   configuredDefaultFormat: OutputFormat,
   rawArgs: string[],
-): GlobalCLIOptions {
+): Omit<GlobalCLIOptions, "config" | "timing"> {
   let format = configuredDefaultFormat;
   let pretty = false;
   let verbose = false;
   let logLevel: GlobalCLIOptions["logLevel"] = "error";
-
   if (rawArgs[0]?.startsWith("--")) {
-    return {
-      format,
-      configuredDefaultFormat,
-      pretty,
-      verbose,
-      logLevel,
-    };
+    return { format, configuredDefaultFormat, pretty, verbose, logLevel };
   }
-
-  for (let i = 1; i < rawArgs.length; i++) {
-    const arg = rawArgs[i]!;
+  for (let index = 1; index < rawArgs.length; index++) {
+    const arg = rawArgs[index]!;
     if (arg === "--pretty") pretty = true;
     else if (arg === "--verbose") verbose = true;
     else if (arg.startsWith("--format=")) {
       const value = arg.slice("--format=".length);
       if (isOutputFormat(value)) format = value;
     } else if (arg === "--format") {
-      const value = rawArgs[i + 1];
+      const value = rawArgs[index + 1];
       if (isOutputFormat(value)) format = value;
-      i++;
+      index++;
     } else if (arg.startsWith("--log-level=")) {
       const value = arg.slice("--log-level=".length);
-      if (value === "silent" || value === "error" || value === "info" || value === "debug") {
+      if (
+        value === "silent" ||
+        value === "error" ||
+        value === "info" ||
+        value === "debug"
+      ) {
         logLevel = value;
       }
     } else if (arg === "--log-level") {
-      const value = rawArgs[i + 1];
-      if (value === "silent" || value === "error" || value === "info" || value === "debug") {
+      const value = rawArgs[index + 1];
+      if (
+        value === "silent" ||
+        value === "error" ||
+        value === "info" ||
+        value === "debug"
+      ) {
         logLevel = value;
       }
-      i++;
+      index++;
     }
   }
-
   return { format, configuredDefaultFormat, pretty, verbose, logLevel };
 }
 
 function writeCliError(
   globals: GlobalCLIOptions,
   command: string,
-  error: CLIError,
+  error: ReturnType<typeof coerceCliError>,
   timing: InvocationTiming,
 ): void {
   if (globals.format === "text") {
-    try {
-      process.stderr.write(`${error.code}: ${error.message}\n`);
-    } catch {
-      // ignore
-    }
+    process.stderr.write(`${error.code}: ${error.message}\n`);
     return;
   }
-
   writeEnvelope(
     globals.format,
     makeErrorEnvelope(
@@ -116,173 +193,178 @@ function writeCliError(
   );
 }
 
-async function executeParsed(
-  parsed: ParsedCommandLine,
-  timing: InvocationTiming,
-): Promise<number> {
-  const { args, globals: parsedGlobals } = parsed;
-  const globals: GlobalCLIOptions = { ...parsedGlobals, timing };
-  setLogLevel(globals.logLevel);
-
-  const command = args[0];
-
-  if (command === "mcp") {
-    try {
-      await runMcpServer(buildCliAppLayer(), globals);
-      return 0;
-    } catch (error) {
-      const cliErr =
-        error instanceof CLIError
-          ? error
-          : new CLIError("MCP_FAILED", String(error), error);
-      writeCliError(globals, "mcp", cliErr, timing);
-      return 1;
-    }
+export function getCommandFamily(parsed: ParsedCommandLine): CommandFamily {
+  if (parsed.args.includes("--help") || parsed.args.includes("-h")) {
+    return "lightweight";
   }
-
-  if (command === "serve") {
-    try {
-      await runServeCommand(buildCliAppLayer(), globals, args.slice(1));
-      return 0;
-    } catch (error) {
-      const cliErr =
-        error instanceof CLIError
-          ? error
-          : new CLIError("SERVE_FAILED", String(error), error);
-      writeCliError(globals, "serve", cliErr, timing);
-      return 1;
-    }
+  if (parsed.args.includes("--version") || parsed.args.includes("-v")) {
+    return "lightweight";
   }
+  return COMMAND_FAMILIES[parsed.args[0] ?? "--help"] ?? "lightweight";
+}
 
-  const removeOpenAICodexShutdownHandlers = installOpenAICodexShutdownHandlers();
-  let outEither: any;
-
-  try {
-    const program = dispatchCommand(args, globals, parsed.options);
-
-    if (isServiceFreeCommand(command)) {
-      outEither = await withOpenAICodexProviderScope(() =>
-        Effect.runPromise(
-          withConfiguredLogging(
-            (program as Effect.Effect<any, any, never>).pipe(Effect.either),
-            globals.logLevel,
-          ),
-        ),
-      );
-    } else {
-      outEither = await withOpenAICodexProviderScope(() =>
-        Effect.runPromise(
-          withConfiguredLogging(
-            program.pipe(Effect.provide(buildCliAppLayer()), Effect.scoped, Effect.either) as any,
-            globals.logLevel,
-          ),
-        ),
-      );
-    }
-  } catch (error) {
-    removeOpenAICodexShutdownHandlers();
-    try {
-      await closeOpenAICodexProviderManager();
-    } catch {
-      // ignore cleanup errors while reporting the original failure
-    }
-    writeCliError(globals, command || "cli", coerceCliError(error), timing);
-    return 1;
+async function loadFamilyRunner(family: CommandFamily): Promise<FamilyRunner> {
+  switch (family) {
+    case "lightweight":
+      return (await import("./families/lightweight.js")).runFamily;
+    case "store":
+      return (await import("./families/store.js")).runFamily;
+    case "search":
+      return (await import("./families/search.js")).runFamily;
+    case "ingestion":
+      return (await import("./families/ingestion.js")).runFamily;
+    case "setup":
+      return (await import("./families/setup.js")).runFamily;
+    case "diagnostics":
+      return (await import("./families/diagnostics.js")).runFamily;
+    case "server":
+      return (await import("./families/server.js")).runFamily;
   }
+}
 
-  removeOpenAICodexShutdownHandlers();
-  try {
-    await closeOpenAICodexProviderManager();
-  } catch {
-    // ignore cleanup errors after command completion
-  }
-
-  if (outEither._tag === "Right") {
-    const out: any = outEither.right;
-    if (globals.format !== "text") {
-      writeEnvelope(
-        globals.format,
-        makeSuccessEnvelope(out.command, out.result, {
-          verbose: globals.verbose,
-          nextActions: out.nextActions,
-          meta: timing.toAgentMeta(VERSION),
-        }),
-        globals.pretty,
-      );
-    }
-    return 0;
-  }
-
-  writeCliError(
-    globals,
-    command || "cli",
-    coerceCliError(outEither.left),
-    timing,
+function isEither(
+  value: unknown,
+): value is
+  | { _tag: "Right"; right: { command: string; result: unknown; nextActions?: never } }
+  | { _tag: "Left"; left: unknown } {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "_tag" in value &&
+    (value._tag === "Right" || value._tag === "Left")
   );
-  return 1;
 }
 
 async function runCliWithTiming(
   rawArgs: string[],
   timing: InvocationTiming,
 ): Promise<number> {
-  const configuredDefaultFormat = resolveConfiguredDefaultFormat();
+  const normalizedArgs =
+    rawArgs.length === 0
+      ? ["--help"]
+      : rawArgs.length === 1 && rawArgs[0] === "-h"
+        ? ["--help"]
+        : rawArgs.length === 1 && rawArgs[0] === "-v"
+          ? ["--version"]
+          : rawArgs;
+  const bootstrapCommand = normalizedArgs[0] ?? "--help";
+  const malformedConfigIsNonFatal = isHelpOrVersionInvocation(normalizedArgs);
 
-  if (rawArgs.length === 0) {
-    return executeParsed(
-      {
-        args: ["--help"],
-        options: {},
-        globals: configuredGlobals(configuredDefaultFormat, rawArgs),
-      },
-      timing,
-    );
+  let config: Config;
+  try {
+    config = loadConfig();
+  } catch (error) {
+    if (!malformedConfigIsNonFatal) {
+      const globals = {
+        ...configuredGlobals("text", normalizedArgs),
+        timing,
+      };
+      writeCliError(
+        globals,
+        bootstrapCommand.startsWith("-") ? "cli" : bootstrapCommand,
+        coerceCliError(error),
+        timing,
+      );
+      return 1;
+    }
+    config = Config.Default;
   }
 
-  if (rawArgs.length === 1 && (rawArgs[0] === "--help" || rawArgs[0] === "-h")) {
-    return executeParsed(
-      {
-        args: ["--help"],
-        options: {},
-        globals: configuredGlobals(configuredDefaultFormat, rawArgs),
-      },
-      timing,
-    );
-  }
-
-  if (rawArgs.length === 1 && (rawArgs[0] === "--version" || rawArgs[0] === "-v")) {
-    return executeParsed(
-      {
-        args: ["--version"],
-        options: {},
-        globals: configuredGlobals(configuredDefaultFormat, rawArgs),
-      },
-      timing,
-    );
-  }
-
+  const configuredDefaultFormat = resolveConfiguredDefaultFormat(config);
   let parsed: ParsedCommandLine;
   try {
-    parsed = parseCommandLine(rawArgs, configuredDefaultFormat);
+    parsed =
+      normalizedArgs.length === 1 && normalizedArgs[0] === "--help"
+        ? {
+            args: ["--help"],
+            options: {},
+            globals: configuredGlobals(
+              configuredDefaultFormat,
+              normalizedArgs,
+            ),
+          }
+        : normalizedArgs.length === 1 && normalizedArgs[0] === "--version"
+          ? {
+              args: ["--version"],
+              options: {},
+              globals: configuredGlobals(
+                configuredDefaultFormat,
+                normalizedArgs,
+              ),
+            }
+          : parseCommandLine(normalizedArgs, configuredDefaultFormat);
   } catch (error) {
-    const globals = configuredGlobals(configuredDefaultFormat, rawArgs);
+    const globals = {
+      ...configuredGlobals(configuredDefaultFormat, normalizedArgs),
+      config,
+      timing,
+    };
     writeCliError(
       globals,
-      rawArgs[0] && !rawArgs[0].startsWith("-") ? rawArgs[0] : "cli",
+      bootstrapCommand.startsWith("-") ? "cli" : bootstrapCommand,
       coerceCliError(error),
       timing,
     );
     return 1;
   }
 
-  return executeParsed(parsed, timing);
+  const globals: GlobalCLIOptions = {
+    ...parsed.globals,
+    config,
+    timing,
+  };
+  setLogLevel(globals.logLevel);
+
+  try {
+    const family = getCommandFamily(parsed);
+    const runner = await loadFamilyRunner(family);
+    const outcome = await runFamilyRunner(
+      runner,
+      { parsed, globals, config, timing },
+      family,
+    );
+    if (!isEither(outcome)) return 0;
+    if (outcome._tag === "Left") {
+      writeCliError(
+        globals,
+        parsed.args[0] ?? "cli",
+        coerceCliError(outcome.left),
+        timing,
+      );
+      return 1;
+    }
+    const output = outcome.right;
+    if (globals.format !== "text") {
+      writeEnvelope(
+        globals.format,
+        makeSuccessEnvelope(output.command, output.result, {
+          verbose: globals.verbose,
+          nextActions: output.nextActions,
+          meta: timing.toAgentMeta(VERSION),
+        }),
+        globals.pretty,
+      );
+    }
+    return 0;
+  } catch (error) {
+    writeCliError(
+      globals,
+      parsed.args[0] ?? "cli",
+      coerceCliError(error),
+      timing,
+    );
+    return 1;
+  }
 }
 
 export function runCli(rawArgs: string[]): Promise<number> {
   return runCliWithTiming(rawArgs, createInvocationTiming());
 }
 
-export function isMainModule(metaUrl: string, argvPath: string | undefined): boolean {
+export function isMainModule(
+  metaUrl: string,
+  argvPath: string | undefined,
+): boolean {
   if (!argvPath) return false;
   const modulePath = fileURLToPath(metaUrl);
   const resolvedArgvPath = resolve(argvPath);

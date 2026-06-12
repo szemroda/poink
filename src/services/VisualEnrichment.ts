@@ -1,8 +1,8 @@
 import { generateText } from "ai";
 import dedent from "dedent";
 import { Context, Effect, Layer } from "effect";
-import type { DocumentFileType } from "../types.js";
-import { loadConfig, resolveVisualsConfig } from "../types.js";
+import type { Config, DocumentFileType } from "../types.js";
+import { resolveVisualsConfig } from "../types.js";
 import {
   describeLanguageModelError,
   getConfiguredLanguageModel,
@@ -149,11 +149,11 @@ export function buildVisualChunkContent(
 }
 
 async function describeImage(
+  config: Config,
   image: ExtractedDocumentImage,
   options: { title?: string },
 ): Promise<string> {
-  const config = loadConfig();
-  const resolved = getConfiguredLanguageModel(config, "enrichment");
+  const resolved = await getConfiguredLanguageModel(config, "enrichment");
   const result = await generateText({
     model: resolved.model,
     ...(resolved.providerOptions
@@ -178,9 +178,10 @@ async function describeImage(
   return result.text;
 }
 
-export const VisualEnrichmentLive = Layer.effect(
-  VisualEnrichment,
-  Effect.gen(function* () {
+export function makeVisualEnrichment(config: Config) {
+  return Layer.effect(
+    VisualEnrichment,
+    Effect.gen(function* () {
     const pdfExtractor = yield* PDFExtractor;
     const officeExtractor = yield* OfficeExtractor;
 
@@ -193,8 +194,7 @@ export const VisualEnrichmentLive = Layer.effect(
         if (options.mode === "disabled") return Effect.succeed([]);
 
         const program = Effect.gen(function* () {
-          const appConfig = loadConfig();
-          const visualsConfig = resolveVisualsConfig(appConfig);
+          const visualsConfig = resolveVisualsConfig(config);
           if (!visualsConfig.enabled && options.mode !== "explicit") {
             return [];
           }
@@ -232,7 +232,7 @@ export const VisualEnrichmentLive = Layer.effect(
 
           for (const image of retained) {
             const description = yield* Effect.tryPromise({
-              try: () => describeImage(image, { title: options.title }),
+              try: () => describeImage(config, image, { title: options.title }),
               catch: (error) =>
                 visualError(
                   `Visual enrichment requires a vision-capable models.enrichment model. Current visual description failed: ${describeLanguageModelError(error)}`,
@@ -262,5 +262,6 @@ export const VisualEnrichmentLive = Layer.effect(
         return program;
       },
     };
-  }),
-);
+    }),
+  );
+}

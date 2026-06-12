@@ -1,4 +1,4 @@
-import { Effect, Exit, Layer, Logger, Runtime, Scope } from "effect";
+import { Effect, Layer, Logger, ManagedRuntime } from "effect";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
@@ -13,11 +13,15 @@ import {
   closeOpenAICodexProviderManager,
   withOpenAICodexProviderScope,
 } from "../services/OpenAICodexProvider.js";
+import { DocumentIngestion } from "../services/DocumentIngestion.js";
+import { LibraryStore } from "../services/LibraryStore.js";
+import { SemanticLibrary } from "../services/SemanticLibrary.js";
 import {
   CLIError,
   describeCliFailure,
   VERSION,
   type GlobalCLIOptions,
+  type CliLibrary,
 } from "./runner.js";
 import { dispatchCommand } from "./commands.js";
 import { withConfiguredLogging } from "./runtime.js";
@@ -42,8 +46,8 @@ function forceJsonGlobals(globals: GlobalCLIOptions): GlobalCLIOptions {
   };
 }
 
-export async function connectMcpServer<ROut, E>(
-  appLayer: Layer.Layer<ROut, E, never>,
+export async function connectMcpServer<E>(
+  appLayer: Layer.Layer<unknown, E, never>,
   globals: GlobalCLIOptions,
   transport: MCPTransport,
 ): Promise<() => Promise<void>> {
@@ -76,14 +80,11 @@ export async function connectMcpServer<ROut, E>(
       .optional(),
   });
 
-  const scope = await Effect.runPromise(Scope.make());
   const runtimeLayer = Layer.merge(
     appLayer,
     Logger.minimumLogLevel(toEffectLogLevel(globals.logLevel)),
   );
-  const runtime = await Effect.runPromise(
-    Layer.toRuntime(runtimeLayer).pipe(Effect.provideService(Scope.Scope, scope)),
-  );
+  const runtime = ManagedRuntime.make(runtimeLayer);
 
   const coerceCliError = (e: unknown): CLIError => {
     if (e instanceof CLIError) return e;
@@ -104,13 +105,22 @@ export async function connectMcpServer<ROut, E>(
     const cmdGlobals = { ...forceJsonGlobals(globals), timing };
     const { argv, options = {} } = invocation;
 
-    const outEither: any = await withOpenAICodexProviderScope(() =>
-          Runtime.runPromise(
-        runtime as any,
-        withConfiguredLogging(
-          dispatchCommand(argv, cmdGlobals, options).pipe(Effect.either),
-          cmdGlobals.logLevel,
-        ) as any,
+    const commandProgram = Effect.gen(function* () {
+      const store = yield* LibraryStore;
+      const semantic = yield* SemanticLibrary;
+      const ingestion = yield* DocumentIngestion;
+      return yield* dispatchCommand(
+        argv,
+        {
+          ...cmdGlobals,
+          library: { ...store, ...semantic, ...ingestion } as CliLibrary,
+        },
+        options,
+      );
+    }).pipe(Effect.either);
+    const outEither = await withOpenAICodexProviderScope(() =>
+      runtime.runPromise(
+        withConfiguredLogging(commandProgram, cmdGlobals.logLevel),
       ),
     );
 
@@ -370,15 +380,15 @@ export async function connectMcpServer<ROut, E>(
       // ignore
     }
     try {
-      await Effect.runPromise(Scope.close(scope, Exit.succeed(undefined)));
+      await runtime.dispose();
     } catch {
       // ignore
     }
   };
 }
 
-export async function runMcpServer<ROut, E>(
-  appLayer: Layer.Layer<ROut, E, never>,
+export async function runMcpServer<E>(
+  appLayer: Layer.Layer<unknown, E, never>,
   globals: GlobalCLIOptions,
 ): Promise<void> {
   const transport = new StdioServerTransport();

@@ -6,6 +6,7 @@ import { join } from "path";
 import { Database } from "./Database.js";
 import { DatabaseRegistry } from "./DatabaseRegistry.js";
 import { removeDirWithRetries } from "../testUtils.js";
+import { normalizeConfig } from "../types.js";
 
 function withTempEnv(
   env: Record<string, string>,
@@ -105,7 +106,15 @@ describe("DatabaseRegistry", () => {
           });
 
           const stats = await Effect.runPromise(
-            Effect.scoped(program.pipe(Effect.provide(DatabaseRegistry.make())))
+            Effect.scoped(
+              program.pipe(
+                Effect.provide(
+                  DatabaseRegistry.make({
+                    config: normalizeConfig(makeConfig(tempDir, "libsql")),
+                  }),
+                ),
+              ),
+            )
           );
 
           expect(stats.documents).toBe(0);
@@ -145,7 +154,15 @@ describe("DatabaseRegistry", () => {
           });
 
           const result = await Effect.runPromise(
-            Effect.scoped(program.pipe(Effect.provide(DatabaseRegistry.make())))
+            Effect.scoped(
+              program.pipe(
+                Effect.provide(
+                  DatabaseRegistry.make({
+                    config: normalizeConfig(makeConfig(tempDir, "qdrant")),
+                  }),
+                ),
+              ),
+            )
           );
 
           expect(result.hasAddDocument).toBe(true);

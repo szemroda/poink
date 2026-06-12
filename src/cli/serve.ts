@@ -8,7 +8,7 @@ import {
   resolveServerConfig,
   type ServerConfigShape,
 } from "../agent/protocol.js";
-import { loadConfig, resolveConfigPath } from "../types.js";
+import { type Config, resolveConfigPath } from "../types.js";
 import { serveFetch } from "../runtime.js";
 import {
   CLIError,
@@ -56,12 +56,12 @@ export function resolveServeSecurityConfig(serverConfig: ServerConfigShape): Ser
   };
 }
 
-export async function runServeCommand<ROut, E>(
-  appLayer: Layer.Layer<ROut, E, never>,
+export async function runServeCommand<E>(
+  appLayer: Layer.Layer<unknown, E, never>,
   globals: GlobalCLIOptions,
   serveArgs: string[],
+  config: Config,
 ): Promise<void> {
-  const config = loadConfig();
   const overrides = parseServeCommandOptions(serveArgs);
   const serverConfig = resolveServeSecurityConfig(
     resolveServerConfig(config.server, overrides),

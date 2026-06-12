@@ -11,19 +11,15 @@ const OUTPUT_FORMAT_HELP = OUTPUT_FORMATS
   )
   .join(", ");
 
-export function renderHelp(stats?: {
+export function renderHelp(_stats?: {
   documents: number;
   chunks: number;
   embeddings: number;
 }): string {
-  const docCount = stats?.documents ?? "?";
-
   return dedent`
     # poink
 
     Local knowledge base for PDFs, Markdown, DOCX, and ODT with vector search, full-text search, enrichment, and MCP access.
-    ${docCount} documents indexed.
-
     ## Quick Start
       poink setup init
       poink search "your question here"

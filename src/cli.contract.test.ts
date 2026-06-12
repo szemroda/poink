@@ -7,7 +7,6 @@ import { join } from "path";
 import { Client } from "@modelcontextprotocol/sdk/client";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { createClient } from "@libsql/client";
-import { buildCliAppLayer, createCliAppLayer } from "./cli/index.js";
 
 function nodeTsxArgs(args: string[]): string[] {
   return ["--import", "tsx", "src/cli.ts", ...args];
@@ -1436,10 +1435,6 @@ describe("CLI JSON Envelope Contract", () => {
     expect(pkg.devDependencies?.["@types/react"]).toBeUndefined();
   });
 
-  test("public CLI module exports createCliAppLayer alias", () => {
-    expect(createCliAppLayer).toBe(buildCliAppLayer);
-  });
-
   test("commander refactor has concrete module entrypoints for planned CLI domains", () => {
     for (const path of [
       "src/cli/mcp.ts",
@@ -1459,7 +1454,13 @@ describe("CLI JSON Envelope Contract", () => {
       "src/cli/commands/ingest.ts",
       "src/cli/commands/reindex.ts",
       "src/cli/commands/rechunk.ts",
-      "src/cli/commands/unsupported.ts",
+      "src/cli/families/lightweight.ts",
+      "src/cli/families/store.ts",
+      "src/cli/families/search.ts",
+      "src/cli/families/ingestion.ts",
+      "src/cli/families/setup.ts",
+      "src/cli/families/diagnostics.ts",
+      "src/cli/families/server.ts",
     ]) {
       expect(existsSync(path), path).toBe(true);
     }

@@ -54,7 +54,7 @@ afterEach(() => {
 });
 
 describe("loadConfig path and database defaults", () => {
-  test("uses POINK_CONFIG path and creates defaults including database backend", () => {
+  test("uses POINK_CONFIG path without persisting missing defaults", () => {
     const tempDir = makeTempDir();
 
     try {
@@ -63,7 +63,7 @@ describe("loadConfig path and database defaults", () => {
 
       const config = loadConfig();
 
-      expect(existsSync(configPath)).toBe(true);
+      expect(existsSync(configPath)).toBe(false);
       expect(config.version).toBe(1);
       expect(config.storage.backend).toBe("libsql");
       expect(config.storage.qdrant.url).toBe("http://localhost:6333");

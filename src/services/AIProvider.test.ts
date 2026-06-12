@@ -64,7 +64,7 @@ describe("AIProvider", () => {
     expect(describeLanguageModelError(error)).toContain("llama3.2:3b");
   });
 
-  test("resolves OpenRouter language models through the provider abstraction", () => {
+  test("resolves OpenRouter language models through the provider abstraction", async () => {
     const config = makeTestConfig({
       providers: {
         openrouter: {
@@ -73,7 +73,7 @@ describe("AIProvider", () => {
       },
     });
 
-    const resolved = resolveLanguageModel(
+    const resolved = await resolveLanguageModel(
       config,
       "openrouter",
       "anthropic/claude-3.5-haiku"
@@ -85,7 +85,32 @@ describe("AIProvider", () => {
     expect(resolved.model.modelId).toBe("anthropic/claude-3.5-haiku");
   });
 
-  test("resolves OpenRouter embedding models through the provider abstraction", () => {
+  test("caches resolved language models for one config snapshot", async () => {
+    const config = makeTestConfig({
+      providers: {
+        openrouter: {
+          apiKey: "test-openrouter-key",
+        },
+      },
+    });
+
+    const [first, second] = await Promise.all([
+      resolveLanguageModel(
+        config,
+        "openrouter",
+        "anthropic/claude-3.5-haiku",
+      ),
+      resolveLanguageModel(
+        config,
+        "openrouter",
+        "anthropic/claude-3.5-haiku",
+      ),
+    ]);
+
+    expect(second).toBe(first);
+  });
+
+  test("resolves OpenRouter embedding models through the provider abstraction", async () => {
     const config = makeTestConfig({
       models: {
         embedding: {
@@ -100,7 +125,7 @@ describe("AIProvider", () => {
       },
     });
 
-    const resolved = getConfiguredEmbeddingModel(config);
+    const resolved = await getConfiguredEmbeddingModel(config);
 
     expect(resolved.provider).toBe("openrouter");
     expect(resolved.model.provider).toBe("openrouter");
@@ -108,7 +133,7 @@ describe("AIProvider", () => {
     expect(resolved.model.modelId).toBe("openai/text-embedding-3-small");
   });
 
-  test("resolves Google language models through the provider abstraction", () => {
+  test("resolves Google language models through the provider abstraction", async () => {
     const config = makeTestConfig({
       providers: {
         google: {
@@ -117,7 +142,7 @@ describe("AIProvider", () => {
       },
     });
 
-    const resolved = resolveLanguageModel(config, "google", "gemini-2.5-flash");
+    const resolved = await resolveLanguageModel(config, "google", "gemini-2.5-flash");
 
     expect(resolved.provider).toBe("google");
     expect(resolved.modelId).toBe("gemini-2.5-flash");
@@ -125,7 +150,7 @@ describe("AIProvider", () => {
     expect(resolved.model.modelId).toBe("gemini-2.5-flash");
   });
 
-  test("resolves Google embedding models through the provider abstraction", () => {
+  test("resolves Google embedding models through the provider abstraction", async () => {
     const config = makeTestConfig({
       models: {
         embedding: {
@@ -140,7 +165,7 @@ describe("AIProvider", () => {
       },
     });
 
-    const resolved = getConfiguredEmbeddingModel(config);
+    const resolved = await getConfiguredEmbeddingModel(config);
 
     expect(resolved.provider).toBe("google");
     expect(resolved.model.provider).toBe("google.generative-ai");
@@ -148,7 +173,30 @@ describe("AIProvider", () => {
     expect(resolved.model.modelId).toBe("gemini-embedding-001");
   });
 
-  test("resolves Anthropic language models through the provider abstraction", () => {
+  test("caches resolved embedding models for one config snapshot", async () => {
+    const config = makeTestConfig({
+      models: {
+        embedding: {
+          provider: "google",
+          model: "gemini-embedding-001",
+        },
+      },
+      providers: {
+        google: {
+          apiKey: "test-google-key",
+        },
+      },
+    });
+
+    const [first, second] = await Promise.all([
+      getConfiguredEmbeddingModel(config),
+      getConfiguredEmbeddingModel(config),
+    ]);
+
+    expect(second).toBe(first);
+  });
+
+  test("resolves Anthropic language models through the provider abstraction", async () => {
     const config = makeTestConfig({
       providers: {
         anthropic: {
@@ -157,7 +205,7 @@ describe("AIProvider", () => {
       },
     });
 
-    const resolved = resolveLanguageModel(
+    const resolved = await resolveLanguageModel(
       config,
       "anthropic",
       "claude-3-5-haiku-20241022",
@@ -190,7 +238,7 @@ describe("AIProvider", () => {
     });
   });
 
-  test("passes configured language model reasoning through resolved provider options", () => {
+  test("passes configured language model reasoning through resolved provider options", async () => {
     const config = makeTestConfig({
       models: {
         enrichment: {
@@ -206,14 +254,14 @@ describe("AIProvider", () => {
       },
     });
 
-    const resolved = getConfiguredLanguageModel(config, "enrichment");
+    const resolved = await getConfiguredLanguageModel(config, "enrichment");
 
     expect(resolved.providerOptions).toEqual({
       openai: { reasoningEffort: "high" },
     });
   });
 
-  test("resolves OpenAI Codex language models through the app-server provider", () => {
+  test("resolves OpenAI Codex language models through the app-server provider", async () => {
     const config = makeTestConfig({
       models: {
         enrichment: {
@@ -223,7 +271,7 @@ describe("AIProvider", () => {
       },
     });
 
-    const resolved = getConfiguredLanguageModel(config, "enrichment");
+    const resolved = await getConfiguredLanguageModel(config, "enrichment");
 
     expect(resolved.provider).toBe("openai-codex");
     expect(resolved.modelId).toBe("gpt-5.5");

@@ -9,9 +9,9 @@ import { embed, embedMany } from "ai";
 import { Effect, Context, Layer } from "effect";
 import {
   AnthropicError,
+  type Config,
   GatewayError,
   GoogleError,
-  loadConfig,
   OllamaError,
   OpenAIError,
   OpenRouterError,
@@ -71,14 +71,6 @@ const makeLruCache = <V>(maxSize: number) => {
     },
   };
 };
-
-function readConfiguredEmbeddingProvider(): SupportedProvider {
-  try {
-    return loadConfig().models.embedding.provider;
-  } catch {
-    return "ollama";
-  }
-}
 
 function toEmbeddingError(
   provider: SupportedProvider,
@@ -141,18 +133,20 @@ function validateEmbedding(
 /**
  * Live implementation that resolves the configured client on first use.
  */
-export const EmbeddingProviderLive = Layer.effect(
-  EmbeddingProvider,
-  Effect.gen(function* () {
+export function makeEmbeddingProvider(config: Config) {
+  return Layer.effect(
+    EmbeddingProvider,
+    Effect.gen(function* () {
     const queryCacheSize = readQueryEmbedCacheSize();
     const queryEmbedCache = makeLruCache<number[]>(queryCacheSize);
     let expectedDimension: number | null = null;
-    let resolvedCache: ReturnType<typeof getConfiguredEmbeddingModel> | null = null;
+    let resolvedCache: Awaited<
+      ReturnType<typeof getConfiguredEmbeddingModel>
+    > | null = null;
 
-    const getResolved = () => {
+    const getResolved = async () => {
       if (resolvedCache) return resolvedCache;
-      const config = loadConfig();
-      resolvedCache = getConfiguredEmbeddingModel(config);
+      resolvedCache = await getConfiguredEmbeddingModel(config);
       return resolvedCache;
     };
 
@@ -161,10 +155,12 @@ export const EmbeddingProviderLive = Layer.effect(
       maxParallelCalls?: number,
     ): Effect.Effect<number[][], EmbeddingError> =>
       Effect.gen(function* () {
-        let resolved: ReturnType<typeof getConfiguredEmbeddingModel> | undefined;
+        let resolved:
+          | Awaited<ReturnType<typeof getConfiguredEmbeddingModel>>
+          | undefined;
         const embeddings = yield* Effect.tryPromise({
           try: async () => {
-            resolved = getResolved();
+            resolved = await getResolved();
             if (texts.length === 0) return [];
 
             if (texts.length === 1) {
@@ -186,14 +182,14 @@ export const EmbeddingProviderLive = Layer.effect(
           },
           catch: (error) =>
             toEmbeddingError(
-              resolved?.provider ?? readConfiguredEmbeddingProvider(),
+              resolved?.provider ?? config.models.embedding.provider,
               `Embedding failed: ${
                 error instanceof Error ? error.message : String(error)
               }`,
             ),
         });
 
-        const provider = resolved?.provider ?? readConfiguredEmbeddingProvider();
+        const provider = resolved?.provider ?? config.models.embedding.provider;
         const validated: number[][] = [];
         for (const embedding of embeddings) {
           const result = yield* validateEmbedding(
@@ -214,7 +210,7 @@ export const EmbeddingProviderLive = Layer.effect(
       if (queryCacheSize <= 0) return embedSingle;
       return (text: string) =>
         Effect.gen(function* () {
-          const resolved = getResolved();
+          const resolved = yield* Effect.promise(getResolved);
           const key = `${resolved.provider}:${resolved.modelId}:${text}`;
           const cached = queryEmbedCache.get(key);
           if (cached) return cached;
@@ -230,14 +226,8 @@ export const EmbeddingProviderLive = Layer.effect(
       ),
       embedBatch: (texts: string[], concurrency = 10) => runEmbed(texts, concurrency),
       checkHealth: () => Effect.asVoid(runEmbed(["health check"])),
-      get provider() {
-        return loadConfig().models.embedding.provider;
-      },
+      provider: config.models.embedding.provider,
     };
-  }),
-);
-
-/**
- * Full layer with dependencies - use this in app composition.
- */
-export const EmbeddingProviderFullLive = EmbeddingProviderLive;
+    }),
+  );
+}

@@ -20,7 +20,7 @@ import {
   TaxonomyService,
 } from "./TaxonomyService.js";
 import { EmbeddingProvider } from "./EmbeddingProvider.js";
-import { loadConfig } from "../types.js";
+import type { Config } from "../types.js";
 import {
   describeLanguageModelError,
   getConfiguredLanguageModel,
@@ -556,11 +556,11 @@ function describeEnrichmentCause(error: unknown): string {
  * Uses the configured provider/model directly via the shared AI SDK resolver.
  */
 async function llmJudgeDuplicate(
+  config: Config,
   proposed: ProposedConcept,
   existing: { id: string; prefLabel: string; definition?: string | null }
 ): Promise<boolean> {
-  const config = loadConfig();
-  const resolved = getConfiguredLanguageModel(config, "judge");
+  const resolved = await getConfiguredLanguageModel(config, "judge");
 
   const prompt = dedent`
     You are a taxonomy curator. Determine if these two concepts are essentially the SAME concept (duplicates that should be merged) or DISTINCT concepts that both belong in a knowledge taxonomy.
@@ -597,6 +597,7 @@ async function llmJudgeDuplicate(
  * @returns Effect with count of accepted and rejected proposals
  */
 function autoAcceptProposals(
+  config: Config,
   proposals: ProposedConcept[]
 ): Effect.Effect<
   { accepted: number; rejected: number },
@@ -628,7 +629,7 @@ function autoAcceptProposals(
       if (similar.length > 0) {
         // Use LLM to judge if it's actually a duplicate
         const isDuplicate = yield* Effect.tryPromise({
-          try: () => llmJudgeDuplicate(proposal, similar[0]),
+          try: () => llmJudgeDuplicate(config, proposal, similar[0]),
           catch: (error) => error,
         });
 
@@ -716,14 +717,14 @@ function extractRAGContext(
  * Uses generateText for better compatibility with local models
  */
 async function enrichWithLLM(
+  config: Config,
   filename: string,
   content: string,
   provider: LLMProvider,
   availableConcepts: TaxonomyConcept[] = [],
   model?: string
 ): Promise<Omit<EnrichmentResult, "provider" | "confidence">> {
-  const config = loadConfig();
-  const resolvedModel = resolveLanguageModel(
+  const resolvedModel = await resolveLanguageModel(
     config,
     provider,
     model ?? config.models.enrichment.model,
@@ -956,13 +957,13 @@ export function validateProposedConcepts(
  * Generate tags only using LLM (lighter weight)
  */
 async function tagWithLLM(
+  config: Config,
   filename: string,
   content: string,
   provider: LLMProvider,
   model?: string
 ): Promise<{ tags: string[]; category?: string; author?: string }> {
-  const config = loadConfig();
-  const resolvedModel = resolveLanguageModel(
+  const resolvedModel = await resolveLanguageModel(
     config,
     provider,
     model ?? config.models.enrichment.model,
@@ -1088,9 +1089,10 @@ export const AutoTagger = Context.GenericTag<AutoTagger>("AutoTagger");
  * Create the AutoTagger service
  * Requires TaxonomyService and EmbeddingProvider for auto-accept and RAG context
  */
-export const AutoTaggerLive = Layer.effect(
-  AutoTagger,
-  Effect.gen(function* () {
+export function makeAutoTagger(config: Config) {
+  return Layer.effect(
+    AutoTagger,
+    Effect.gen(function* () {
     return AutoTagger.of({
       enrich: (
         filePath: string,
@@ -1100,7 +1102,6 @@ export const AutoTaggerLive = Layer.effect(
         Effect.gen(function* () {
           const filename = getPathFilename(filePath);
           const opts = options || {};
-          const config = loadConfig();
           let availableConcepts = opts.availableConcepts || [];
 
           // If heuristics only, build from extraction
@@ -1153,6 +1154,7 @@ export const AutoTaggerLive = Layer.effect(
           const result = yield* Effect.tryPromise({
             try: () =>
               enrichWithLLM(
+                config,
                 filename,
                 content,
                 provider,
@@ -1173,7 +1175,7 @@ export const AutoTaggerLive = Layer.effect(
             );
 
             const autoAcceptResult = yield* Effect.either(
-              autoAcceptProposals(validatedProposals)
+              autoAcceptProposals(config, validatedProposals)
             );
 
             if (autoAcceptResult._tag === "Right") {
@@ -1203,7 +1205,6 @@ export const AutoTaggerLive = Layer.effect(
         Effect.gen(function* () {
           const filename = getPathFilename(filePath);
           const opts = options || {};
-          const config = loadConfig();
 
           // Always extract heuristic tags
           const pathTags = extractPathTags(filePath, opts.basePath);
@@ -1223,7 +1224,8 @@ export const AutoTaggerLive = Layer.effect(
               opts.model || config.models.enrichment.model;
 
             const llmResult = yield* Effect.tryPromise({
-              try: () => tagWithLLM(filename, content, provider, model),
+              try: () =>
+                tagWithLLM(config, filename, content, provider, model),
               catch: (error) =>
                 new EnrichmentError(
                   `LLM tagging failed: ${describeLanguageModelError(error)}`,
@@ -1259,5 +1261,6 @@ export const AutoTaggerLive = Layer.effect(
           };
         }),
     });
-  })
-);
+    }),
+  );
+}

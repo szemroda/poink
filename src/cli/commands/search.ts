@@ -1,6 +1,5 @@
 import { Effect } from "effect";
-import { SearchOptions } from "../../index.js";
-import { type SearchResult } from "../../types.js";
+import { SearchOptions, type SearchResult } from "../../types.js";
 import { type Concept, TaxonomyService } from "../../services/TaxonomyService.js";
 import { EmbeddingProvider } from "../../services/EmbeddingProvider.js";
 import { CLIError, runCommandWithContext, splitPositionalsAndFlags, type GlobalCLIOptions } from "../runner.js";

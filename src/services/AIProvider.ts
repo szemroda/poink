@@ -1,25 +1,9 @@
-import { createGateway } from "ai";
 import type { LanguageModelV3CallOptions } from "@ai-sdk/provider";
-import {
-  createAnthropic,
-  type AnthropicLanguageModelOptions,
-} from "@ai-sdk/anthropic";
-import {
-  createGoogleGenerativeAI,
-  type GoogleLanguageModelOptions,
-} from "@ai-sdk/google";
-import {
-  createOpenAI,
-  type OpenAILanguageModelResponsesOptions,
-} from "@ai-sdk/openai";
-import {
-  createOpenRouter,
-  type OpenRouterProviderOptions,
-} from "@openrouter/ai-sdk-provider";
-import {
-  createOllama,
-  type OllamaCompletionProviderOptions,
-} from "ollama-ai-provider-v2";
+import type { AnthropicLanguageModelOptions } from "@ai-sdk/anthropic";
+import type { GoogleLanguageModelOptions } from "@ai-sdk/google";
+import type { OpenAILanguageModelResponsesOptions } from "@ai-sdk/openai";
+import type { OpenRouterProviderOptions } from "@openrouter/ai-sdk-provider";
+import type { OllamaCompletionProviderOptions } from "ollama-ai-provider-v2";
 import {
   AnthropicError,
   GatewayError,
@@ -32,7 +16,6 @@ import {
   type ReasoningLevel,
   getModelConfig,
 } from "../types.js";
-import { getOpenAICodexProviderManager } from "./OpenAICodexProvider.js";
 
 export type SupportedProvider =
   | "ollama"
@@ -65,6 +48,77 @@ export interface ResolvedLanguageModel {
   readonly modelId: string;
   readonly model: any;
   readonly providerOptions?: ProviderOptions;
+}
+
+type GatewayProvider = ReturnType<(typeof import("ai"))["createGateway"]>;
+type OpenAIProvider = ReturnType<
+  (typeof import("@ai-sdk/openai"))["createOpenAI"]
+>;
+type OpenRouterProvider = ReturnType<
+  (typeof import("@openrouter/ai-sdk-provider"))["createOpenRouter"]
+>;
+type GoogleProvider = ReturnType<
+  (typeof import("@ai-sdk/google"))["createGoogleGenerativeAI"]
+>;
+type AnthropicProvider = ReturnType<
+  (typeof import("@ai-sdk/anthropic"))["createAnthropic"]
+>;
+type OllamaProvider = ReturnType<
+  (typeof import("ollama-ai-provider-v2"))["createOllama"]
+>;
+
+const gatewayProviders = new WeakMap<Config, Promise<GatewayProvider>>();
+const openAIProviders = new WeakMap<Config, Promise<OpenAIProvider>>();
+const openRouterProviders = new WeakMap<Config, Promise<OpenRouterProvider>>();
+const googleProviders = new WeakMap<Config, Promise<GoogleProvider>>();
+const anthropicProviders = new WeakMap<Config, Promise<AnthropicProvider>>();
+const ollamaProviders = new WeakMap<Config, Promise<OllamaProvider>>();
+const embeddingModels = new WeakMap<
+  Config,
+  Map<string, Promise<ResolvedEmbeddingModel>>
+>();
+const languageModels = new WeakMap<
+  Config,
+  Map<string, Promise<ResolvedLanguageModel>>
+>();
+
+function cachedValue<K extends object, V>(
+  cache: WeakMap<K, Promise<V>>,
+  key: K,
+  create: () => Promise<V>,
+): Promise<V> {
+  const existing = cache.get(key);
+  if (existing) return existing;
+
+  const pending = create().catch((error) => {
+    cache.delete(key);
+    throw error;
+  });
+  cache.set(key, pending);
+  return pending;
+}
+
+function cachedMapValue<V>(
+  cache: WeakMap<Config, Map<string, Promise<V>>>,
+  config: Config,
+  key: string,
+  create: () => Promise<V>,
+): Promise<V> {
+  let values = cache.get(config);
+  if (!values) {
+    values = new Map();
+    cache.set(config, values);
+  }
+
+  const existing = values.get(key);
+  if (existing) return existing;
+
+  const pending = create().catch((error) => {
+    values.delete(key);
+    throw error;
+  });
+  values.set(key, pending);
+  return pending;
 }
 
 const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1";
@@ -184,44 +238,63 @@ function requireAnthropicApiKey(config: Config): string {
 }
 
 function createConfiguredGatewayProvider(config: Config) {
-  return createGateway({
-    apiKey: requireGatewayApiKey(config),
+  return cachedValue(gatewayProviders, config, async () => {
+    const { createGateway } = await import("ai");
+    return createGateway({
+      apiKey: requireGatewayApiKey(config),
+    });
   });
 }
 
 function createConfiguredOpenAIProvider(config: Config) {
-  return createOpenAI({
-    apiKey: requireOpenAIApiKey(config),
-    baseURL: normalizeBaseUrl(config.openaiBaseUrl) ?? DEFAULT_OPENAI_BASE_URL,
+  return cachedValue(openAIProviders, config, async () => {
+    const { createOpenAI } = await import("@ai-sdk/openai");
+    return createOpenAI({
+      apiKey: requireOpenAIApiKey(config),
+      baseURL:
+        normalizeBaseUrl(config.openaiBaseUrl) ?? DEFAULT_OPENAI_BASE_URL,
+    });
   });
 }
 
 function createConfiguredOpenRouterProvider(config: Config) {
-  return createOpenRouter({
-    apiKey: requireOpenRouterApiKey(config),
-    baseURL: normalizeBaseUrl(config.openrouterBaseUrl),
-    compatibility: "strict",
+  return cachedValue(openRouterProviders, config, async () => {
+    const { createOpenRouter } = await import("@openrouter/ai-sdk-provider");
+    return createOpenRouter({
+      apiKey: requireOpenRouterApiKey(config),
+      baseURL: normalizeBaseUrl(config.openrouterBaseUrl),
+      compatibility: "strict",
+    });
   });
 }
 
 function createConfiguredGoogleProvider(config: Config) {
-  return createGoogleGenerativeAI({
-    apiKey: requireGoogleApiKey(config),
-    baseURL: normalizeBaseUrl(config.providers.google.baseUrl),
+  return cachedValue(googleProviders, config, async () => {
+    const { createGoogleGenerativeAI } = await import("@ai-sdk/google");
+    return createGoogleGenerativeAI({
+      apiKey: requireGoogleApiKey(config),
+      baseURL: normalizeBaseUrl(config.providers.google.baseUrl),
+    });
   });
 }
 
 function createConfiguredAnthropicProvider(config: Config) {
-  return createAnthropic({
-    apiKey: requireAnthropicApiKey(config),
-    baseURL: normalizeBaseUrl(config.providers.anthropic.baseUrl),
+  return cachedValue(anthropicProviders, config, async () => {
+    const { createAnthropic } = await import("@ai-sdk/anthropic");
+    return createAnthropic({
+      apiKey: requireAnthropicApiKey(config),
+      baseURL: normalizeBaseUrl(config.providers.anthropic.baseUrl),
+    });
   });
 }
 
 function createConfiguredOllamaProvider(config: Config) {
-  return createOllama({
-    baseURL: normalizeOllamaBaseUrl(config.providers.ollama.baseUrl),
-    compatibility: "strict",
+  return cachedValue(ollamaProviders, config, async () => {
+    const { createOllama } = await import("ollama-ai-provider-v2");
+    return createOllama({
+      baseURL: normalizeOllamaBaseUrl(config.providers.ollama.baseUrl),
+      compatibility: "strict",
+    });
   });
 }
 
@@ -316,57 +389,70 @@ export function getReasoningProviderOptions(
   return undefined;
 }
 
-export function getConfiguredEmbeddingModel(
+export async function getConfiguredEmbeddingModel(
   config: Config,
-): ResolvedEmbeddingModel {
+): Promise<ResolvedEmbeddingModel> {
   const embedding = getModelConfig(config, "embedding");
   const provider = embedding.provider;
   const modelId = embedding.model;
+  const cacheKey = `${provider}:${modelId}`;
 
-  if (provider === "gateway") {
+  return cachedMapValue(embeddingModels, config, cacheKey, async () => {
+    if (provider === "gateway") {
+      return {
+        provider,
+        modelId,
+        model: (await createConfiguredGatewayProvider(config)).embeddingModel(
+          modelId,
+        ),
+      };
+    }
+
+    if (provider === "openai") {
+      return {
+        provider,
+        modelId,
+        model: (await createConfiguredOpenAIProvider(config)).embeddingModel(
+          modelId,
+        ),
+      };
+    }
+
+    if (provider === "openrouter") {
+      return {
+        provider,
+        modelId,
+        model: (
+          await createConfiguredOpenRouterProvider(config)
+        ).textEmbeddingModel(modelId),
+      };
+    }
+
+    if (provider === "google") {
+      return {
+        provider,
+        modelId,
+        model: (await createConfiguredGoogleProvider(config)).embedding(
+          modelId,
+        ),
+      };
+    }
+
+    if (provider === "anthropic" || provider === "openai-codex") {
+      throw new AnthropicError({
+        reason:
+          "Anthropic does not support embeddings. Configure models.embedding.provider to google, openai, openrouter, gateway, or ollama.",
+      });
+    }
+
     return {
       provider,
       modelId,
-      model: createConfiguredGatewayProvider(config).embeddingModel(modelId),
+      model: (await createConfiguredOllamaProvider(config)).textEmbeddingModel(
+        modelId,
+      ),
     };
-  }
-
-  if (provider === "openai") {
-    return {
-      provider,
-      modelId,
-      model: createConfiguredOpenAIProvider(config).embeddingModel(modelId),
-    };
-  }
-
-  if (provider === "openrouter") {
-    return {
-      provider,
-      modelId,
-      model: createConfiguredOpenRouterProvider(config).textEmbeddingModel(modelId),
-    };
-  }
-
-  if (provider === "google") {
-    return {
-      provider,
-      modelId,
-      model: createConfiguredGoogleProvider(config).embedding(modelId),
-    };
-  }
-
-  if (provider === "anthropic") {
-    throw new AnthropicError({
-      reason:
-        "Anthropic does not support embeddings. Configure models.embedding.provider to google, openai, openrouter, gateway, or ollama.",
-    });
-  }
-
-  return {
-    provider,
-    modelId,
-    model: createConfiguredOllamaProvider(config).textEmbeddingModel(modelId),
-  };
+  });
 }
 
 function getConfiguredLanguageConfig(
@@ -376,33 +462,21 @@ function getConfiguredLanguageConfig(
   return getModelConfig(config, role);
 }
 
-export function resolveLanguageModel(
+export async function resolveLanguageModel(
   config: Config,
   provider: SupportedProvider,
   modelId: string,
   reasoning?: ReasoningLevel | null,
-): ResolvedLanguageModel {
-  const providerOptions = getReasoningProviderOptions(provider, modelId, reasoning);
-
-  if (provider === "gateway") {
-    return {
-      provider,
-      modelId,
-      model: createConfiguredGatewayProvider(config).languageModel(modelId),
-      providerOptions,
-    };
-  }
-
-  if (provider === "openai") {
-    return {
-      provider,
-      modelId,
-      model: createConfiguredOpenAIProvider(config).languageModel(modelId),
-      providerOptions,
-    };
-  }
-
+): Promise<ResolvedLanguageModel> {
   if (provider === "openai-codex") {
+    const providerOptions = getReasoningProviderOptions(
+      provider,
+      modelId,
+      reasoning,
+    );
+    const { getOpenAICodexProviderManager } = await import(
+      "./OpenAICodexProvider.js"
+    );
     return {
       provider,
       modelId,
@@ -411,48 +485,93 @@ export function resolveLanguageModel(
     };
   }
 
-  if (provider === "openrouter") {
+  const cacheKey = `${provider}:${modelId}:${reasoning ?? "default"}`;
+
+  return cachedMapValue(languageModels, config, cacheKey, async () => {
+    const providerOptions = getReasoningProviderOptions(
+      provider,
+      modelId,
+      reasoning,
+    );
+
+    if (provider === "gateway") {
+      return {
+        provider,
+        modelId,
+        model: (await createConfiguredGatewayProvider(config)).languageModel(
+          modelId,
+        ),
+        providerOptions,
+      };
+    }
+
+    if (provider === "openai") {
+      return {
+        provider,
+        modelId,
+        model: (await createConfiguredOpenAIProvider(config)).languageModel(
+          modelId,
+        ),
+        providerOptions,
+      };
+    }
+
+    if (provider === "openrouter") {
+      return {
+        provider,
+        modelId,
+        model: (await createConfiguredOpenRouterProvider(config)).languageModel(
+          modelId,
+        ),
+        providerOptions,
+      };
+    }
+
+    if (provider === "google") {
+      return {
+        provider,
+        modelId,
+        model: (await createConfiguredGoogleProvider(config)).languageModel(
+          modelId,
+        ),
+        providerOptions,
+      };
+    }
+
+    if (provider === "anthropic") {
+      return {
+        provider,
+        modelId,
+        model: (await createConfiguredAnthropicProvider(config)).languageModel(
+          modelId,
+        ),
+        providerOptions,
+      };
+    }
+
     return {
       provider,
       modelId,
-      model: createConfiguredOpenRouterProvider(config).languageModel(modelId),
+      model: (await createConfiguredOllamaProvider(config)).languageModel(
+        modelId,
+      ),
       providerOptions,
     };
-  }
-
-  if (provider === "google") {
-    return {
-      provider,
-      modelId,
-      model: createConfiguredGoogleProvider(config).languageModel(modelId),
-      providerOptions,
-    };
-  }
-
-  if (provider === "anthropic") {
-    return {
-      provider,
-      modelId,
-      model: createConfiguredAnthropicProvider(config).languageModel(modelId),
-      providerOptions,
-    };
-  }
-
-  return {
-    provider,
-    modelId,
-    model: createConfiguredOllamaProvider(config).languageModel(modelId),
-    providerOptions,
-  };
+  });
 }
 
-export function getConfiguredLanguageModel(
+export async function getConfiguredLanguageModel(
   config: Config,
   role: ConfiguredLanguageRole,
   override?: { provider?: SupportedProvider; modelId?: string },
-): ResolvedLanguageModel {
+): Promise<ResolvedLanguageModel> {
   const roleConfig = getConfiguredLanguageConfig(config, role);
   const provider = override?.provider ?? roleConfig.provider;
   const modelId = override?.modelId ?? roleConfig.model;
-  return resolveLanguageModel(config, provider, modelId, roleConfig.reasoning);
+  return await resolveLanguageModel(
+    config,
+    provider,
+    modelId,
+    roleConfig.reasoning,
+  );
 }

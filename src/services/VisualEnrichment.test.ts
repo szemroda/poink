@@ -11,8 +11,9 @@ import {
   filterVisualImages,
   type ExtractedDocumentImage,
   VisualEnrichment,
-  VisualEnrichmentLive,
+  makeVisualEnrichment,
 } from "./VisualEnrichment.js";
+import { loadConfig } from "../types.js";
 
 vi.mock("ai", () => ({
   generateText: vi.fn(async () => ({ text: "A concise visual description." })),
@@ -122,7 +123,7 @@ describe("VisualEnrichment", () => {
       const chunks = await Effect.runPromise(
         program.pipe(
           Effect.provide(
-            VisualEnrichmentLive.pipe(
+            makeVisualEnrichment(loadConfig()).pipe(
               Layer.provide(
                 Layer.mergeAll(
                   Layer.succeed(PDFExtractor, pdfExtractor as any),
@@ -166,7 +167,7 @@ describe("VisualEnrichment", () => {
       const chunks = await Effect.runPromise(
         program.pipe(
           Effect.provide(
-            VisualEnrichmentLive.pipe(
+            makeVisualEnrichment(loadConfig()).pipe(
               Layer.provide(
                 Layer.mergeAll(
                   Layer.succeed(PDFExtractor, pdfExtractor as any),
@@ -205,7 +206,7 @@ describe("VisualEnrichment", () => {
       const result = await Effect.runPromise(
         Effect.either(program).pipe(
           Effect.provide(
-            VisualEnrichmentLive.pipe(
+            makeVisualEnrichment(loadConfig()).pipe(
               Layer.provide(
                 Layer.mergeAll(
                   Layer.succeed(PDFExtractor, pdfExtractor as any),

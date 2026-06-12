@@ -4,7 +4,7 @@ import { request as httpRequest, type IncomingMessage } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { BlockList, isIP, type LookupFunction } from "node:net";
 import { basename, extname, join } from "node:path";
-import { URLFetchError } from "./index.js";
+import { URLFetchError } from "./types.js";
 import {
   Config,
   DEFAULT_URL_DOWNLOAD_MAX_FILE_SIZE,

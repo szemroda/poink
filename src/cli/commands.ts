@@ -27,8 +27,6 @@ export { runSetupCommand } from "./commands/setup.js";
 import { runSetupCommand } from "./commands/setup.js";
 export { runTaxonomyCommand } from "./commands/taxonomy.js";
 import { runTaxonomyCommand } from "./commands/taxonomy.js";
-export { runUnsupportedCommand } from "./commands/unsupported.js";
-import { runUnsupportedCommand } from "./commands/unsupported.js";
 export type { CliCommandOutput, CliConsole } from "./commands/types.js";
 import {
   CLIError,
@@ -42,7 +40,7 @@ export function dispatchCommand(
   args: string[],
   globals: GlobalCLIOptions,
   options: Record<string, unknown> = {},
-): Effect.Effect<any, any, any> {
+) {
   if (args.length === 0 || args.includes("--help") || args.includes("-h")) {
     return runCommandWithContext(args, globals, ({ Console, format, getLoadedLibraryStats }) =>
       Effect.gen(function* () {
@@ -135,7 +133,7 @@ export function dispatchCommand(
       return runRechunkCommand(args, globals, options);
     case "config":
       return runCommandWithContext(args, globals, ({ Console }) =>
-        runConfigCommand(args, Console),
+        runConfigCommand(args, Console, globals.config!),
     options);
     case "providers":
       return runCommandWithContext(args, globals, ({ Console, format }) =>

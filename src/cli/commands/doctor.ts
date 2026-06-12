@@ -1,12 +1,7 @@
 import { Effect } from "effect";
 import { existsSync, statSync } from "fs";
-import { LibraryConfig } from "../../index.js";
+import { LibraryConfig } from "../../types.js";
 import { assessDocChunker } from "../../chunking.js";
-import { loadConfig } from "../../types.js";
-import {
-  checkOpenAICodexRuntime,
-  type OpenAICodexRuntimeStatus,
-} from "../../services/OpenAICodexProvider.js";
 import {
   assessDoctorHealth,
   assessWALHealth,
@@ -17,6 +12,38 @@ import {
   runCommandWithContext,
   type GlobalCLIOptions,
 } from "../runner.js";
+
+type OpenAICodexRuntimeStatus = {
+  configured: boolean;
+  roles: Array<"enrichment" | "judge">;
+  canStart: boolean;
+  authenticated: boolean;
+  error?: string;
+};
+
+async function checkConfiguredOpenAICodexRuntime(
+  config: NonNullable<GlobalCLIOptions["config"]>,
+): Promise<OpenAICodexRuntimeStatus> {
+  const roles: Array<"enrichment" | "judge"> = [];
+  if (config.models.enrichment.provider === "openai-codex") {
+    roles.push("enrichment");
+  }
+  if (config.models.judge.provider === "openai-codex") {
+    roles.push("judge");
+  }
+  if (roles.length === 0) {
+    return {
+      configured: false,
+      roles,
+      canStart: false,
+      authenticated: false,
+    };
+  }
+  const { checkOpenAICodexRuntime } = await import(
+    "../../services/OpenAICodexProvider.js"
+  );
+  return checkOpenAICodexRuntime(config);
+}
 
 function healthCheckSeverity(check: HealthCheck): "ok" | "warning" | "error" {
   return check.severity ?? (check.healthy ? "ok" : "error");
@@ -63,7 +90,7 @@ export function runDoctorCommand(
   globals: GlobalCLIOptions,
   options: DoctorCommandOptions = {},
 ) {
-  return runCommandWithContext(args, globals, ({ Console, library }) =>
+  return runCommandWithContext(args, globals, ({ Console, library, globals }) =>
     Effect.gen(function* () {
       if (args[0] === "check") {
         yield* library.checkReady();
@@ -76,10 +103,10 @@ export function runDoctorCommand(
 
       const opts = options;
       const shouldFix = opts.fix === true;
-      const config = LibraryConfig.fromEnv();
-      const appConfig = loadConfig();
+      const appConfig = globals.config!;
+      const config = LibraryConfig.fromConfig(appConfig);
       const openAICodexStatus = yield* Effect.promise(() =>
-        checkOpenAICodexRuntime(appConfig),
+        checkConfiguredOpenAICodexRuntime(appConfig),
       );
       const openAICodexCheck = buildOpenAICodexHealthCheck(openAICodexStatus);
       const dbPath = config.dbPath;

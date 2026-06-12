@@ -1,8 +1,8 @@
 import { Effect } from "effect";
 import { existsSync } from "fs";
-import { AddOptions, LibraryConfig } from "../../index.js";
+import { AddOptions, LibraryConfig } from "../../types.js";
 import { assessDocChunker } from "../../chunking.js";
-import { loadConfig, resolveVisualsConfig, type Document } from "../../types.js";
+import { resolveVisualsConfig, type Document } from "../../types.js";
 import { EmbeddingProvider } from "../../services/EmbeddingProvider.js";
 import { CLIError, runCommandWithContext, type GlobalCLIOptions } from "../runner.js";
 
@@ -27,7 +27,7 @@ export function runRechunkCommand(
   globals: GlobalCLIOptions,
   options: RechunkCommandOptions = {},
 ) {
-  return runCommandWithContext(args, globals, ({ Console, library }) =>
+  return runCommandWithContext(args, globals, ({ Console, library, globals }) =>
     Effect.gen(function* () {
       let resultPayload: unknown = null;
       let agentResult: any = null;
@@ -43,7 +43,7 @@ export function runRechunkCommand(
           opts["include-missing"] === true ||
           opts.includeMissing === true ||
           opts.missing === true;
-        const rechunkAppConfig = loadConfig();
+        const rechunkAppConfig = globals.config!;
         const rechunkVisualsConfig = resolveVisualsConfig(rechunkAppConfig);
         const visualsExplicit = opts.visuals === true;
         const visualsEnabled = visualsExplicit || rechunkVisualsConfig.enabled;
@@ -91,7 +91,7 @@ export function runRechunkCommand(
           );
         }
 
-	        const config = LibraryConfig.fromEnv();
+	        const config = LibraryConfig.fromConfig(rechunkAppConfig);
 	
 	        const docs = singleDocId
 	          ? yield* library.get(singleDocId).pipe(
@@ -205,7 +205,7 @@ export function runRechunkCommand(
               "Rechunk regenerates embeddings because embeddings are per-chunk; changing chunk boundaries/content requires new vectors.",
           });
         }
-        // NOTE: rechunk uses an atomic DB replace (non-destructive) via PDFLibrary.replace().
+        // Rechunk uses the ingestion service's atomic replacement operation.
         if (includeMissing) {
           warnings.push({
             code: "RECHUNK_INCLUDE_MISSING",

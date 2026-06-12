@@ -1,8 +1,9 @@
 import { confirm, input, password, select } from "@inquirer/prompts";
-import { Effect } from "effect";
+import { Effect, Layer } from "effect";
 import { existsSync, readFileSync } from "fs";
 import {
   Config,
+  LibraryConfig,
   normalizeConfig,
   resolveConfigPath,
   resolveLibraryDbPath,
@@ -12,10 +13,10 @@ import {
   type ProviderName,
 } from "../../types.js";
 import { runOpenAICodexLogin } from "../../services/OpenAICodexProvider.js";
-import { buildCliAppLayer } from "../runtime.js";
 import {
   CLIError,
   runCommandWithContext,
+  type CliLibrary,
   type GlobalCLIOptions,
 } from "../runner.js";
 import { initializePoinkLibrary } from "./init.js";
@@ -546,7 +547,7 @@ export function runSetupCommand(
   globals: GlobalCLIOptions,
   options: SetupCommandOptions = {},
 ) {
-  return runCommandWithContext(args, globals, ({ Console, format, library }) =>
+  return runCommandWithContext(args, globals, ({ Console, format }) =>
     Effect.gen(function* (): Generator<any, CliCommandOutput, any> {
       const subcommand = args[1];
       const dryRun = isDryRun(options);
@@ -624,10 +625,43 @@ export function runSetupCommand(
 
       saveConfig(plan.config);
       if (plan.shouldInitialize) {
-        yield* initializePoinkLibrary(Console, library).pipe(
-          Effect.provide(buildCliAppLayer()),
-          Effect.scoped,
-        );
+        yield* Effect.promise(async () => {
+          const [
+            { buildDiagnosticsLayer },
+            { LibraryStore },
+            { EmbeddingProvider },
+          ] = await Promise.all([
+            import("../runtime.js"),
+            import("../../services/LibraryStore.js"),
+            import("../../services/EmbeddingProvider.js"),
+          ]);
+          const layer = await buildDiagnosticsLayer(plan.config);
+          const initialize = Effect.gen(function* () {
+            const store = yield* LibraryStore;
+            const embedding = yield* EmbeddingProvider;
+            return yield* initializePoinkLibrary(
+              Console,
+              {
+                ...store,
+                checkReady: () => embedding.checkHealth(),
+              } as CliLibrary,
+              new LibraryConfig({
+                libraryPath: plan.selectedLibraryPath,
+                dbPath: resolveLibraryDbPath(plan.config),
+                chunkSize: plan.config.chunking.size,
+                chunkOverlap: plan.config.chunking.overlap,
+              }),
+            );
+          });
+          return Effect.runPromise(
+            initialize.pipe(
+              Effect.provide(
+                layer as unknown as Layer.Layer<unknown, unknown, never>,
+              ),
+              Effect.scoped,
+            ) as Effect.Effect<unknown, unknown, never>,
+          );
+        });
       }
       yield* Effect.tryPromise({
         try: () => runCodexAuth(plan.codexAuthAction),

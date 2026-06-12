@@ -1,12 +1,10 @@
 import { Effect } from "effect";
 import {
   Config,
-  loadConfig,
   normalizeConfig,
   resolveConfigPath,
   saveConfig,
 } from "../../types.js";
-import { getOpenAICodexConfiguredRoles } from "../../services/OpenAICodexProvider.js";
 import { resolveServerAuthToken } from "../../agent/protocol.js";
 import {
   CLIError,
@@ -22,7 +20,24 @@ import {
 } from "../configValues.js";
 import type { CliCommandOutput, CliConsole } from "./types.js";
 
-export function runConfigCommand(args: string[], Console: CliConsole) {
+function getOpenAICodexConfiguredRoles(
+  config: Config,
+): Array<"enrichment" | "judge"> {
+  const roles: Array<"enrichment" | "judge"> = [];
+  if (config.models.enrichment.provider === "openai-codex") {
+    roles.push("enrichment");
+  }
+  if (config.models.judge.provider === "openai-codex") {
+    roles.push("judge");
+  }
+  return roles;
+}
+
+export function runConfigCommand(
+  args: string[],
+  Console: CliConsole,
+  config: Config,
+) {
   return Effect.gen(function* (): Generator<any, CliCommandOutput, any> {
     const configOutputOptions = parseConfigOutputOptions(args.slice(1));
     const configArgs = ["config", ...configOutputOptions.args];
@@ -37,7 +52,6 @@ export function runConfigCommand(args: string[], Console: CliConsole) {
       };
     }
 
-    const config = loadConfig();
     const configPath = resolveConfigPath();
     let resultPayload: unknown = null;
 
