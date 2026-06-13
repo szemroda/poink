@@ -16,9 +16,7 @@ import dedent from "dedent";
 import { Context, Effect, Layer } from "effect";
 import { z } from "zod";
 import { getPathFilename, getPathSegments } from "../pathUtils.js";
-import {
-  TaxonomyService,
-} from "./TaxonomyService.js";
+import { TaxonomyService } from "./TaxonomyService.js";
 import { EmbeddingProvider } from "./EmbeddingProvider.js";
 import type { Config } from "../types.js";
 import {
@@ -35,18 +33,21 @@ import {
 /** LLM provider options */
 export type LLMProvider = SupportedProvider;
 
+const DOCUMENT_TYPES = [
+  "book",
+  "paper",
+  "tutorial",
+  "reference",
+  "guide",
+  "article",
+  "report",
+  "presentation",
+  "notes",
+  "other",
+] as const;
+
 /** Document type classification */
-export type DocumentType =
-  | "book"
-  | "paper"
-  | "tutorial"
-  | "reference"
-  | "guide"
-  | "article"
-  | "report"
-  | "presentation"
-  | "notes"
-  | "other";
+export type DocumentType = (typeof DOCUMENT_TYPES)[number];
 
 /** Taxonomy concept (minimal interface for AutoTagger) */
 export interface TaxonomyConcept {
@@ -267,6 +268,17 @@ const AUTHOR_PATTERNS = [
   /\(([A-Z][a-z]+(?:\s+[A-Z]\.?\s*)?(?:[A-Z][a-z]+)?)\)\s*\.(?:pdf|epub|md)$/i,
 ];
 
+const VALID_CONCEPT_PARENTS = new Set([
+  "programming",
+  "education",
+  "design",
+  "business",
+  "meta",
+  "psychology",
+  "research",
+  "writing",
+]);
+
 // ============================================================================
 // Schemas
 // ============================================================================
@@ -292,20 +304,7 @@ const EnrichmentSchema = z.object({
     .nullable()
     .describe("Author name(s) if identifiable, otherwise null"),
   summary: z.string().describe("2-3 sentence summary of the document"),
-  documentType: z
-    .enum([
-      "book",
-      "paper",
-      "tutorial",
-      "reference",
-      "guide",
-      "article",
-      "report",
-      "presentation",
-      "notes",
-      "other",
-    ])
-    .describe("Type of document"),
+  documentType: z.enum(DOCUMENT_TYPES).describe("Type of document"),
   category: z
     .string()
     .describe("Primary category (e.g., programming, business, design)"),
@@ -343,6 +342,16 @@ function normalizeTag(tag: string): string {
     .replace(/[^a-z0-9-]/g, "-")
     .replace(/-+/g, "-")
     .replace(/^-|-$/g, "");
+}
+
+function normalizeTags(tags: string[]): string[] {
+  return tags.map(normalizeTag).filter((tag) => tag.length >= 2);
+}
+
+function mergeTags(maxTags: number, ...tagGroups: string[][]): string[] {
+  return [...new Set(tagGroups.flat())]
+    .filter((tag) => tag.length >= 2)
+    .slice(0, maxTags);
 }
 
 /**
@@ -534,6 +543,17 @@ function formatConceptsForPrompt(concepts: TaxonomyConcept[]): string {
   return `Available concepts (use these IDs when applicable):\n${lines.join(
     "\n"
   )}`;
+}
+
+function mergeConcepts(
+  primaryConcepts: TaxonomyConcept[],
+  secondaryConcepts: TaxonomyConcept[]
+): TaxonomyConcept[] {
+  const primaryIds = new Set(primaryConcepts.map((concept) => concept.id));
+  return [
+    ...primaryConcepts,
+    ...secondaryConcepts.filter((concept) => !primaryIds.has(concept.id)),
+  ];
 }
 
 function describeEnrichmentCause(error: unknown): string {
@@ -780,7 +800,7 @@ async function enrichWithLLM(
       summary: output.summary,
       documentType: output.documentType,
       category: normalizeTag(output.category),
-      tags: output.tags.map(normalizeTag).filter((t) => t.length >= 2),
+      tags: normalizeTags(output.tags),
       concepts: output.concepts,
       proposedConcepts: validateProposedConcepts(output.proposedConcepts),
     };
@@ -887,7 +907,7 @@ async function enrichWithLLM(
     summary: parsed.summary || "",
     documentType: (parsed.documentType as DocumentType) || "other",
     category: normalizeTag(parsed.category || "uncategorized"),
-    tags: (parsed.tags || []).map(normalizeTag).filter((t) => t.length >= 2),
+    tags: normalizeTags(parsed.tags || []),
     concepts: parsed.concepts || [],
     proposedConcepts: validatedConcepts,
   };
@@ -905,17 +925,7 @@ function isValidConceptId(id: string): boolean {
   const [parent, child] = id.split("/");
 
   // Parent must be a known category (1 word, lowercase)
-  const validParents = [
-    "programming",
-    "education",
-    "design",
-    "business",
-    "meta",
-    "psychology",
-    "research",
-    "writing",
-  ];
-  if (!validParents.includes(parent)) return false;
+  if (!VALID_CONCEPT_PARENTS.has(parent)) return false;
 
   // Child must be short (1-3 words hyphenated, no spaces)
   if (child.includes(" ")) return false;
@@ -942,19 +952,18 @@ export function validateProposedConcepts(
   if (!concepts || !Array.isArray(concepts)) return [];
 
   return concepts
-    .filter((c) => {
-      if (!c.id || !c.prefLabel) return false;
-      if (!isValidConceptId(c.id)) return false;
-      // prefLabel should be short (1-4 words)
-      const labelWords = c.prefLabel.trim().split(/\s+/).length;
-      if (labelWords > 5) return false;
-      return true;
+    .filter((concept) => {
+      if (!concept.id || !concept.prefLabel) return false;
+      if (!isValidConceptId(concept.id)) return false;
+
+      const labelWordCount = concept.prefLabel.trim().split(/\s+/).length;
+      return labelWordCount <= 5;
     })
-    .map((c) => ({
-      id: c.id,
-      prefLabel: c.prefLabel,
-      altLabels: c.altLabels ?? [],
-      definition: c.definition ?? undefined,
+    .map((concept) => ({
+      id: concept.id,
+      prefLabel: concept.prefLabel,
+      altLabels: concept.altLabels ?? [],
+      definition: concept.definition ?? undefined,
     }));
 }
 
@@ -994,7 +1003,7 @@ async function tagWithLLM(
     });
 
     return {
-      tags: output.tags.map(normalizeTag).filter((t) => t.length >= 2),
+      tags: normalizeTags(output.tags),
       category: output.category ? normalizeTag(output.category) : undefined,
       author: output.author ?? undefined,
     };
@@ -1035,7 +1044,7 @@ async function tagWithLLM(
   };
 
   return {
-    tags: (parsed.tags || []).map(normalizeTag).filter((t) => t.length >= 2),
+    tags: normalizeTags(parsed.tags || []),
     category: parsed.category ? normalizeTag(parsed.category) : undefined,
     author: parsed.author || undefined,
   };
@@ -1085,7 +1094,6 @@ export interface AutoTagger {
     content?: string,
     options?: EnrichmentOptions
   ) => Effect.Effect<TagResult, EnrichmentError>;
-
 }
 
 export const AutoTagger = Context.GenericTag<AutoTagger>("AutoTagger");
@@ -1098,7 +1106,7 @@ export function makeAutoTagger(config: Config) {
   return Layer.effect(
     AutoTagger,
     Effect.gen(function* () {
-    return AutoTagger.of({
+      return AutoTagger.of({
       enrich: (
         filePath: string,
         content: string,
@@ -1107,9 +1115,7 @@ export function makeAutoTagger(config: Config) {
         Effect.gen(function* () {
           const filename = getPathFilename(filePath);
           const opts = options || {};
-          let availableConcepts = opts.availableConcepts || [];
 
-          // If heuristics only, build from extraction
           if (opts.heuristicsOnly) {
             const pathTags = extractPathTags(filePath, opts.basePath);
             const filenameTags = extractFilenameTags(filename);
@@ -1120,18 +1126,18 @@ export function makeAutoTagger(config: Config) {
               author: extractAuthor(filename),
               summary:
                 content.slice(0, 200).replace(/\s+/g, " ").trim() + "...",
-              documentType: "other" as DocumentType,
+              documentType: "other" as const,
               category: pathTags[0] || "uncategorized",
-              tags: [
-                ...new Set([...pathTags, ...filenameTags, ...contentTags]),
-              ].slice(0, 10),
+              tags: mergeTags(10, pathTags, filenameTags, contentTags),
               concepts: [],
               confidence: 0.3,
               provider: config.models.enrichment.provider,
             };
           }
 
-          const ragContextResult = yield* Effect.either(extractRAGContext(content));
+          const ragContextResult = yield* Effect.either(
+            extractRAGContext(content)
+          );
           const ragConcepts =
             ragContextResult._tag === "Right" ? ragContextResult.right : [];
 
@@ -1141,20 +1147,17 @@ export function makeAutoTagger(config: Config) {
             );
           }
 
-          // Merge RAG concepts with provided concepts (RAG first for priority)
-          const conceptsForPrompt: TaxonomyConcept[] = [
-            ...ragConcepts,
-            ...availableConcepts.filter(
-              (c) => !ragConcepts.some((r) => r.id === c.id)
-            ),
-          ];
+          const conceptsForPrompt = mergeConcepts(
+            ragConcepts,
+            opts.availableConcepts || []
+          );
 
           yield* Effect.logDebug(
             `AutoTagger: RAG context found ${ragConcepts.length} relevant concept(s)`
           );
 
-          const provider: LLMProvider = opts.provider || config.models.enrichment.provider;
-          const model: string | undefined = opts.model || config.models.enrichment.model;
+          const provider = opts.provider || config.models.enrichment.provider;
+          const model = opts.model || config.models.enrichment.model;
 
           const result = yield* Effect.tryPromise({
             try: () =>
@@ -1211,7 +1214,6 @@ export function makeAutoTagger(config: Config) {
           const filename = getPathFilename(filePath);
           const opts = options || {};
 
-          // Always extract heuristic tags
           const pathTags = extractPathTags(filePath, opts.basePath);
           const filenameTags = extractFilenameTags(filename);
           const contentTags = content ? extractContentKeywords(content, 5) : [];
@@ -1221,12 +1223,9 @@ export function makeAutoTagger(config: Config) {
           let category: string | undefined;
           let llmAuthor: string | undefined;
 
-          // Add LLM tags if not heuristics-only and we have content
           if (!opts.heuristicsOnly && content) {
-            const provider: LLMProvider =
-              opts.provider || config.models.enrichment.provider;
-            const model: string | undefined =
-              opts.model || config.models.enrichment.model;
+            const provider = opts.provider || config.models.enrichment.provider;
+            const model = opts.model || config.models.enrichment.model;
 
             const llmResult = yield* Effect.tryPromise({
               try: () =>
@@ -1243,17 +1242,13 @@ export function makeAutoTagger(config: Config) {
             llmAuthor = llmResult.author;
           }
 
-          // Combine all tags (LLM first for priority)
-          const allTags = [
-            ...new Set([
-              ...llmTags,
-              ...pathTags,
-              ...filenameTags,
-              ...contentTags,
-            ]),
-          ]
-            .filter((t) => t.length >= 2)
-            .slice(0, 10);
+          const allTags = mergeTags(
+            10,
+            llmTags,
+            pathTags,
+            filenameTags,
+            contentTags
+          );
 
           return {
             pathTags,
@@ -1265,7 +1260,7 @@ export function makeAutoTagger(config: Config) {
             category: category || pathTags[0],
           };
         }),
-    });
+      });
     }),
   );
 }

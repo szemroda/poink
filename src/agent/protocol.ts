@@ -81,23 +81,39 @@ export type AgentEnvelope<T> =
       meta?: AgentMeta;
     };
 
-type EnvelopeOptions = {
+interface EnvelopeOptions {
   verbose?: boolean;
-  nextActions?: NextAction[];
   meta?: AgentMeta;
-};
+}
+
+interface SuccessEnvelopeOptions extends EnvelopeOptions {
+  nextActions?: NextAction[];
+}
+
+function verboseMeta(options: EnvelopeOptions): Pick<AgentEnvelope<never>, "meta"> {
+  if (!options.verbose || !options.meta) return {};
+  return { meta: options.meta };
+}
+
+function verboseNextActions(
+  options: SuccessEnvelopeOptions,
+): Pick<AgentEnvelope<never>, "nextActions"> {
+  if (!options.verbose || !options.nextActions) return {};
+  return { nextActions: options.nextActions };
+}
 
 export function makeSuccessEnvelope<T>(
   command: string,
   result: T,
-  options: EnvelopeOptions = {},
+  options: SuccessEnvelopeOptions = {},
 ): AgentEnvelope<T> {
-  const envelope: AgentEnvelope<T> = { ok: true, command, result };
-  if (options.verbose) {
-    if (options.nextActions) envelope.nextActions = options.nextActions;
-    if (options.meta) envelope.meta = options.meta;
-  }
-  return envelope;
+  return {
+    ok: true,
+    command,
+    result,
+    ...verboseNextActions(options),
+    ...verboseMeta(options),
+  };
 }
 
 export function makeErrorEnvelope(
@@ -105,24 +121,26 @@ export function makeErrorEnvelope(
   error: AgentErrorShape,
   options: EnvelopeOptions = {},
 ): AgentEnvelope<never> {
-  const envelope: AgentEnvelope<never> = {
+  const errorDetails =
+    options.verbose && error.details !== undefined
+      ? { details: error.details }
+      : {};
+
+  return {
     ok: false,
     command,
     error: {
       code: error.code,
       message: error.message,
+      ...errorDetails,
     },
+    ...verboseMeta(options),
   };
-  if (options.verbose) {
-    if (error.details !== undefined) envelope.error.details = error.details;
-    if (options.meta) envelope.meta = options.meta;
-  }
-  return envelope;
 }
 
 export function toJsonLine(
   value: unknown,
-  opts?: { pretty?: boolean }
+  opts?: { pretty?: boolean },
 ): string {
   const pretty = opts?.pretty === true;
   return JSON.stringify(value, null, pretty ? 2 : 0) + "\n";
@@ -130,18 +148,19 @@ export function toJsonLine(
 
 export function resolveServerConfig(
   config: Partial<ServerConfigShape> | undefined,
-  overrides?: ServerConfigOverrides
+  overrides?: ServerConfigOverrides,
 ): ServerConfigShape {
+  const configuredAuth = config?.auth;
+  const authTokenOverride = overrides?.authToken;
   const host = overrides?.host ?? config?.host ?? DEFAULT_SERVER_CONFIG.host;
   const port = overrides?.port ?? config?.port ?? DEFAULT_SERVER_CONFIG.port;
-
   const authEnabled =
-    typeof overrides?.authToken === "string"
+    typeof authTokenOverride === "string"
       ? true
-      : config?.auth?.enabled ?? DEFAULT_SERVER_CONFIG.auth.enabled;
-  const authToken = overrides?.authToken ?? config?.auth?.token;
+      : configuredAuth?.enabled ?? DEFAULT_SERVER_CONFIG.auth.enabled;
+  const authToken = authTokenOverride ?? configuredAuth?.token;
   const authTokenEnv =
-    config?.auth?.tokenEnv ?? DEFAULT_SERVER_CONFIG.auth.tokenEnv;
+    configuredAuth?.tokenEnv ?? DEFAULT_SERVER_CONFIG.auth.tokenEnv;
 
   return {
     host,
@@ -183,18 +202,22 @@ export function requiresServerAuthForHost(host: string): boolean {
 
 export function resolveServerAuthToken(
   auth: ServerAuthConfig,
-  env: Record<string, string | undefined> = process.env
+  env: Record<string, string | undefined> = process.env,
 ): string | undefined {
-  return auth.token ?? (auth.tokenEnv ? env[auth.tokenEnv] : undefined);
+  if (auth.token !== undefined) return auth.token;
+  if (!auth.tokenEnv) return undefined;
+  return env[auth.tokenEnv];
 }
 
 export function isBearerTokenAuthorized(
   headers: Headers,
-  auth: ServerAuthConfig
+  auth: ServerAuthConfig,
 ): boolean {
   if (!auth.enabled) return true;
   if (!auth.token) return false;
+
   const authorization = headers.get("authorization");
   if (!authorization) return false;
+
   return authorization === `Bearer ${auth.token}`;
 }

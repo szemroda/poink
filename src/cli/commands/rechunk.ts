@@ -1,10 +1,18 @@
 import { Effect } from "effect";
 import { existsSync } from "fs";
-import { AddOptions, LibraryConfig } from "../../types.js";
 import { assessDocChunker } from "../../chunking.js";
-import { resolveVisualsConfig, type Document } from "../../types.js";
 import { EmbeddingProvider } from "../../services/EmbeddingProvider.js";
-import { CLIError, runCommandWithContext, type GlobalCLIOptions } from "../runner.js";
+import {
+  AddOptions,
+  LibraryConfig,
+  resolveVisualsConfig,
+  type Document,
+} from "../../types.js";
+import {
+  CLIError,
+  runCommandWithContext,
+  type GlobalCLIOptions,
+} from "../runner.js";
 
 interface RechunkCommandOptions extends Record<string, unknown> {
   doc?: string;
@@ -22,347 +30,450 @@ interface RechunkCommandOptions extends Record<string, unknown> {
   maxChunks?: string | number | boolean;
 }
 
+type VisualsConfig = ReturnType<typeof resolveVisualsConfig>;
+type VisualsMode = "config" | "explicit" | undefined;
+
+interface RechunkPlanItem {
+  id: string;
+  title: string;
+  path: string;
+  reason: string;
+  code: string;
+  expected: unknown;
+  actual: unknown;
+  currentChunkCount?: number;
+}
+
+interface RechunkPlan {
+  items: RechunkPlanItem[];
+  plannedMissing: number;
+  plannedMismatch: number;
+  plannedVisuals: number;
+  skippedMissing: number;
+}
+
+interface RechunkWarning {
+  code: string;
+  message: string;
+  details?: unknown;
+}
+
+const CHUNKER_SUMMARY = {
+  pdf: { id: "pdf-extractor:shared-context-v6", version: 6 },
+  markdown: { id: "markdown-extractor:shared-context-v3", version: 3 },
+  docx: { id: "office-extractor:docx-shared-context-v4", version: 4 },
+  odt: { id: "office-extractor:odt-shared-context-v3", version: 3 },
+  unit: "chars",
+} as const;
+
+function parsePositiveIntFlag(
+  raw: string | number | boolean | undefined,
+  flag: string,
+): number | undefined {
+  if (raw === undefined) return undefined;
+  if (raw === true) {
+    throw new CLIError("INVALID_ARGS", `${flag} requires a numeric value`, {
+      flag,
+      hint: `${flag} 25`,
+    });
+  }
+
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new CLIError("INVALID_ARGS", `${flag} must be a positive integer`, {
+      flag,
+      value: raw,
+      hint: `${flag} 25`,
+    });
+  }
+
+  return Math.floor(value);
+}
+
+function parseLimits(options: RechunkCommandOptions) {
+  return Effect.try({
+    try: () => ({
+      maxDocs: parsePositiveIntFlag(
+        options["max-docs"] ?? options.maxDocs,
+        "--max-docs",
+      ),
+      maxChunks: parsePositiveIntFlag(
+        options["max-chunks"] ?? options.maxChunks,
+        "--max-chunks",
+      ),
+    }),
+    catch: (error) =>
+      error instanceof CLIError
+        ? error
+        : new CLIError("INVALID_ARGS", String(error), {
+            command: "rechunk",
+          }),
+  });
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function getVisualsMetadata(doc: Document): unknown {
+  return doc.metadata?.visuals;
+}
+
+function needsVisualRefresh(
+  doc: Document,
+  visualsEnabled: boolean,
+  visualsConfig: VisualsConfig,
+): boolean {
+  if (!visualsEnabled) return false;
+  if (doc.fileType !== "pdf" && doc.fileType !== "docx") return false;
+
+  const visuals = getVisualsMetadata(doc);
+  return (
+    !isRecord(visuals) ||
+    visuals.enabled !== true ||
+    visuals.version !== 1 ||
+    visuals.maxImageBytes !== visualsConfig.maxImageBytes ||
+    visuals.maxImagesPerDocument !== visualsConfig.maxImagesPerDocument
+  );
+}
+
+function buildPlan(
+  docs: readonly Document[],
+  config: LibraryConfig,
+  options: {
+    forceAll: boolean;
+    includeMissing: boolean;
+    visualsEnabled: boolean;
+    visualsConfig: VisualsConfig;
+  },
+): RechunkPlan {
+  const items: RechunkPlanItem[] = [];
+  let plannedMissing = 0;
+  let plannedMismatch = 0;
+  let plannedVisuals = 0;
+  let skippedMissing = 0;
+
+  for (const doc of docs) {
+    const assessment = assessDocChunker(doc, config);
+    const isMissing = assessment.code === "missing_metadata";
+    const visualRefresh = needsVisualRefresh(
+      doc,
+      options.visualsEnabled,
+      options.visualsConfig,
+    );
+    const shouldInclude =
+      options.forceAll ||
+      visualRefresh ||
+      (assessment.needsRechunk && (!isMissing || options.includeMissing));
+
+    if (
+      assessment.needsRechunk &&
+      isMissing &&
+      !options.includeMissing &&
+      !options.forceAll
+    ) {
+      skippedMissing++;
+    }
+
+    if (!shouldInclude) continue;
+
+    items.push({
+      id: doc.id,
+      title: doc.title,
+      path: doc.path,
+      reason:
+        visualRefresh && !assessment.needsRechunk
+          ? "visual enrichment metadata mismatch"
+          : assessment.reason,
+      code:
+        visualRefresh && !assessment.needsRechunk
+          ? "visuals_mismatch"
+          : assessment.code,
+      expected: assessment.expected,
+      actual: visualRefresh
+        ? {
+            chunker: assessment.actual,
+            visuals: getVisualsMetadata(doc) ?? null,
+          }
+        : assessment.actual,
+    });
+
+    if (assessment.needsRechunk) {
+      if (isMissing) plannedMissing++;
+      else plannedMismatch++;
+    }
+    if (visualRefresh) plannedVisuals++;
+  }
+
+  return {
+    items,
+    plannedMissing,
+    plannedMismatch,
+    plannedVisuals,
+    skippedMissing,
+  };
+}
+
+function buildWarnings(
+  plannedCount: number,
+  includeMissing: boolean,
+  skippedMissing: number,
+  totalCurrentChunks: number,
+): RechunkWarning[] {
+  const warnings: RechunkWarning[] = [];
+
+  if (plannedCount > 0) {
+    warnings.push({
+      code: "RECHUNK_REEMBEDS",
+      message:
+        "Rechunk regenerates embeddings because embeddings are per-chunk; changing chunk boundaries/content requires new vectors.",
+    });
+  }
+  if (includeMissing) {
+    warnings.push({
+      code: "RECHUNK_INCLUDE_MISSING",
+      message:
+        "--include-missing is intended for upgrade sweeps. This is typically expensive because it will re-embed many chunks.",
+    });
+  }
+  if (skippedMissing > 0) {
+    warnings.push({
+      code: "RECHUNK_SKIPPED_MISSING",
+      message:
+        "Some documents are missing chunker metadata and were skipped. Pass --include-missing to include them.",
+      details: { skippedMissing },
+    });
+  }
+  if (totalCurrentChunks > 0) {
+    warnings.push({
+      code: "RECHUNK_COST_ESTIMATE",
+      message:
+        "Estimated cost is based on current chunk counts. New chunk counts may differ after rechunking.",
+      details: { totalCurrentChunks },
+    });
+  }
+
+  return warnings;
+}
+
+function getVisualSettings(
+  visualsEnabled: boolean,
+  visualsConfig: VisualsConfig,
+) {
+  if (!visualsEnabled) return null;
+
+  return {
+    maxImageBytes: visualsConfig.maxImageBytes,
+    maxImagesPerDocument: visualsConfig.maxImagesPerDocument,
+  };
+}
+
 export function runRechunkCommand(
   args: string[],
   globals: GlobalCLIOptions,
   options: RechunkCommandOptions = {},
 ) {
-  return runCommandWithContext(args, globals, ({ Console, library, globals }) =>
+  return runCommandWithContext(args, globals, ({ library, globals }) =>
     Effect.gen(function* () {
-      let resultPayload: unknown = null;
-      let agentResult: any = null;
       const command = args[0];
-      switch (command) {
-      case "rechunk": {
-        const opts = options;
-        const singleDocId = opts.doc as string | undefined;
-        const tag = opts.tag as string | undefined;
-        const dryRun = opts["dry-run"] === true || opts.dryRun === true;
-        const forceAll = opts.all === true;
-        const includeMissing =
-          opts["include-missing"] === true ||
-          opts.includeMissing === true ||
-          opts.missing === true;
-        const rechunkAppConfig = globals.config!;
-        const rechunkVisualsConfig = resolveVisualsConfig(rechunkAppConfig);
-        const visualsExplicit = opts.visuals === true;
-        const visualsEnabled = visualsExplicit || rechunkVisualsConfig.enabled;
-        const visualsMode = visualsEnabled
-          ? visualsExplicit
-            ? "explicit"
-            : "config"
-          : undefined;
+      if (command !== "rechunk") {
+        return yield* Effect.fail(
+          new CLIError(
+            "UNKNOWN_COMMAND",
+            `Unknown rechunk command: ${command}`,
+            { command },
+          ),
+        );
+      }
 
-        const parsePositiveIntFlag = (
-          raw: string | number | boolean | undefined,
-          flag: string,
-        ): number | undefined => {
-          if (raw === undefined) return undefined;
-          if (raw === true) {
-            throw new CLIError(
-              "INVALID_ARGS",
-              `${flag} requires a numeric value`,
-              { flag, hint: `${flag} 25` },
-            );
-          }
-          const n = Number(raw);
-          if (!Number.isFinite(n) || n <= 0) {
-            throw new CLIError(
-              "INVALID_ARGS",
-              `${flag} must be a positive integer`,
-              { flag, value: raw, hint: `${flag} 25` },
-            );
-          }
-          return Math.floor(n);
-        };
+      const singleDocId = options.doc;
+      const tag = options.tag;
+      const dryRun =
+        options["dry-run"] === true || options.dryRun === true;
+      const forceAll = options.all === true;
+      const includeMissing =
+        options["include-missing"] === true ||
+        options.includeMissing === true ||
+        options.missing === true;
+      const appConfig = globals.config!;
+      const visualsConfig = resolveVisualsConfig(appConfig);
+      const visualsExplicit = options.visuals === true;
+      const visualsEnabled = visualsExplicit || visualsConfig.enabled;
+      const visualsMode: VisualsMode = visualsEnabled
+        ? visualsExplicit
+          ? "explicit"
+          : "config"
+        : undefined;
+      const { maxDocs, maxChunks } = yield* parseLimits(options);
+      const config = LibraryConfig.fromConfig(appConfig);
+      const docs = singleDocId
+        ? yield* library.get(singleDocId).pipe(
+            Effect.map((doc) => (doc ? [doc] : [])),
+          )
+        : yield* library.list(tag);
 
-        const [parsedMaxDocs, parsedMaxChunks] = yield* Effect.try({
-          try: () => [
-            parsePositiveIntFlag(opts["max-docs"] ?? opts.maxDocs, "--max-docs"),
-            parsePositiveIntFlag(opts["max-chunks"] ?? opts.maxChunks, "--max-chunks"),
-          ] as const,
-          catch: (error) =>
-            error instanceof CLIError
-              ? error
-              : new CLIError("INVALID_ARGS", String(error), {
-                  command: "rechunk",
-                }),
-        });
-
-	        const config = LibraryConfig.fromConfig(rechunkAppConfig);
-	
-	        const docs = singleDocId
-	          ? yield* library.get(singleDocId).pipe(
-	              Effect.map((doc) => (doc ? [doc] : [])),
-	            )
-          : yield* library.list(tag);
-
-        if (docs.length === 0) {
-          resultPayload = {
+      if (docs.length === 0) {
+        return {
+          resultPayload: {
             dryRun,
             totalCandidates: 0,
             planned: 0,
             succeeded: 0,
             failed: 0,
-          };
-          break;
-        }
-
-        let planned: Array<{
-          id: string;
-          title: string;
-          path: string;
-          reason: string;
-          code: string;
-          expected: unknown;
-          actual: unknown;
-          currentChunkCount?: number;
-        }> = [];
-
-        let plannedMissing = 0;
-        let plannedMismatch = 0;
-        let plannedVisuals = 0;
-        let skippedMissing = 0;
-
-        const needsVisualRefresh = (doc: Document): boolean => {
-          if (!visualsEnabled) return false;
-          const fileType = doc.fileType;
-          if (fileType !== "pdf" && fileType !== "docx") return false;
-          const visuals = (doc.metadata as any)?.visuals;
-          return (
-            !visuals ||
-            visuals.enabled !== true ||
-            visuals.version !== 1 ||
-            visuals.maxImageBytes !== rechunkVisualsConfig.maxImageBytes ||
-            visuals.maxImagesPerDocument !==
-              rechunkVisualsConfig.maxImagesPerDocument
-          );
+          },
+          agentResult: null,
         };
+      }
 
-        for (const doc of docs) {
-          const assessment = assessDocChunker(doc, config);
-          const isMissing = assessment.code === "missing_metadata";
-          const visualRefresh = needsVisualRefresh(doc);
-          const shouldInclude =
-            forceAll ||
-            visualRefresh ||
-            (assessment.needsRechunk && (!isMissing || includeMissing));
+      const plan = buildPlan(docs, config, {
+        forceAll,
+        includeMissing,
+        visualsEnabled,
+        visualsConfig,
+      });
+      let planned = plan.items;
 
-          if (assessment.needsRechunk && isMissing && !includeMissing && !forceAll) {
-            skippedMissing++;
-          }
-
-          if (shouldInclude) {
-            planned.push({
-              id: doc.id,
-              title: doc.title,
-              path: doc.path,
-              reason:
-                visualRefresh && !assessment.needsRechunk
-                  ? "visual enrichment metadata mismatch"
-                  : assessment.reason,
-              code:
-                visualRefresh && !assessment.needsRechunk
-                  ? "visuals_mismatch"
-                  : assessment.code,
-              expected: assessment.expected,
-              actual: visualRefresh
-                ? {
-                    chunker: assessment.actual,
-                    visuals: (doc.metadata as any)?.visuals ?? null,
-                  }
-                : assessment.actual,
-            });
-
-            if (assessment.needsRechunk) {
-              if (isMissing) plannedMissing++;
-              else plannedMismatch++;
-            }
-            if (visualRefresh) plannedVisuals++;
-          }
+      let totalCurrentChunks = 0;
+      const countsResult = yield* Effect.either(
+        library.countChunksByDocumentIds(planned.map((item) => item.id)),
+      );
+      if (countsResult._tag === "Right") {
+        for (const item of planned) {
+          const count = countsResult.right[item.id] ?? 0;
+          item.currentChunkCount = count;
+          totalCurrentChunks += count;
         }
+      }
 
-        // Enrich plan with cost estimates (current chunk counts).
-        let totalCurrentChunks = 0;
-        const countsResult = yield* Effect.either(
-          library.countChunksByDocumentIds(planned.map((p) => p.id)),
-        );
-        if (countsResult._tag === "Right") {
-          const counts = countsResult.right;
-          for (const p of planned) {
-            const count = counts[p.id] ?? 0;
-            p.currentChunkCount = count;
-            totalCurrentChunks += count;
-          }
-        }
+      const warnings = buildWarnings(
+        planned.length,
+        includeMissing,
+        plan.skippedMissing,
+        totalCurrentChunks,
+      );
+      const effectiveMaxDocs =
+        maxDocs ?? (!dryRun && includeMissing ? 25 : undefined);
 
-        const warnings: Array<{ code: string; message: string; details?: unknown }> = [];
-        if (planned.length > 0) {
-          warnings.push({
-            code: "RECHUNK_REEMBEDS",
-            message:
-              "Rechunk regenerates embeddings because embeddings are per-chunk; changing chunk boundaries/content requires new vectors.",
-          });
-        }
-        // Rechunk uses the ingestion service's atomic replacement operation.
-        if (includeMissing) {
-          warnings.push({
-            code: "RECHUNK_INCLUDE_MISSING",
-            message:
-              "--include-missing is intended for upgrade sweeps. This is typically expensive because it will re-embed many chunks.",
-          });
-        }
-        if (skippedMissing > 0) {
-          warnings.push({
-            code: "RECHUNK_SKIPPED_MISSING",
-            message:
-              "Some documents are missing chunker metadata and were skipped. Pass --include-missing to include them.",
-            details: { skippedMissing },
-          });
-        }
-        if (totalCurrentChunks > 0) {
-          warnings.push({
-            code: "RECHUNK_COST_ESTIMATE",
-            message:
-              "Estimated cost is based on current chunk counts. New chunk counts may differ after rechunking.",
-            details: { totalCurrentChunks },
-          });
-        }
-
-        // Safety rails: rechunking a large library is expensive and potentially slow.
-        // If we're including missing-metadata docs (common after upgrades), default to small batches unless
-        // the caller explicitly opts into a larger run.
-        const effectiveMaxDocs =
-          parsedMaxDocs ?? (!dryRun && includeMissing ? 25 : undefined);
-
-        // When --max-docs is explicitly provided, truncate the planned list instead of refusing.
-        // The safety guard only triggers for the implicit default (25) when --include-missing is used
-        // without an explicit --max-docs flag.
-        if (!dryRun && effectiveMaxDocs !== undefined && planned.length > effectiveMaxDocs) {
-          if (parsedMaxDocs !== undefined) {
-            // Explicit --max-docs: truncate and proceed
-            yield* Effect.logInfo(
-              `Truncating ${planned.length} candidates to --max-docs ${effectiveMaxDocs}`,
-            );
-            planned = planned.slice(0, effectiveMaxDocs);
-          } else {
-            // Implicit default: refuse (safety guard)
-            return yield* Effect.fail(
-              new CLIError(
-                "TOO_MANY_DOCS",
-                `Refusing to rechunk ${planned.length} documents (limit: ${effectiveMaxDocs}).`,
-                {
-                  planned: planned.length,
-                  maxDocs: effectiveMaxDocs,
-                  hint:
-                    includeMissing
-                      ? `Re-run with --max-docs ${planned.length} if you really want the full upgrade, or start with: poink rechunk --include-missing --max-docs 25`
-                      : `Re-run with --max-docs ${planned.length} if you really want to process all planned docs.`,
-                },
-              ),
-            );
-          }
-        }
-
-        if (
-          !dryRun &&
-          parsedMaxChunks !== undefined &&
-          totalCurrentChunks > parsedMaxChunks
-        ) {
+      if (
+        !dryRun &&
+        effectiveMaxDocs !== undefined &&
+        planned.length > effectiveMaxDocs
+      ) {
+        if (maxDocs === undefined) {
           return yield* Effect.fail(
             new CLIError(
-              "TOO_MANY_CHUNKS",
-              `Refusing to rechunk ~${totalCurrentChunks} chunks (limit: ${parsedMaxChunks}).`,
+              "TOO_MANY_DOCS",
+              `Refusing to rechunk ${planned.length} documents (limit: ${effectiveMaxDocs}).`,
               {
-                totalCurrentChunks,
-                maxChunks: parsedMaxChunks,
-                hint:
-                  "Lower scope (use --doc/--tag) or raise the limit (e.g. --max-chunks 200000).",
+                planned: planned.length,
+                maxDocs: effectiveMaxDocs,
+                hint: includeMissing
+                  ? `Re-run with --max-docs ${planned.length} if you really want the full upgrade, or start with: poink rechunk --include-missing --max-docs 25`
+                  : `Re-run with --max-docs ${planned.length} if you really want to process all planned docs.`,
               },
             ),
           );
         }
 
-	        if (dryRun) {
-	          resultPayload = {
-	            dryRun: true,
-	            forceAll,
-              includeMissing,
-              visuals: visualsEnabled,
-              visualSettings: visualsEnabled
-                ? {
-                    maxImageBytes: rechunkVisualsConfig.maxImageBytes,
-                    maxImagesPerDocument:
-                      rechunkVisualsConfig.maxImagesPerDocument,
-                  }
-                : null,
-              maxDocs: parsedMaxDocs ?? null,
-              maxChunks: parsedMaxChunks ?? null,
-	            tag: tag ?? null,
-	            docId: singleDocId ?? null,
-	            totalCandidates: docs.length,
-	            planned: planned.length,
-              plannedMissing,
-              plannedMismatch,
-              plannedVisuals,
-              skippedMissing,
+        yield* Effect.logInfo(
+          `Truncating ${planned.length} candidates to --max-docs ${effectiveMaxDocs}`,
+        );
+        planned = planned.slice(0, effectiveMaxDocs);
+      }
+
+      if (
+        !dryRun &&
+        maxChunks !== undefined &&
+        totalCurrentChunks > maxChunks
+      ) {
+        return yield* Effect.fail(
+          new CLIError(
+            "TOO_MANY_CHUNKS",
+            `Refusing to rechunk ~${totalCurrentChunks} chunks (limit: ${maxChunks}).`,
+            {
               totalCurrentChunks,
-              warnings,
-	            docs: planned,
-	            chunker: {
-	              pdf: { id: "pdf-extractor:shared-context-v6", version: 6 },
-	              markdown: { id: "markdown-extractor:shared-context-v3", version: 3 },
-	              docx: { id: "office-extractor:docx-shared-context-v4", version: 4 },
-	              odt: { id: "office-extractor:odt-shared-context-v3", version: 3 },
-	              chunkSize: config.chunkSize,
-	              chunkOverlap: config.chunkOverlap,
-	              unit: "chars",
-	            },
-	          };
-	          agentResult = {
-	            _tag: "rechunk",
-	            dryRun: true,
-              includeMissing,
-              visuals: visualsEnabled,
-              skippedMissing,
-              plannedMissing,
-              plannedMismatch,
-              plannedVisuals,
-	            planned: planned.length,
-	            succeeded: 0,
-	            failed: 0,
-	          };
-	          break;
-	        }
+              maxChunks,
+              hint:
+                "Lower scope (use --doc/--tag) or raise the limit (e.g. --max-chunks 200000).",
+            },
+          ),
+        );
+      }
 
-	        // Health check: rechunk will re-embed everything, so fail early if provider is down.
-	        const embedProvider = yield* EmbeddingProvider;
-	        const healthResult = yield* Effect.either(embedProvider.checkHealth());
-	        if (healthResult._tag === "Left") {
-	          return yield* Effect.fail(
-	            new CLIError("PROVIDER_NOT_READY", "Embedding provider not ready", {
-	              reason: String(healthResult.left),
-	              provider: embedProvider.provider,
-	            }),
-	          );
-	        }
-	
-	        let processed = 0;
-	        let errors = 0;
-	        for (const item of planned) {
-          processed++;
-          const itemResult = yield* Effect.either(Effect.gen(function* () {
+      const commonResult = {
+        forceAll,
+        includeMissing,
+        visuals: visualsEnabled,
+        visualSettings: getVisualSettings(visualsEnabled, visualsConfig),
+        tag: tag ?? null,
+        docId: singleDocId ?? null,
+        totalCandidates: docs.length,
+        planned: planned.length,
+        plannedMissing: plan.plannedMissing,
+        plannedMismatch: plan.plannedMismatch,
+        plannedVisuals: plan.plannedVisuals,
+        skippedMissing: plan.skippedMissing,
+        totalCurrentChunks,
+        warnings,
+      };
+      const commonAgentResult = {
+        _tag: "rechunk" as const,
+        includeMissing,
+        visuals: visualsEnabled,
+        skippedMissing: plan.skippedMissing,
+        plannedMissing: plan.plannedMissing,
+        plannedMismatch: plan.plannedMismatch,
+        plannedVisuals: plan.plannedVisuals,
+        planned: planned.length,
+      };
+
+      if (dryRun) {
+        return {
+          resultPayload: {
+            dryRun: true,
+            ...commonResult,
+            maxDocs: maxDocs ?? null,
+            maxChunks: maxChunks ?? null,
+            docs: planned,
+            chunker: {
+              ...CHUNKER_SUMMARY,
+              chunkSize: config.chunkSize,
+              chunkOverlap: config.chunkOverlap,
+            },
+          },
+          agentResult: {
+            ...commonAgentResult,
+            dryRun: true,
+            succeeded: 0,
+            failed: 0,
+          },
+        };
+      }
+
+      const embedProvider = yield* EmbeddingProvider;
+      const healthResult = yield* Effect.either(embedProvider.checkHealth());
+      if (healthResult._tag === "Left") {
+        return yield* Effect.fail(
+          new CLIError(
+            "PROVIDER_NOT_READY",
+            "Embedding provider not ready",
+            {
+              reason: String(healthResult.left),
+              provider: embedProvider.provider,
+            },
+          ),
+        );
+      }
+
+      let processed = 0;
+      let errors = 0;
+      for (const item of planned) {
+        processed++;
+        const itemResult = yield* Effect.either(
+          Effect.gen(function* () {
             const doc = yield* library.get(item.id);
-            if (!doc) {
-              return false;
-            }
+            if (!doc || !existsSync(doc.path)) return false;
 
-            // Guard: don't delete the DB record if the source file is missing.
-            if (!existsSync(doc.path)) {
-              return false;
-            }
-
-            // Non-destructive: perform an atomic in-place rebuild (doc upsert + chunk/embedding replace).
             const replaceResult = yield* Effect.either(
               library.replace(
                 doc.path,
@@ -376,66 +487,36 @@ export function runRechunkCommand(
                 }),
               ),
             );
-            if (replaceResult._tag === "Left") {
-              yield* Effect.logInfo(
-                `WARN Rechunk failed for "${doc.title}": ${String(replaceResult.left)}`,
-              );
-              return false;
-            }
-            return true;
-          }));
-          if (itemResult._tag === "Left" || !itemResult.right) {
-            errors++;
-          }
+            if (replaceResult._tag === "Right") return true;
+
+            yield* Effect.logInfo(
+              `WARN Rechunk failed for "${doc.title}": ${String(replaceResult.left)}`,
+            );
+            return false;
+          }),
+        );
+        if (itemResult._tag === "Left" || !itemResult.right) {
+          errors++;
         }
-
-	        resultPayload = {
-	          dryRun: false,
-	          forceAll,
-            includeMissing,
-            maxDocs: effectiveMaxDocs ?? null,
-            maxChunks: parsedMaxChunks ?? null,
-            visuals: visualsEnabled,
-            visualSettings: visualsEnabled
-              ? {
-                  maxImageBytes: rechunkVisualsConfig.maxImageBytes,
-                  maxImagesPerDocument:
-                    rechunkVisualsConfig.maxImagesPerDocument,
-                }
-              : null,
-	          tag: tag ?? null,
-	          docId: singleDocId ?? null,
-	          totalCandidates: docs.length,
-	          planned: planned.length,
-            plannedMissing,
-            plannedMismatch,
-            plannedVisuals,
-            skippedMissing,
-            totalCurrentChunks,
-            warnings,
-	          succeeded: processed - errors,
-	          failed: errors,
-	        };
-	        agentResult = {
-	          _tag: "rechunk",
-	          dryRun: false,
-            includeMissing,
-            visuals: visualsEnabled,
-            skippedMissing,
-            plannedMissing,
-            plannedMismatch,
-            plannedVisuals,
-	          planned: planned.length,
-	          succeeded: processed - errors,
-	          failed: errors,
-	        };
-	        break;
-	      }
-
-        default:
-          return yield* Effect.fail(new CLIError("UNKNOWN_COMMAND", `Unknown rechunk command: ${command}`, { command }));
       }
-      return { resultPayload, agentResult };
+
+      return {
+        resultPayload: {
+          dryRun: false,
+          ...commonResult,
+          maxDocs: effectiveMaxDocs ?? null,
+          maxChunks: maxChunks ?? null,
+          succeeded: processed - errors,
+          failed: errors,
+        },
+        agentResult: {
+          ...commonAgentResult,
+          dryRun: false,
+          succeeded: processed - errors,
+          failed: errors,
+        },
+      };
     }),
-    options);
+    options,
+  );
 }

@@ -3,12 +3,40 @@ import { EmbeddingProvider } from "../../services/EmbeddingProvider.js";
 import {
   CLIError,
   runCommandWithContext,
+  type CommandBodyOutput,
   type GlobalCLIOptions,
 } from "../runner.js";
 
 interface ReindexCommandOptions extends Record<string, unknown> {
   clean?: boolean;
   doc?: string;
+}
+
+interface ReindexSummary {
+  total: number;
+  succeeded: number;
+  failed: number;
+  totalChunks: number;
+  totalEmbeddings: number;
+}
+
+function createReindexOutput(
+  summary: ReindexSummary,
+  cleanFirst: boolean,
+  docId: string | undefined,
+): CommandBodyOutput {
+  return {
+    resultPayload: {
+      ...summary,
+      cleanFirst,
+      docId: docId ?? null,
+    },
+    agentResult: {
+      _tag: "reindex",
+      count: summary.succeeded,
+      errors: summary.failed,
+    },
+  };
 }
 
 export function runReindexCommand(
@@ -18,9 +46,8 @@ export function runReindexCommand(
 ) {
   return runCommandWithContext(args, globals, ({ Console, library }) =>
     Effect.gen(function* () {
-      const opts = options;
-      const cleanFirst = opts.clean === true;
-      const singleDocId = opts.doc as string | undefined;
+      const cleanFirst = options.clean === true;
+      const singleDocId = options.doc;
 
       yield* Console.log("Re-indexing embeddings...\n");
 
@@ -46,18 +73,17 @@ export function runReindexCommand(
 
       if (docs.length === 0) {
         yield* Console.log("No documents to reindex");
-        return {
-          resultPayload: {
+        return createReindexOutput(
+          {
             total: 0,
             succeeded: 0,
             failed: 0,
             totalChunks: 0,
             totalEmbeddings: 0,
-            cleanFirst,
-            docId: singleDocId ?? null,
           },
-          agentResult: { _tag: "reindex" as const, count: 0, errors: 0 },
-        };
+          cleanFirst,
+          singleDocId,
+        );
       }
 
       yield* Console.log(`Documents to reindex: ${docs.length}\n`);
@@ -68,45 +94,45 @@ export function runReindexCommand(
         yield* Console.log("OK Cleaned\n");
       }
 
-      let processed = 0;
-      let errors = 0;
+      let succeeded = 0;
+      let failed = 0;
       let totalChunks = 0;
       let totalEmbeddings = 0;
 
-      for (const doc of docs) {
-        processed++;
-        yield* Console.log(`[${processed}/${docs.length}] ${doc.title}`);
+      for (const [index, doc] of docs.entries()) {
+        yield* Console.log(`[${index + 1}/${docs.length}] ${doc.title}`);
 
         const result = yield* Effect.either(library.reindexEmbeddings(doc.id));
         if (result._tag === "Right") {
+          succeeded++;
           totalChunks += result.right.chunks;
           totalEmbeddings += result.right.embeddings;
           yield* Console.log(
             `  OK Reindexed ${result.right.embeddings}/${result.right.chunks} embeddings`,
           );
-        } else {
-          errors++;
-          yield* Console.error(`  FAIL Failed: ${String(result.left)}`);
+          continue;
         }
+
+        failed++;
+        yield* Console.error(`  FAIL Failed: ${String(result.left)}`);
       }
 
-      yield* Console.log(`\nOK Reindexed ${processed - errors} documents`);
-      if (errors > 0) {
-        yield* Console.log(`WARN ${errors} documents failed`);
+      yield* Console.log(`\nOK Reindexed ${succeeded} documents`);
+      if (failed > 0) {
+        yield* Console.log(`WARN ${failed} documents failed`);
       }
 
-      return {
-        resultPayload: {
+      return createReindexOutput(
+        {
           total: docs.length,
-          succeeded: processed - errors,
-          failed: errors,
+          succeeded,
+          failed,
           totalChunks,
           totalEmbeddings,
-          cleanFirst,
-          docId: singleDocId ?? null,
         },
-        agentResult: { _tag: "reindex" as const, count: processed - errors, errors },
-      };
+        cleanFirst,
+        singleDocId,
+      );
     }),
     options);
 }

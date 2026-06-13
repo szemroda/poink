@@ -4,7 +4,7 @@ import {
   type GlobalCLIOptions,
 } from "../runner.js";
 
-interface RepairCommandOptions extends Record<string, unknown> {}
+type RepairCommandOptions = Record<string, unknown>;
 
 export function runRepairCommand(
   args: string[],
@@ -15,34 +15,12 @@ export function runRepairCommand(
     Effect.gen(function* () {
       yield* Console.log("Checking database integrity...\n");
       const result = yield* library.repair();
-
-      if (
-        result.orphanedChunks === 0 &&
-        result.orphanedEmbeddings === 0 &&
-        result.zeroVectorEmbeddings === 0
-      ) {
-        yield* Console.log("OK Database is healthy - no repairs needed");
-      } else {
-        yield* Console.log("Repairs completed:");
-        if (result.orphanedChunks > 0) {
-          yield* Console.log(
-            `  - Removed ${result.orphanedChunks} orphaned chunks`,
-          );
-        }
-        if (result.orphanedEmbeddings > 0) {
-          yield* Console.log(
-            `  - Removed ${result.orphanedEmbeddings} orphaned embeddings`,
-          );
-        }
-        if (result.zeroVectorEmbeddings > 0) {
-          yield* Console.log(
-            `  - Removed ${result.zeroVectorEmbeddings} zero-dimension embeddings`,
-          );
-        }
-        yield* Console.log("\nOK Database repaired");
-      }
-
-      return {
+      const completedRepairs = [
+        [result.orphanedChunks, "orphaned chunks"],
+        [result.orphanedEmbeddings, "orphaned embeddings"],
+        [result.zeroVectorEmbeddings, "zero-dimension embeddings"],
+      ] as const;
+      const output = {
         resultPayload: result,
         agentResult: {
           _tag: "repair" as const,
@@ -50,6 +28,20 @@ export function runRepairCommand(
           orphanedEmbeddings: result.orphanedEmbeddings,
         },
       };
+
+      if (completedRepairs.every(([count]) => count === 0)) {
+        yield* Console.log("OK Database is healthy - no repairs needed");
+        return output;
+      }
+
+      yield* Console.log("Repairs completed:");
+      for (const [count, description] of completedRepairs) {
+        if (count <= 0) continue;
+        yield* Console.log(`  - Removed ${count} ${description}`);
+      }
+      yield* Console.log("\nOK Database repaired");
+
+      return output;
     }),
     options);
 }

@@ -1,11 +1,15 @@
 import { describe, expect, test } from "vitest";
 import {
   applyAdjacentChunkOverlap,
+  assessDocChunker,
   assertValidChunking,
   buildChunkerMetadata,
   buildChunkOverlapPrefix,
+  chunkNormalizedText,
   inferFileTypeFromPath,
+  parseChunkerMetadata,
 } from "./chunking.js";
+import { Document } from "./types.js";
 
 describe("document file type inference", () => {
   test("infers supported document types from path extensions", () => {
@@ -59,5 +63,65 @@ describe("chunk overlap helpers", () => {
     expect(chunks[1]).toBe(
       "Beta carries forward.\n\nGamma starts the next chunk.",
     );
+  });
+});
+
+describe("normalized text chunking", () => {
+  test("hard-splits oversized text and filters short trailing chunks", () => {
+    expect(chunkNormalizedText("x".repeat(65), 30, 0)).toEqual([
+      "x".repeat(30),
+      "x".repeat(30),
+    ]);
+  });
+});
+
+describe("chunker metadata", () => {
+  test("parses valid metadata from an unknown value", () => {
+    const metadata = {
+      id: "test-chunker",
+      version: 2,
+      unit: "chars",
+      chunkSize: 512,
+      chunkOverlap: 50,
+    };
+
+    expect(parseChunkerMetadata(metadata)).toEqual(metadata);
+  });
+
+  test("rejects incomplete or incorrectly typed metadata", () => {
+    expect(parseChunkerMetadata(null)).toBeNull();
+    expect(
+      parseChunkerMetadata({
+        id: "test-chunker",
+        version: "2",
+        unit: "chars",
+        chunkSize: 512,
+        chunkOverlap: 50,
+      }),
+    ).toBeNull();
+  });
+
+  test("recognizes matching metadata on a document", () => {
+    const config = { chunkSize: 512, chunkOverlap: 50 };
+    const chunker = buildChunkerMetadata("markdown", config);
+    const document = new Document({
+      id: "doc-1",
+      title: "Notes",
+      path: "notes.md",
+      addedAt: new Date("2024-01-01T00:00:00Z"),
+      pageCount: 1,
+      sizeBytes: 123,
+      tags: [],
+      fileType: "markdown",
+      metadata: { chunker },
+    });
+
+    expect(assessDocChunker(document, config)).toMatchObject({
+      needsRechunk: false,
+      code: "ok",
+      reason: "ok",
+      expected: chunker,
+      actual: chunker,
+    });
   });
 });

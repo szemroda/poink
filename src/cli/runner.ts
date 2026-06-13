@@ -3,7 +3,6 @@ import { readFileSync } from "node:fs";
 import { dirname, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { formatHintBlock } from "../agent/format.js";
-import type { CommandResult } from "../agent/hints.js";
 import { generateHints, generateNextActions } from "../agent/hints.js";
 import {
   DEFAULT_CLI_OUTPUT_FORMAT,
@@ -18,7 +17,18 @@ import type { LibraryStoreService } from "../services/LibraryStore.js";
 import type { SemanticLibraryService } from "../services/SemanticLibrary.js";
 import type { Concept, TaxonomyService } from "../services/TaxonomyService.js";
 import type { Config } from "../types.js";
+import { parseArgs } from "./args.js";
+import type {
+  CliCommandOutput,
+  CliConsole,
+} from "./commands/types.js";
 import type { InvocationTiming } from "./timing.js";
+
+export {
+  getCheckpointInterval,
+  parseArgs,
+  shouldCheckpoint,
+} from "./args.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 export let VERSION = "0.0.0";
@@ -76,10 +86,7 @@ export type CommandExecutionContext = {
   globals: GlobalCLIOptions;
   command: string;
   format: OutputFormat;
-  Console: {
-    log: (message: string) => Effect.Effect<void>;
-    error: (message: string) => Effect.Effect<void>;
-  };
+  Console: CliConsole;
   library: CliLibrary;
   getLoadedLibraryStats: () => Effect.Effect<
     | {
@@ -95,10 +102,8 @@ export type CommandExecutionContext = {
   >;
 };
 
-export type CommandBodyOutput = {
+export type CommandBodyOutput = CliCommandOutput & {
   command?: string;
-  resultPayload: unknown;
-  agentResult: CommandResult | null;
 };
 
 function unavailableLibrary(): CliLibrary {
@@ -180,46 +185,6 @@ export function runCommandWithContext(
       nextActions,
     };
   });
-}
-
-export function getCheckpointInterval(
-  opts: Record<string, string | boolean>,
-): number {
-  const interval = opts["checkpoint-interval"];
-  if (typeof interval !== "string") return 50;
-  const parsed = Number.parseInt(interval, 10);
-  return Number.isNaN(parsed) || parsed <= 0 ? 50 : parsed;
-}
-
-export function shouldCheckpoint(
-  processedCount: number,
-  interval: number,
-): boolean {
-  return processedCount > 0 && processedCount % interval === 0;
-}
-
-export function parseArgs(args: string[]) {
-  const result: Record<string, string | boolean> = {};
-  for (let index = 0; index < args.length; index++) {
-    const arg = args[index]!;
-    if (!arg.startsWith("--")) continue;
-    const equalsIndex = arg.indexOf("=");
-    if (equalsIndex !== -1) {
-      result[arg.slice(2, equalsIndex)] = arg.slice(equalsIndex + 1);
-      continue;
-    }
-    const rawKey = arg.slice(2);
-    const negated = rawKey.startsWith("no-");
-    const key = negated ? rawKey.slice(3) : rawKey;
-    const next = args[index + 1];
-    if (!negated && next && !next.startsWith("--")) {
-      result[key] = next;
-      index++;
-    } else {
-      result[key] = !negated;
-    }
-  }
-  return result;
 }
 
 export function splitPositionalsAndFlags(args: string[]): {

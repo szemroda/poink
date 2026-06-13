@@ -21,7 +21,7 @@ import {
   type GlobalCLIOptions,
 } from "../runner.js";
 import { initializePoinkLibrary } from "./init.js";
-import type { CliCommandOutput } from "./types.js";
+import type { CliConsole } from "./types.js";
 
 const EMBEDDING_PROVIDERS = [
   "ollama",
@@ -49,9 +49,38 @@ const API_KEY_PROVIDERS = [
   "gateway",
 ] as const;
 
+const DEFAULT_EMBEDDING_MODELS = {
+  ollama: "mxbai-embed-large",
+  openai: "text-embedding-3-small",
+  openrouter: "openai/text-embedding-3-small",
+  google: "gemini-embedding-2",
+  gateway: "openai/text-embedding-3-small",
+} as const satisfies Record<EmbeddingProviderName, string>;
+
+const DEFAULT_LANGUAGE_MODELS = {
+  ollama: "llama3.2:3b",
+  "openai-codex": "gpt-5.4-mini",
+  openai: "gpt-5.4-mini",
+  anthropic: "claude-sonnet-4-6",
+  google: "gemini-3.5-flash",
+  openrouter: "openai/gpt-5.4-mini",
+  gateway: "openai/gpt-5.4-mini",
+} as const satisfies Record<ProviderName, string>;
+
+const PROVIDER_LABELS = {
+  ollama: "Ollama",
+  "openai-codex": "OpenAI Codex",
+  openai: "OpenAI",
+  anthropic: "Anthropic",
+  google: "Google",
+  openrouter: "OpenRouter",
+  gateway: "Gateway",
+} as const satisfies Record<ProviderName, string>;
+
 type ApiKeyProvider = (typeof API_KEY_PROVIDERS)[number];
 type SetupMode = "init" | "config";
 type CodexAuthAction = "browser" | "device" | "skip";
+type ConfigDraft = Record<string, unknown>;
 type ModelDefaultOptions =
   | {
       kind: "embedding";
@@ -112,30 +141,24 @@ function loadConfigForSetup(): Config {
   return normalizeConfig(JSON.parse(readFileSync(configPath, "utf-8")));
 }
 
-function cloneConfig(config: Config): Record<string, any> {
-  return JSON.parse(JSON.stringify(config)) as Record<string, any>;
+function isRecord(value: unknown): value is ConfigDraft {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function cloneConfig(config: Config): ConfigDraft {
+  const clone: unknown = JSON.parse(JSON.stringify(config));
+  if (!isRecord(clone)) {
+    throw new Error("Failed to clone setup configuration");
+  }
+  return clone;
 }
 
 function defaultEmbeddingModel(provider: EmbeddingProviderName): string {
-  return {
-    ollama: "mxbai-embed-large",
-    openai: "text-embedding-3-small",
-    openrouter: "openai/text-embedding-3-small",
-    google: "gemini-embedding-2",
-    gateway: "openai/text-embedding-3-small",
-  }[provider];
+  return DEFAULT_EMBEDDING_MODELS[provider];
 }
 
 function defaultLanguageModel(provider: ProviderName): string {
-  return {
-    ollama: "llama3.2:3b",
-    "openai-codex": "gpt-5.4-mini",
-    openai: "gpt-5.4-mini",
-    anthropic: "claude-sonnet-4-6",
-    google: "gemini-3.5-flash",
-    openrouter: "openai/gpt-5.4-mini",
-    gateway: "openai/gpt-5.4-mini",
-  }[provider];
+  return DEFAULT_LANGUAGE_MODELS[provider];
 }
 
 export function selectDefaultModel(options: ModelDefaultOptions): string {
@@ -148,10 +171,7 @@ export function selectDefaultModel(options: ModelDefaultOptions): string {
 }
 
 function getProviderAuth(config: Config, provider: ApiKeyProvider) {
-  return config.providers[provider] as {
-    apiKey?: string;
-    apiKeyEnv?: string;
-  };
+  return config.providers[provider];
 }
 
 function hasConfiguredAuth(config: Config, provider: ApiKeyProvider): boolean {
@@ -170,23 +190,22 @@ function authStatus(config: Config, provider: ApiKeyProvider): string {
 }
 
 function providerLabel(provider: ProviderName): string {
-  return {
-    ollama: "Ollama",
-    "openai-codex": "OpenAI Codex",
-    openai: "OpenAI",
-    anthropic: "Anthropic",
-    google: "Google",
-    openrouter: "OpenRouter",
-    gateway: "Gateway",
-  }[provider];
+  return PROVIDER_LABELS[provider];
 }
 
-function setPath(target: Record<string, any>, path: string, value: unknown): void {
+function setPath(target: ConfigDraft, path: string, value: unknown): void {
   const parts = path.split(".");
   let current = target;
   for (const part of parts.slice(0, -1)) {
-    current[part] ??= {};
-    current = current[part];
+    const nested = current[part];
+    if (isRecord(nested)) {
+      current = nested;
+      continue;
+    }
+
+    const replacement: ConfigDraft = {};
+    current[part] = replacement;
+    current = replacement;
   }
 
   const last = parts[parts.length - 1]!;
@@ -197,17 +216,17 @@ function setPath(target: Record<string, any>, path: string, value: unknown): voi
   }
 }
 
-function getPath(source: Record<string, any>, path: string): unknown {
-  let current: any = source;
+function getPath(source: ConfigDraft, path: string): unknown {
+  let current: unknown = source;
   for (const part of path.split(".")) {
-    if (!current || typeof current !== "object") return undefined;
+    if (!isRecord(current)) return undefined;
     current = current[part];
   }
   return current;
 }
 
 function applyChange(
-  target: Record<string, any>,
+  target: ConfigDraft,
   path: string,
   value: unknown,
   changes: ConfigChange[],
@@ -239,7 +258,7 @@ function providerChoices<T extends string>(providers: readonly T[]) {
 
 async function promptAuthForProvider(
   config: Config,
-  target: Record<string, any>,
+  target: ConfigDraft,
   provider: ApiKeyProvider,
   roles: string[],
   changes: ConfigChange[],
@@ -543,13 +562,69 @@ async function runCodexAuth(action: CodexAuthAction | null): Promise<void> {
   });
 }
 
+function initializeSelectedLibrary(Console: CliConsole, plan: SetupPlan) {
+  return Effect.gen(function* () {
+    const [
+      { buildDiagnosticsLayer },
+      { LibraryStore },
+      { EmbeddingProvider },
+    ] = yield* Effect.promise(() =>
+      Promise.all([
+        import("../runtime.js"),
+        import("../../services/LibraryStore.js"),
+        import("../../services/EmbeddingProvider.js"),
+      ]),
+    );
+    const layer = yield* Effect.promise(() =>
+      buildDiagnosticsLayer(plan.config),
+    );
+    const initialize = Effect.gen(function* () {
+      const store = yield* LibraryStore;
+      const embedding = yield* EmbeddingProvider;
+      return yield* initializePoinkLibrary(
+        Console,
+        {
+          ...store,
+          checkReady: () => embedding.checkHealth(),
+        } as CliLibrary,
+        new LibraryConfig({
+          libraryPath: plan.selectedLibraryPath,
+          dbPath: resolveLibraryDbPath(plan.config),
+          chunkSize: plan.config.chunking.size,
+          chunkOverlap: plan.config.chunking.overlap,
+        }),
+      );
+    });
+
+    return yield* initialize.pipe(
+      Effect.provide(layer as unknown as Layer.Layer<unknown, unknown, never>),
+      Effect.scoped,
+    ) as Effect.Effect<unknown, unknown, never>;
+  });
+}
+
+function applySetupPlan(Console: CliConsole, plan: SetupPlan) {
+  return Effect.gen(function* () {
+    saveConfig(plan.config);
+    if (plan.shouldInitialize) {
+      yield* initializeSelectedLibrary(Console, plan);
+    }
+
+    yield* Effect.tryPromise({
+      try: () => runCodexAuth(plan.codexAuthAction),
+      catch: (error) =>
+        new CLIError("AUTH_FAILED", describeCliFailure(error), { cause: error }),
+    });
+  });
+}
+
 export function runSetupCommand(
   args: string[],
   globals: GlobalCLIOptions,
   options: SetupCommandOptions = {},
 ) {
   return runCommandWithContext(args, globals, ({ Console, format }) =>
-    Effect.gen(function* (): Generator<any, CliCommandOutput, any> {
+    Effect.gen(function* () {
       const subcommand = args[1];
       const dryRun = isDryRun(options);
 
@@ -625,53 +700,7 @@ export function runSetupCommand(
         };
       }
 
-      saveConfig(plan.config);
-      if (plan.shouldInitialize) {
-        yield* Effect.gen(function* () {
-          const [
-            { buildDiagnosticsLayer },
-            { LibraryStore },
-            { EmbeddingProvider },
-          ] = yield* Effect.promise(() =>
-            Promise.all([
-              import("../runtime.js"),
-              import("../../services/LibraryStore.js"),
-              import("../../services/EmbeddingProvider.js"),
-            ]),
-          );
-          const layer = yield* Effect.promise(() =>
-            buildDiagnosticsLayer(plan.config),
-          );
-          const initialize = Effect.gen(function* () {
-            const store = yield* LibraryStore;
-            const embedding = yield* EmbeddingProvider;
-            return yield* initializePoinkLibrary(
-              Console,
-              {
-                ...store,
-                checkReady: () => embedding.checkHealth(),
-              } as CliLibrary,
-              new LibraryConfig({
-                libraryPath: plan.selectedLibraryPath,
-                dbPath: resolveLibraryDbPath(plan.config),
-                chunkSize: plan.config.chunking.size,
-                chunkOverlap: plan.config.chunking.overlap,
-              }),
-            );
-          });
-          yield* initialize.pipe(
-            Effect.provide(
-              layer as unknown as Layer.Layer<unknown, unknown, never>,
-            ),
-            Effect.scoped,
-          ) as Effect.Effect<unknown, unknown, never>;
-        });
-      }
-      yield* Effect.tryPromise({
-        try: () => runCodexAuth(plan.codexAuthAction),
-        catch: (error) =>
-          new CLIError("AUTH_FAILED", describeCliFailure(error), { cause: error }),
-      });
+      yield* applySetupPlan(Console, plan);
 
       yield* Console.log("Setup complete.");
       return {

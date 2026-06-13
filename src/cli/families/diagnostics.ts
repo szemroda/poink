@@ -1,5 +1,4 @@
 import { Effect } from "effect";
-import type { Layer } from "effect";
 import { EmbeddingProvider } from "../../services/EmbeddingProvider.js";
 import { LibraryStore } from "../../services/LibraryStore.js";
 import { runDoctorCommand } from "../commands/doctor.js";
@@ -18,6 +17,7 @@ export const runFamily: FamilyRunner = async ({
   const program = Effect.gen(function* () {
     const store = yield* LibraryStore;
     const embedding = yield* EmbeddingProvider;
+    const command = parsed.args[0];
     const commandGlobals = {
       ...globals,
       library: {
@@ -25,14 +25,16 @@ export const runFamily: FamilyRunner = async ({
         checkReady: () => embedding.checkHealth(),
       } as CliLibrary,
     };
-    if (parsed.args[0] === "doctor" || parsed.args[0] === "check") {
+
+    if (command === "doctor" || command === "check") {
       return yield* runDoctorCommand(
         parsed.args,
         commandGlobals,
         parsed.options,
       );
     }
-    if (parsed.args[0] === "init") {
+
+    if (command === "init") {
       return yield* runInitCommand(
         parsed.args,
         commandGlobals,
@@ -42,13 +44,14 @@ export const runFamily: FamilyRunner = async ({
     return yield* Effect.fail(
       new CLIError(
         "UNKNOWN_COMMAND",
-        `Unknown diagnostics command: ${parsed.args[0]}`,
+        `Unknown diagnostics command: ${command}`,
       ),
     );
   });
-  return runFamilyEffect(
-    program,
-    globals,
-    layer as unknown as Layer.Layer<unknown, unknown, never>,
+  const providedProgram = program.pipe(
+    Effect.provide(layer),
+    Effect.scoped,
   );
+
+  return runFamilyEffect(providedProgram, globals);
 };

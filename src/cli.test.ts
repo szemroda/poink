@@ -12,7 +12,7 @@ import {
   getCheckpointInterval,
   shouldCheckpoint,
   parseArgs,
-} from "./cli/runner.js";
+} from "./cli/args.js";
 import { selectDefaultModel } from "./cli/commands/setup.js";
 import {
   filenameFromURL,

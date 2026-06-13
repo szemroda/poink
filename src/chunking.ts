@@ -11,10 +11,29 @@ export type ChunkerMetadata = {
   chunkOverlap: number;
 };
 
-export const CURRENT_CHUNKER: Record<
-  DocumentFileType,
-  { id: string; version: number }
-> = {
+type ChunkingConfig = {
+  chunkSize: number;
+  chunkOverlap: number;
+};
+
+type ChunkerIdentity = Pick<ChunkerMetadata, "id" | "version">;
+
+type ChunkerAssessmentCode =
+  | "ok"
+  | "missing_metadata"
+  | "id_version_mismatch"
+  | "config_mismatch"
+  | "unit_mismatch";
+
+type ChunkerAssessment = {
+  needsRechunk: boolean;
+  code: ChunkerAssessmentCode;
+  reason: string;
+  expected: ChunkerMetadata;
+  actual: ChunkerMetadata | null;
+};
+
+export const CURRENT_CHUNKER: Record<DocumentFileType, ChunkerIdentity> = {
   // v6: shared chunking + optional visual enrichment chunks
   pdf: { id: "pdf-extractor:shared-context-v6", version: 6 },
   // v3: shared chunking + heading ancestry/table preservation + enriched embedding text
@@ -26,6 +45,10 @@ export const CURRENT_CHUNKER: Record<
 };
 
 const SENTENCE_RE = /[^.!?]+[.!?]+["')\]]*\s*|[^.!?]+$/g;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object";
+}
 
 function suffixAtWordBoundary(text: string, targetChars: number): string {
   if (text.length <= targetChars) return text.trim();
@@ -137,6 +160,38 @@ export function preprocessLargeMarkdownTables(
   );
 }
 
+function chunkOversizedParagraph(
+  paragraph: string,
+  chunkSize: number,
+  chunks: string[],
+): string {
+  const sentences = paragraph.match(SENTENCE_RE) ?? [paragraph];
+  let currentChunk = "";
+
+  for (const sentence of sentences) {
+    if (currentChunk.length + sentence.length <= chunkSize) {
+      currentChunk += sentence;
+      continue;
+    }
+
+    if (currentChunk) {
+      chunks.push(currentChunk.trim());
+    }
+
+    if (sentence.length <= chunkSize) {
+      currentChunk = sentence;
+      continue;
+    }
+
+    for (let index = 0; index < sentence.length; index += chunkSize) {
+      chunks.push(sentence.slice(index, index + chunkSize).trim());
+    }
+    currentChunk = "";
+  }
+
+  return currentChunk;
+}
+
 export function chunkNormalizedText(
   cleaned: string,
   chunkSize: number,
@@ -161,32 +216,12 @@ export function chunkNormalizedText(
       chunks.push(currentChunk);
     }
 
-    if (para.length > chunkSize) {
-      const sentences = para.match(SENTENCE_RE) || [para];
-      currentChunk = "";
-
-      for (const sentence of sentences) {
-        if (currentChunk.length + sentence.length <= chunkSize) {
-          currentChunk += sentence;
-          continue;
-        }
-
-        if (currentChunk) {
-          chunks.push(currentChunk.trim());
-        }
-
-        if (sentence.length > chunkSize) {
-          for (let i = 0; i < sentence.length; i += chunkSize) {
-            chunks.push(sentence.slice(i, i + chunkSize).trim());
-          }
-          currentChunk = "";
-        } else {
-          currentChunk = sentence;
-        }
-      }
-    } else {
+    if (para.length <= chunkSize) {
       currentChunk = para;
+      continue;
     }
+
+    currentChunk = chunkOversizedParagraph(para, chunkSize, chunks);
   }
 
   if (currentChunk) {
@@ -226,7 +261,7 @@ export function assertValidChunking(
 
 export function buildChunkerMetadata(
   fileType: DocumentFileType,
-  config: { chunkSize: number; chunkOverlap: number },
+  config: ChunkingConfig,
 ): ChunkerMetadata {
   assertValidChunking(config.chunkSize, config.chunkOverlap);
   const base = CURRENT_CHUNKER[fileType];
@@ -240,16 +275,17 @@ export function buildChunkerMetadata(
 }
 
 export function parseChunkerMetadata(value: unknown): ChunkerMetadata | null {
-  if (!value || typeof value !== "object") return null;
-  const v: any = value;
+  if (!isRecord(value)) return null;
 
-  const id = typeof v.id === "string" ? v.id : null;
-  const version = typeof v.version === "number" ? v.version : null;
-  const unit = v.unit === "chars" ? ("chars" as const) : null;
-  const chunkSize = typeof v.chunkSize === "number" ? v.chunkSize : null;
-  const chunkOverlap = typeof v.chunkOverlap === "number" ? v.chunkOverlap : null;
-
-  if (!id || version === null || !unit || chunkSize === null || chunkOverlap === null) {
+  const { id, version, unit, chunkSize, chunkOverlap } = value;
+  if (
+    typeof id !== "string" ||
+    !id ||
+    typeof version !== "number" ||
+    unit !== "chars" ||
+    typeof chunkSize !== "number" ||
+    typeof chunkOverlap !== "number"
+  ) {
     return null;
   }
 
@@ -257,30 +293,15 @@ export function parseChunkerMetadata(value: unknown): ChunkerMetadata | null {
 }
 
 export function getDocChunkerMetadata(doc: Document): ChunkerMetadata | null {
-  const meta = doc.metadata;
-  if (!meta || typeof meta !== "object") return null;
-  const chunker = (meta as any).chunker;
-  return parseChunkerMetadata(chunker);
+  return parseChunkerMetadata(doc.metadata?.chunker);
 }
 
 export function assessDocChunker(
   doc: Document,
-  config: { chunkSize: number; chunkOverlap: number },
-): {
-  needsRechunk: boolean;
-  code:
-    | "ok"
-    | "missing_metadata"
-    | "id_version_mismatch"
-    | "config_mismatch"
-    | "unit_mismatch";
-  reason: string;
-  expected: ChunkerMetadata;
-  actual: ChunkerMetadata | null;
-} {
+  config: ChunkingConfig,
+): ChunkerAssessment {
   const fileType =
-    doc.fileType ??
-    (doc.path ? inferFileTypeFromPath(doc.path) : ("pdf" as const));
+    doc.fileType ?? (doc.path ? inferFileTypeFromPath(doc.path) : "pdf");
   const expected = buildChunkerMetadata(fileType, config);
   const actual = getDocChunkerMetadata(doc);
 

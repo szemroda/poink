@@ -21,6 +21,13 @@ export type ParsedCommandLine = {
   };
 };
 
+type SetParsedCommandLine = (result: ParsedCommandLine) => void;
+type MapCommandArgs = (args: string[]) => string[];
+type RegisterExecutable = (
+  command: Command,
+  mapArgs?: MapCommandArgs,
+) => Command;
+
 function kebabCaseOptionName(name: string): string {
   return name.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`);
 }
@@ -37,7 +44,7 @@ function commandOptions(command: Command): CommandOutputOptions & Record<string,
 function commandGlobals(
   options: CommandOutputOptions,
   configuredDefaultFormat: OutputFormat,
-) {
+): ParsedCommandLine["globals"] {
   return {
     format: options.format ?? configuredDefaultFormat,
     configuredDefaultFormat,
@@ -96,8 +103,8 @@ function executable(
   command: Command,
   rawArgs: string[],
   configuredDefaultFormat: OutputFormat,
-  setResult: (result: ParsedCommandLine) => void,
-  mapArgs: (args: string[]) => string[] = (args) => args,
+  setResult: SetParsedCommandLine,
+  mapArgs: MapCommandArgs = (args) => args,
 ): Command {
   addOutputOptions(command);
   return command.action(() => {
@@ -111,6 +118,15 @@ function executable(
       globals: commandGlobals(options, configuredDefaultFormat),
     });
   });
+}
+
+function createExecutableRegistrar(
+  rawArgs: string[],
+  configuredDefaultFormat: OutputFormat,
+  setResult: SetParsedCommandLine,
+): RegisterExecutable {
+  return (command, mapArgs) =>
+    executable(command, rawArgs, configuredDefaultFormat, setResult, mapArgs);
 }
 
 function addDocumentDownloadOptions(command: Command): Command {
@@ -148,15 +164,7 @@ function addRootHelp(program: Command): void {
     });
 }
 
-export function parseCommandLine(
-  rawArgs: string[],
-  configuredDefaultFormat: OutputFormat = DEFAULT_CLI_OUTPUT_FORMAT,
-): ParsedCommandLine {
-  let parsed: ParsedCommandLine | undefined;
-  const setResult = (result: ParsedCommandLine) => {
-    parsed = result;
-  };
-
+function createCommandProgram(): Command {
   const program = new Command("poink");
   program
     .exitOverride()
@@ -169,108 +177,122 @@ export function parseCommandLine(
       writeErr: () => undefined,
       outputError: () => undefined,
     });
+  return program;
+}
 
-  executable(program.command("help"), rawArgs, configuredDefaultFormat, setResult, () => [
-    "--help",
-  ]).description("Show help");
-  executable(program.command("version"), rawArgs, configuredDefaultFormat, setResult, () => [
-    "--version",
-  ]).description("Show version");
-  executable(program.command("capabilities"), rawArgs, configuredDefaultFormat, setResult);
-  executable(addDocumentDownloadOptions(program.command("add <pathOrUrl>")), rawArgs, configuredDefaultFormat, setResult);
-  executable(addSearchOptions(program.command("search <query>")), rawArgs, configuredDefaultFormat, setResult);
-  executable(
+function registerUtilityCommands(
+  program: Command,
+  register: RegisterExecutable,
+): void {
+  register(program.command("help"), () => ["--help"]).description("Show help");
+  register(program.command("version"), () => ["--version"]).description(
+    "Show version",
+  );
+  register(program.command("capabilities"));
+}
+
+function registerSearchCommands(
+  program: Command,
+  register: RegisterExecutable,
+): void {
+  register(addSearchOptions(program.command("search <query>")));
+  register(
     addSearchOptions(
       program
         .command("search-pack <queries...>")
         .option("--with-content")
         .option("--global-limit <n>", "", parseIntegerOption("--global-limit", 1)),
     ),
-    rawArgs,
-    configuredDefaultFormat,
-    setResult,
   );
 
   const taxonomy = program.command("taxonomy");
-  executable(taxonomy, rawArgs, configuredDefaultFormat, setResult);
-  executable(taxonomy.command("list"), rawArgs, configuredDefaultFormat, setResult);
-  executable(taxonomy.command("tree [rootId]"), rawArgs, configuredDefaultFormat, setResult);
-  executable(taxonomy.command("get <id>"), rawArgs, configuredDefaultFormat, setResult);
-  executable(
+  register(taxonomy);
+  register(taxonomy.command("list"));
+  register(taxonomy.command("tree [rootId]"));
+  register(taxonomy.command("get <id>"));
+  register(
     taxonomy
       .command("search <query>")
       .option("--limit <n>", "", parseIntegerOption("--limit", 1))
       .option("--threshold <n>"),
-    rawArgs,
-    configuredDefaultFormat,
-    setResult,
   );
-  executable(
+  register(
     taxonomy
       .command("add <id>")
       .option("--label <label>")
       .option("--broader <id>")
       .option("--definition <text>")
       .option("--alt-labels <labels>"),
-    rawArgs,
-    configuredDefaultFormat,
-    setResult,
   );
+}
 
+function registerLibraryCommands(
+  program: Command,
+  register: RegisterExecutable,
+): void {
   const chunk = program.command("chunk");
-  executable(chunk, rawArgs, configuredDefaultFormat, setResult);
-  executable(chunk.command("get <chunkId>"), rawArgs, configuredDefaultFormat, setResult);
+  register(chunk);
+  register(chunk.command("get <chunkId>"));
 
   const doc = program.command("doc");
-  executable(doc, rawArgs, configuredDefaultFormat, setResult);
-  executable(
+  register(doc);
+  register(
     doc.command("chunks <docId>").option("--page <n>", "", parseIntegerOption("--page", 1)),
-    rawArgs,
-    configuredDefaultFormat,
-    setResult,
   );
 
   const page = program.command("page");
-  executable(page, rawArgs, configuredDefaultFormat, setResult);
-  executable(page.command("get <docId> <page>"), rawArgs, configuredDefaultFormat, setResult);
+  register(page);
+  register(page.command("get <docId> <page>"));
 
-  executable(program.command("list").option("--tag <tag>"), rawArgs, configuredDefaultFormat, setResult);
-  executable(program.command("read <idOrTitle>"), rawArgs, configuredDefaultFormat, setResult);
-  executable(program.command("get <idOrTitle>"), rawArgs, configuredDefaultFormat, setResult);
-  executable(program.command("remove <idOrTitle>"), rawArgs, configuredDefaultFormat, setResult);
-  executable(program.command("tag <idOrTitle> <tags>"), rawArgs, configuredDefaultFormat, setResult);
-  executable(program.command("stats"), rawArgs, configuredDefaultFormat, setResult);
+  register(program.command("list").option("--tag <tag>"));
+  register(program.command("read <idOrTitle>"));
+  register(program.command("get <idOrTitle>"));
+  register(program.command("remove <idOrTitle>"));
+  register(program.command("tag <idOrTitle> <tags>"));
+  register(program.command("stats"));
+}
 
+function registerConfigCommands(
+  program: Command,
+  register: RegisterExecutable,
+): void {
   const config = program.command("config");
-  executable(config.option("--show-secrets"), rawArgs, configuredDefaultFormat, setResult);
-  executable(config.command("show").option("--show-secrets"), rawArgs, configuredDefaultFormat, setResult);
-  executable(config.command("schema"), rawArgs, configuredDefaultFormat, setResult);
-  executable(config.command("get <path>").option("--show-secrets"), rawArgs, configuredDefaultFormat, setResult);
-  executable(config.command("set <path> <value>").option("--show-secrets"), rawArgs, configuredDefaultFormat, setResult);
+  register(config.option("--show-secrets"));
+  register(config.command("show").option("--show-secrets"));
+  register(config.command("schema"));
+  register(config.command("get <path>").option("--show-secrets"));
+  register(config.command("set <path> <value>").option("--show-secrets"));
+}
 
+function registerSetupCommands(
+  program: Command,
+  register: RegisterExecutable,
+): void {
   const providers = program.command("providers");
-  executable(providers, rawArgs, configuredDefaultFormat, setResult);
-  executable(
+  register(providers);
+  register(
     providers
       .command("login")
       .option("--provider <provider>")
       .option("--device-auth")
       .option("--device-code"),
-    rawArgs,
-    configuredDefaultFormat,
-    setResult,
   );
 
   const setup = program.command("setup");
-  executable(setup, rawArgs, configuredDefaultFormat, setResult);
-  executable(setup.command("init").option("--dry-run"), rawArgs, configuredDefaultFormat, setResult);
-  executable(setup.command("config").option("--dry-run"), rawArgs, configuredDefaultFormat, setResult);
+  register(setup);
+  register(setup.command("init").option("--dry-run"));
+  register(setup.command("config").option("--dry-run"));
+}
 
-  executable(program.command("doctor").option("--fix"), rawArgs, configuredDefaultFormat, setResult);
-  executable(program.command("check"), rawArgs, configuredDefaultFormat, setResult);
-  executable(program.command("init"), rawArgs, configuredDefaultFormat, setResult);
-  executable(program.command("repair"), rawArgs, configuredDefaultFormat, setResult);
-  executable(
+function registerMaintenanceCommands(
+  program: Command,
+  register: RegisterExecutable,
+): void {
+  register(program.command("doctor").option("--fix"));
+  register(program.command("check"));
+  register(program.command("init"));
+  register(program.command("repair"));
+  register(
     program
       .command("ingest <directories...>")
       .option("--enrich")
@@ -281,17 +303,9 @@ export function parseCommandLine(
       .option("--no-progress")
       .option("--recursive")
       .option("--no-recursive"),
-    rawArgs,
-    configuredDefaultFormat,
-    setResult,
   );
-  executable(
-    program.command("reindex").option("--clean").option("--doc <id>"),
-    rawArgs,
-    configuredDefaultFormat,
-    setResult,
-  );
-  executable(
+  register(program.command("reindex").option("--clean").option("--doc <id>"));
+  register(
     program
       .command("rechunk")
       .option("--dry-run")
@@ -302,21 +316,52 @@ export function parseCommandLine(
       .option("--max-chunks <n>", "", parseIntegerOption("--max-chunks", 1))
       .option("--all")
       .option("--visuals"),
-    rawArgs,
-    configuredDefaultFormat,
-    setResult,
   );
-  executable(program.command("mcp"), rawArgs, configuredDefaultFormat, setResult);
-  executable(
+}
+
+function registerServerCommands(
+  program: Command,
+  register: RegisterExecutable,
+): void {
+  register(program.command("mcp"));
+  register(
     program
       .command("serve")
       .option("--host <host>")
       .option("--port <port>", "", parseIntegerOption("--port", 1, 65535))
       .option("--auth-token <token>"),
+  );
+}
+
+function registerCommands(
+  program: Command,
+  register: RegisterExecutable,
+): void {
+  registerUtilityCommands(program, register);
+  register(addDocumentDownloadOptions(program.command("add <pathOrUrl>")));
+  registerSearchCommands(program, register);
+  registerLibraryCommands(program, register);
+  registerConfigCommands(program, register);
+  registerSetupCommands(program, register);
+  registerMaintenanceCommands(program, register);
+  registerServerCommands(program, register);
+}
+
+export function parseCommandLine(
+  rawArgs: string[],
+  configuredDefaultFormat: OutputFormat = DEFAULT_CLI_OUTPUT_FORMAT,
+): ParsedCommandLine {
+  let parsed: ParsedCommandLine | undefined;
+  const register = createExecutableRegistrar(
     rawArgs,
     configuredDefaultFormat,
-    setResult,
+    (result) => {
+      parsed = result;
+    },
   );
+  const program = createCommandProgram();
+  registerCommands(program, register);
+
   try {
     program.parse(rawArgs, { from: "user" });
   } catch (error) {

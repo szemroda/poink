@@ -1,13 +1,28 @@
 import { Effect } from "effect";
-import type { Layer } from "effect";
 import { LibraryStore } from "../../services/LibraryStore.js";
 import { SemanticLibrary } from "../../services/SemanticLibrary.js";
 import { runSearchCommand } from "../commands/search.js";
 import { runTaxonomyCommand } from "../commands/taxonomy.js";
-import { CLIError, type CliLibrary } from "../runner.js";
+import {
+  CLIError,
+  type CliLibrary,
+  type GlobalCLIOptions,
+} from "../runner.js";
 import { buildSearchLayer } from "../runtime.js";
 import { runFamilyEffect } from "./shared.js";
 import type { FamilyRunner } from "./types.js";
+
+type SearchCommandHandler = (
+  args: string[],
+  globals: GlobalCLIOptions,
+  options: Record<string, unknown>,
+) => Effect.Effect<unknown, unknown, unknown>;
+
+const COMMAND_HANDLERS: Readonly<Record<string, SearchCommandHandler>> = {
+  search: runSearchCommand,
+  "search-pack": runSearchCommand,
+  taxonomy: runTaxonomyCommand,
+};
 
 export const runFamily: FamilyRunner = async ({
   parsed,
@@ -22,33 +37,24 @@ export const runFamily: FamilyRunner = async ({
       ...globals,
       library: { ...store, ...semantic } as CliLibrary,
     };
-    if (
-      parsed.args[0] === "search" ||
-      parsed.args[0] === "search-pack"
-    ) {
-      return yield* runSearchCommand(
-        parsed.args,
-        commandGlobals,
-        parsed.options,
+    const command = parsed.args[0];
+    const handler = command ? COMMAND_HANDLERS[command] : undefined;
+    if (!handler) {
+      return yield* Effect.fail(
+        new CLIError(
+          "UNKNOWN_COMMAND",
+          `Unknown search command: ${command}`,
+        ),
       );
     }
-    if (parsed.args[0] === "taxonomy") {
-      return yield* runTaxonomyCommand(
-        parsed.args,
-        commandGlobals,
-        parsed.options,
-      );
-    }
-    return yield* Effect.fail(
-      new CLIError(
-        "UNKNOWN_COMMAND",
-        `Unknown search command: ${parsed.args[0]}`,
-      ),
-    );
+
+    return yield* handler(parsed.args, commandGlobals, parsed.options);
   });
-  return runFamilyEffect(
-    program,
-    globals,
-    layer as unknown as Layer.Layer<unknown, unknown, never>,
+
+  const providedProgram = program.pipe(
+    Effect.provide(layer),
+    Effect.scoped,
   );
+
+  return runFamilyEffect(providedProgram, globals);
 };

@@ -4,6 +4,10 @@ import { CLIError, describeCliFailure } from "../runner.js";
 import type { OutputFormat } from "../../agent/protocol.js";
 import type { CliCommandOutput, CliConsole } from "./types.js";
 
+const OPENAI_CODEX_PROVIDER = "openai-codex";
+const PROVIDERS_LOGIN_HINT = "poink providers login --provider openai-codex";
+const PROVIDERS_LOGIN_TEXT_HINT = `${PROVIDERS_LOGIN_HINT} --format text`;
+
 type ProvidersLoginOptions = {
   provider?: string;
   deviceAuth: boolean;
@@ -17,17 +21,49 @@ interface ProvidersCommandOptions extends Record<string, unknown> {
   "device-code"?: boolean;
 }
 
-function providersLoginOptions(options: ProvidersCommandOptions): ProvidersLoginOptions {
+function parseProvidersLoginOptions(
+  options: ProvidersCommandOptions,
+  format: OutputFormat,
+): ProvidersLoginOptions {
   if (options.deviceCode === true || options["device-code"] === true) {
-    throw new CLIError("INVALID_ARGS", "Unsupported providers login flag: --device-code", {
-      flag: "--device-code",
-      available: ["--provider openai-codex", "--device-auth"],
-    });
+    throw new CLIError(
+      "INVALID_ARGS",
+      "Unsupported providers login flag: --device-code",
+      {
+        flag: "--device-code",
+        available: ["--provider openai-codex", "--device-auth"],
+      },
+    );
   }
-  return {
-    provider: typeof options.provider === "string" ? options.provider : undefined,
+
+  const loginOptions = {
+    provider:
+      typeof options.provider === "string" ? options.provider : undefined,
     deviceAuth: options.deviceAuth === true || options["device-auth"] === true,
   };
+
+  if (loginOptions.provider !== OPENAI_CODEX_PROVIDER) {
+    throw new CLIError(
+      "INVALID_ARGS",
+      "providers login currently supports only --provider openai-codex",
+      {
+        provider: loginOptions.provider,
+        hint: PROVIDERS_LOGIN_HINT,
+      },
+    );
+  }
+
+  if (format !== "text") {
+    throw new CLIError(
+      "INVALID_ARGS",
+      "providers login is interactive and requires --format text",
+      {
+        hint: PROVIDERS_LOGIN_TEXT_HINT,
+      },
+    );
+  }
+
+  return loginOptions;
 }
 
 export function runProvidersCommand(
@@ -35,56 +71,28 @@ export function runProvidersCommand(
   format: OutputFormat,
   Console: CliConsole,
   options: ProvidersCommandOptions = {},
-) {
-  return Effect.gen(function* (): Generator<any, CliCommandOutput, any> {
+): Effect.Effect<CliCommandOutput, CLIError> {
+  return Effect.gen(function* () {
     const subcommand = args[1];
     if (subcommand !== "login") {
-      yield* Console.error(`Unknown providers subcommand: ${subcommand ?? ""}`);
+      const message = `Unknown providers subcommand: ${subcommand ?? ""}`;
+      yield* Console.error(message);
       yield* Console.error("Available: login --provider openai-codex");
       return yield* Effect.fail(
-        new CLIError(
-          "INVALID_ARGS",
-          `Unknown providers subcommand: ${subcommand ?? ""}`,
-          {
-            subcommand,
-            available: ["login"],
-          },
-        ),
+        new CLIError("INVALID_ARGS", message, {
+          subcommand,
+          available: ["login"],
+        }),
       );
     }
 
     const opts = yield* Effect.try({
-      try: () => providersLoginOptions(options),
+      try: () => parseProvidersLoginOptions(options, format),
       catch: (error) =>
         error instanceof CLIError
           ? error
           : new CLIError("INVALID_ARGS", describeCliFailure(error)),
     });
-
-    if (opts.provider !== "openai-codex") {
-      return yield* Effect.fail(
-        new CLIError(
-          "INVALID_ARGS",
-          "providers login currently supports only --provider openai-codex",
-          {
-      provider: opts.provider,
-            hint: "poink providers login --provider openai-codex",
-          },
-        ),
-      );
-    }
-
-    if (format !== "text") {
-      return yield* Effect.fail(
-        new CLIError(
-          "INVALID_ARGS",
-          "providers login is interactive and requires --format text",
-          {
-            hint: "poink providers login --provider openai-codex --format text",
-          },
-        ),
-      );
-    }
 
     yield* Console.log("Starting OpenAI Codex login...");
     yield* Effect.tryPromise({
@@ -100,7 +108,7 @@ export function runProvidersCommand(
 
     return {
       resultPayload: {
-        provider: "openai-codex",
+        provider: OPENAI_CODEX_PROVIDER,
         authenticated: true,
       },
       agentResult: { _tag: "config", subcommand: "providers login" },

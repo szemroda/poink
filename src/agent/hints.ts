@@ -70,6 +70,10 @@ export type CommandResult =
       visuals?: boolean;
     };
 
+function shellAction(description: string, ...argv: string[]): NextAction {
+  return { kind: "shell", argv, description };
+}
+
 /**
  * Generate contextual next-action hints from a command result.
  * Returns an array of copy-pasteable command strings with descriptions.
@@ -377,44 +381,59 @@ export function generateNextActions(result: CommandResult): NextAction[] {
       const actions: NextAction[] = [];
       if (result.results.length > 0) {
         const top = result.results[0];
-        actions.push({
-          kind: "shell",
-          argv: ["poink", "read", top.docId],
-          description: "Full metadata for top result",
-        });
+        actions.push(
+          shellAction("Full metadata for top result", "poink", "read", top.docId),
+        );
 
         if (top.chunkId) {
-          actions.push({
-            kind: "shell",
-            argv: ["poink", "chunk", "get", top.chunkId],
-            description: "Fetch exact top chunk text",
-          });
+          actions.push(
+            shellAction(
+              "Fetch exact top chunk text",
+              "poink",
+              "chunk",
+              "get",
+              top.chunkId,
+            ),
+          );
         }
 
         if (!result.hadExpand) {
-          actions.push({
-            kind: "shell",
-            argv: ["poink", "search", result.query, "--expand", "2000"],
-            description: "Get expanded context around matches",
-          });
+          actions.push(
+            shellAction(
+              "Get expanded context around matches",
+              "poink",
+              "search",
+              result.query,
+              "--expand",
+              "2000",
+            ),
+          );
         }
       }
 
       if (result.concepts.length > 0) {
         const topConcept = result.concepts[0];
-        actions.push({
-          kind: "shell",
-          argv: ["poink", "taxonomy", "tree", topConcept.id],
-          description: "Navigate concept hierarchy",
-        });
+        actions.push(
+          shellAction(
+            "Navigate concept hierarchy",
+            "poink",
+            "taxonomy",
+            "tree",
+            topConcept.id,
+          ),
+        );
       }
 
       if (result.results.length > 0 && !result.wasFts) {
-        actions.push({
-          kind: "shell",
-          argv: ["poink", "search", result.query, "--fts"],
-          description: "Try keyword matching instead",
-        });
+        actions.push(
+          shellAction(
+            "Try keyword matching instead",
+            "poink",
+            "search",
+            result.query,
+            "--fts",
+          ),
+        );
       }
 
       if (result.results.length === 0 && result.concepts.length === 0) {
@@ -432,274 +451,328 @@ export function generateNextActions(result: CommandResult): NextAction[] {
       const actions: NextAction[] = [];
       if (result.results.length > 0) {
         const top = result.results[0];
-        actions.push({
-          kind: "shell",
-          argv: ["poink", "read", top.docId],
-          description: "Read top document metadata",
-        });
+        actions.push(
+          shellAction("Read top document metadata", "poink", "read", top.docId),
+        );
         if (top.chunkId) {
-          actions.push({
-            kind: "shell",
-            argv: ["poink", "chunk", "get", top.chunkId],
-            description: "Fetch exact top chunk text",
-          });
+          actions.push(
+            shellAction(
+              "Fetch exact top chunk text",
+              "poink",
+              "chunk",
+              "get",
+              top.chunkId,
+            ),
+          );
         }
       }
-      actions.push({
-        kind: "shell",
-        argv: ["poink", "search", "your query here"],
-        description: "Drill into a single query",
-      });
-      return actions;
-    }
-
-    case "noResults": {
-      const actions: NextAction[] = [];
-      if (!result.wasFts) {
-        actions.push({
-          kind: "shell",
-          argv: ["poink", "search", result.query, "--fts"],
-          description: "Try full-text keyword search",
-        });
-      } else {
-        actions.push({
-          kind: "shell",
-          argv: ["poink", "search", result.query],
-          description: "Try semantic vector search",
-        });
-      }
       actions.push(
-        { kind: "shell", argv: ["poink", "list"], description: "Browse all documents" },
-        {
-          kind: "shell",
-          argv: ["poink", "taxonomy", "search", result.query],
-          description: "Search taxonomy concepts",
-        },
+        shellAction(
+          "Drill into a single query",
+          "poink",
+          "search",
+          "your query here",
+        ),
       );
       return actions;
     }
 
+    case "noResults": {
+      const alternativeSearch = result.wasFts
+        ? shellAction(
+            "Try semantic vector search",
+            "poink",
+            "search",
+            result.query,
+          )
+        : shellAction(
+            "Try full-text keyword search",
+            "poink",
+            "search",
+            result.query,
+            "--fts",
+          );
+
+      return [
+        alternativeSearch,
+        shellAction("Browse all documents", "poink", "list"),
+        shellAction(
+          "Search taxonomy concepts",
+          "poink",
+          "taxonomy",
+          "search",
+          result.query,
+        ),
+      ];
+    }
+
     case "read": {
-      const actions: NextAction[] = [];
-      actions.push({
-        kind: "shell",
-        argv: ["poink", "search", result.title, "--expand", "2000"],
-        description: "Search within this document's content",
-      });
+      const actions = [
+        shellAction(
+          "Search within this document's content",
+          "poink",
+          "search",
+          result.title,
+          "--expand",
+          "2000",
+        ),
+      ];
       if (result.tags.length > 0) {
-        actions.push({
-          kind: "shell",
-          argv: ["poink", "list", "--tag", result.tags[0]],
-          description: "Browse documents with same tag",
-        });
+        actions.push(
+          shellAction(
+            "Browse documents with same tag",
+            "poink",
+            "list",
+            "--tag",
+            result.tags[0],
+          ),
+        );
       }
-      actions.push({
-        kind: "shell",
-        argv: ["poink", "taxonomy", "search", result.title],
-        description: "Find related concepts",
-      });
+      actions.push(
+        shellAction(
+          "Find related concepts",
+          "poink",
+          "taxonomy",
+          "search",
+          result.title,
+        ),
+      );
       return actions;
     }
 
     case "list": {
       const actions: NextAction[] = [];
       if (result.firstDoc) {
-        actions.push({
-          kind: "shell",
-          argv: ["poink", "read", result.firstDoc.id],
-          description: "Read the first listed document",
-        });
+        actions.push(
+          shellAction(
+            "Read the first listed document",
+            "poink",
+            "read",
+            result.firstDoc.id,
+          ),
+        );
       }
-      actions.push({
-        kind: "shell",
-        argv: ["poink", "search", "your query here"],
-        description: "Search the library",
-      });
+      actions.push(
+        shellAction("Search the library", "poink", "search", "your query here"),
+      );
       return actions;
     }
 
     case "stats": {
       return [
-        { kind: "shell", argv: ["poink", "search", "your question here"], description: "Search the library" },
-        { kind: "shell", argv: ["poink", "list"], description: "Browse all documents" },
-        { kind: "shell", argv: ["poink", "taxonomy", "list"], description: "Browse taxonomy concepts" },
-        { kind: "shell", argv: ["poink", "doctor"], description: "Check database health" },
+        shellAction(
+          "Search the library",
+          "poink",
+          "search",
+          "your question here",
+        ),
+        shellAction("Browse all documents", "poink", "list"),
+        shellAction("Browse taxonomy concepts", "poink", "taxonomy", "list"),
+        shellAction("Check database health", "poink", "doctor"),
       ];
     }
 
     case "taxonomySearch": {
       const actions: NextAction[] = [];
       if (result.matches.length > 0) {
-        actions.push({
-          kind: "shell",
-          argv: ["poink", "taxonomy", "tree", result.matches[0].id],
-          description: "Navigate concept hierarchy",
-        });
+        actions.push(
+          shellAction(
+            "Navigate concept hierarchy",
+            "poink",
+            "taxonomy",
+            "tree",
+            result.matches[0].id,
+          ),
+        );
       } else {
-        actions.push({
-          kind: "shell",
-          argv: ["poink", "taxonomy", "list"],
-          description: "Browse all concepts",
-        });
+        actions.push(
+          shellAction("Browse all concepts", "poink", "taxonomy", "list"),
+        );
       }
-      actions.push({
-        kind: "shell",
-        argv: ["poink", "search", result.query],
-        description: "Search documents for this concept",
-      });
+      actions.push(
+        shellAction(
+          "Search documents for this concept",
+          "poink",
+          "search",
+          result.query,
+        ),
+      );
       return actions;
     }
 
     case "taxonomyList": {
       return [
-        { kind: "shell", argv: ["poink", "taxonomy", "tree"], description: "View full concept tree" },
-        { kind: "shell", argv: ["poink", "taxonomy", "search", "your query"], description: "Search concepts" },
+        shellAction("View full concept tree", "poink", "taxonomy", "tree"),
+        shellAction(
+          "Search concepts",
+          "poink",
+          "taxonomy",
+          "search",
+          "your query",
+        ),
       ];
     }
 
     case "taxonomyTree": {
       return [
-        { kind: "shell", argv: ["poink", "taxonomy", "tree"], description: "View full concept tree" },
+        shellAction("View full concept tree", "poink", "taxonomy", "tree"),
       ];
     }
 
     case "add": {
       return [
-        { kind: "shell", argv: ["poink", "read", result.id], description: "Read the new document" },
-        { kind: "shell", argv: ["poink", "search", result.title], description: "Search for related content" },
-        { kind: "shell", argv: ["poink", "tag", result.id, "tag1,tag2"], description: "Apply tags" },
+        shellAction("Read the new document", "poink", "read", result.id),
+        shellAction(
+          "Search for related content",
+          "poink",
+          "search",
+          result.title,
+        ),
+        shellAction("Apply tags", "poink", "tag", result.id, "tag1,tag2"),
       ];
     }
 
     case "remove": {
       return [
-        { kind: "shell", argv: ["poink", "list"], description: "Browse remaining documents" },
-        { kind: "shell", argv: ["poink", "stats"], description: "Verify counts" },
+        shellAction("Browse remaining documents", "poink", "list"),
+        shellAction("Verify counts", "poink", "stats"),
       ];
     }
 
     case "tag": {
-      const actions: NextAction[] = [
-        { kind: "shell", argv: ["poink", "read", result.title], description: "Read document metadata" },
-        { kind: "shell", argv: ["poink", "list", "--tag", result.tags[0] ?? ""], description: "Browse by tag" },
+      const actions = [
+        shellAction(
+          "Read document metadata",
+          "poink",
+          "read",
+          result.title,
+        ),
       ];
-      return actions.filter((a) => a.argv[a.argv.length - 1] !== "");
+      const firstTag = result.tags[0];
+      if (firstTag) {
+        actions.push(
+          shellAction("Browse by tag", "poink", "list", "--tag", firstTag),
+        );
+      }
+      return actions;
     }
 
     case "doctor": {
       const actions: NextAction[] = [];
       if (!result.healthy) {
-        actions.push({
-          kind: "shell",
-          argv: ["poink", "doctor", "--fix"],
-          description: "Attempt auto-repair",
-        });
+        actions.push(
+          shellAction("Attempt auto-repair", "poink", "doctor", "--fix"),
+        );
       }
       const missing = result.chunkerMissing ?? 0;
       const mismatch = result.chunkerMismatch ?? 0;
 
       if (mismatch > 0) {
         actions.push(
-          {
-            kind: "shell",
-            argv: ["poink", "rechunk", "--dry-run"],
-            description: "Preview docs with stale chunker metadata",
-          },
-          {
-            kind: "shell",
-            argv: ["poink", "rechunk"],
-            description: "Apply rechunk (rebuild chunks + embeddings)",
-          },
+          shellAction(
+            "Preview docs with stale chunker metadata",
+            "poink",
+            "rechunk",
+            "--dry-run",
+          ),
+          shellAction(
+            "Apply rechunk (rebuild chunks + embeddings)",
+            "poink",
+            "rechunk",
+          ),
         );
       }
 
       if (missing > 0) {
         actions.push(
-          {
-            kind: "shell",
-            argv: ["poink", "rechunk", "--dry-run", "--include-missing"],
-            description: "Preview docs missing chunker metadata (upgrade sweep)",
-          },
-          {
-            kind: "shell",
-            argv: ["poink", "rechunk", "--include-missing", "--max-docs", "25"],
-            description: "Rechunk a small batch (expensive)",
-          },
+          shellAction(
+            "Preview docs missing chunker metadata (upgrade sweep)",
+            "poink",
+            "rechunk",
+            "--dry-run",
+            "--include-missing",
+          ),
+          shellAction(
+            "Rechunk a small batch (expensive)",
+            "poink",
+            "rechunk",
+            "--include-missing",
+            "--max-docs",
+            "25",
+          ),
         );
       }
-      actions.push({
-        kind: "shell",
-        argv: ["poink", "stats"],
-        description: "Verify counts",
-      });
+      actions.push(shellAction("Verify counts", "poink", "stats"));
       return actions;
     }
 
     case "config": {
-      return [
-        { kind: "shell", argv: ["poink", "config", "show"], description: "Show config" },
-      ];
+      return [shellAction("Show config", "poink", "config", "show")];
     }
 
     case "check": {
-      return [
-        { kind: "shell", argv: ["poink", "stats"], description: "Check library stats" },
-      ];
+      return [shellAction("Check library stats", "poink", "stats")];
     }
 
     case "repair": {
-      return [
-        { kind: "shell", argv: ["poink", "doctor"], description: "Re-run health check" },
-      ];
+      return [shellAction("Re-run health check", "poink", "doctor")];
     }
 
     case "reindex": {
-      return [
-        { kind: "shell", argv: ["poink", "stats"], description: "Verify counts" },
-      ];
+      return [shellAction("Verify counts", "poink", "stats")];
     }
 
     case "rechunk": {
       if (result.dryRun) {
         if (result.includeMissing) {
           return [
-            {
-              kind: "shell",
-              argv: ["poink", "rechunk", "--include-missing", "--max-docs", "25"],
-              description: "Rechunk a small batch (rebuild chunks + embeddings)",
-            },
+            shellAction(
+              "Rechunk a small batch (rebuild chunks + embeddings)",
+              "poink",
+              "rechunk",
+              "--include-missing",
+              "--max-docs",
+              "25",
+            ),
           ];
         }
 
-        const actions: NextAction[] = [
-          {
-            kind: "shell",
-            argv: ["poink", "rechunk"],
-            description: "Apply rechunk (rebuild chunks + embeddings)",
-          },
+        const actions = [
+          shellAction(
+            "Apply rechunk (rebuild chunks + embeddings)",
+            "poink",
+            "rechunk",
+          ),
         ];
 
         if ((result.skippedMissing ?? 0) > 0) {
-          actions.push({
-            kind: "shell",
-            argv: ["poink", "rechunk", "--dry-run", "--include-missing"],
-            description: "Include missing-metadata docs in the plan",
-          });
+          actions.push(
+            shellAction(
+              "Include missing-metadata docs in the plan",
+              "poink",
+              "rechunk",
+              "--dry-run",
+              "--include-missing",
+            ),
+          );
         }
 
         return actions;
       }
-      return [
-        { kind: "shell", argv: ["poink", "stats"], description: "Verify counts" },
-      ];
+      return [shellAction("Verify counts", "poink", "stats")];
     }
 
     case "error": {
       return [
-        { kind: "shell", argv: ["poink", "doctor"], description: "Check database health" },
-        { kind: "shell", argv: ["poink", "check"], description: "Check embedding provider connectivity" },
-        { kind: "shell", argv: ["poink", "--help"], description: "Show available commands" },
+        shellAction("Check database health", "poink", "doctor"),
+        shellAction(
+          "Check embedding provider connectivity",
+          "poink",
+          "check",
+        ),
+        shellAction("Show available commands", "poink", "--help"),
       ];
     }
+
   }
 }

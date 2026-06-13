@@ -13,6 +13,8 @@ node_modules/
 
 *.log
 
+.scratch/
+
 .env
 .env.*
 !.env.example

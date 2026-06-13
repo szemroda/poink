@@ -4,68 +4,82 @@ import { runCapabilitiesCommand } from "../commands/capabilities.js";
 import { runConfigCommand } from "../commands/config.js";
 import {
   CLIError,
+  type GlobalCLIOptions,
   runCommandWithContext,
   VERSION,
 } from "../runner.js";
 import { runFamilyEffect } from "./shared.js";
 import type { FamilyRunner } from "./types.js";
 
-export const runFamily: FamilyRunner = async ({
-  parsed,
-  globals,
-  config,
-}) => {
-  const { args, options } = parsed;
-  const command = args[0];
-  let program;
+function requestsHelp(args: string[]): boolean {
+  return args[0] === "help" || args.includes("--help") || args.includes("-h");
+}
 
-  if (
-    command === "--help" ||
-    command === "help" ||
-    args.includes("--help") ||
-    args.includes("-h")
-  ) {
-    program = runCommandWithContext(args, globals, ({ Console, format }) =>
-      Effect.gen(function* () {
-        const help = renderHelp();
-        if (format === "text") yield* Console.log(help);
-        return {
-          command: "help",
-          resultPayload: format === "text" ? null : { help },
-          agentResult: null,
-        };
-      }),
+function requestsVersion(args: string[]): boolean {
+  return (
+    args[0] === "version" || args.includes("--version") || args.includes("-v")
+  );
+}
+
+function runHelp(args: string[], globals: GlobalCLIOptions) {
+  return runCommandWithContext(args, globals, ({ Console, format }) =>
+    Effect.gen(function* () {
+      const help = renderHelp();
+      if (format === "text") yield* Console.log(help);
+      return {
+        command: "help",
+        resultPayload: format === "text" ? null : { help },
+        agentResult: null,
+      };
+    }),
+  );
+}
+
+function runVersion(args: string[], globals: GlobalCLIOptions) {
+  return runCommandWithContext(args, globals, ({ Console, format }) =>
+    Effect.gen(function* () {
+      if (format === "text") yield* Console.log(`poink v${VERSION}`);
+      return {
+        command: "version",
+        resultPayload: format === "text" ? null : { version: VERSION },
+        agentResult: null,
+      };
+    }),
+  );
+}
+
+export const runFamily: FamilyRunner = async ({ parsed, globals, config }) => {
+  const { args, options } = parsed;
+  if (requestsHelp(args)) {
+    return runFamilyEffect(runHelp(args, globals), globals);
+  }
+
+  if (requestsVersion(args)) {
+    return runFamilyEffect(runVersion(args, globals), globals);
+  }
+
+  const command = args[0];
+  if (command === "capabilities") {
+    return runFamilyEffect(
+      runCapabilitiesCommand(args, globals, options),
+      globals,
     );
-  } else if (
-    command === "--version" ||
-    command === "version" ||
-    args.includes("--version") ||
-    args.includes("-v")
-  ) {
-    program = runCommandWithContext(args, globals, ({ Console, format }) =>
-      Effect.gen(function* () {
-        if (format === "text") yield* Console.log(`poink v${VERSION}`);
-        return {
-          command: "version",
-          resultPayload: format === "text" ? null : { version: VERSION },
-          agentResult: null,
-        };
-      }),
-    );
-  } else if (command === "capabilities") {
-    program = runCapabilitiesCommand(args, globals, options);
-  } else if (command === "config") {
-    program = runCommandWithContext(
+  }
+
+  if (command === "config") {
+    const program = runCommandWithContext(
       args,
       globals,
       ({ Console }) => runConfigCommand(args, Console, config),
       options,
     );
-  } else {
-    program = Effect.fail(
-      new CLIError("UNKNOWN_COMMAND", `Unknown command: ${command ?? "cli"}`),
-    );
+    return runFamilyEffect(program, globals);
   }
 
-  return runFamilyEffect(program, globals);
+  return runFamilyEffect(
+    Effect.fail(
+      new CLIError("UNKNOWN_COMMAND", `Unknown command: ${command ?? "cli"}`),
+    ),
+    globals,
+  );
 };

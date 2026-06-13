@@ -4,21 +4,24 @@ import { parseStringList } from "../urlDownloads.js";
 import { CLIError, describeCliFailure } from "./runner.js";
 
 export type JsonSchemaNode = {
+  title?: string;
   type?: string | string[];
   properties?: Record<string, JsonSchemaNode>;
-  items?: JsonSchemaNode;
+  items?: JsonSchemaNode | JsonSchemaNode[] | false;
   anyOf?: JsonSchemaNode[];
   enum?: unknown[];
 };
 
-export const CONFIG_JSON_SCHEMA = JSONSchema.make(Config as any) as JsonSchemaNode;
+export const CONFIG_JSON_SCHEMA: JsonSchemaNode = JSONSchema.make(Config);
 
 export function invalidConfigPathError(path: string): CLIError {
   return new CLIError("INVALID_ARGS", `Invalid config path: ${path}`, { path });
 }
 
 export function getConfigSchemaNode(path: string): JsonSchemaNode | undefined {
-  if (!path) return undefined;
+  if (!path) {
+    return undefined;
+  }
 
   let node: JsonSchemaNode | undefined = CONFIG_JSON_SCHEMA;
   for (const part of path.split(".")) {
@@ -31,6 +34,64 @@ export function getConfigSchemaNode(path: string): JsonSchemaNode | undefined {
   return node;
 }
 
+function getSchemaTypes(schemaNode: JsonSchemaNode): string[] {
+  if (!schemaNode.type) {
+    return [];
+  }
+  return typeof schemaNode.type === "string"
+    ? [schemaNode.type]
+    : schemaNode.type;
+}
+
+function isStringArraySchema(schemaNode: JsonSchemaNode): boolean {
+  const { items } = schemaNode;
+  return (
+    Boolean(items) &&
+    !Array.isArray(items) &&
+    typeof items === "object" &&
+    items.type === "string"
+  );
+}
+
+function parseArrayConfigValue(path: string, rawValue: string): string[] {
+  try {
+    return parseStringList(rawValue) ?? [];
+  } catch (error) {
+    throw new CLIError(
+      "INVALID_ARGS",
+      `Invalid array value for config path: ${path}`,
+      { path, value: rawValue, reason: describeCliFailure(error) },
+    );
+  }
+}
+
+function parseBooleanConfigValue(path: string, rawValue: string): boolean {
+  const normalizedValue = rawValue.trim().toLowerCase();
+  if (normalizedValue === "true" || normalizedValue === "1") {
+    return true;
+  }
+  if (normalizedValue === "false" || normalizedValue === "0") {
+    return false;
+  }
+  throw new CLIError(
+    "INVALID_ARGS",
+    `Invalid boolean value for config path: ${path}`,
+    { path, value: rawValue },
+  );
+}
+
+function parseNumericConfigValue(path: string, rawValue: string): number {
+  const parsedValue = Number(rawValue);
+  if (!Number.isNaN(parsedValue)) {
+    return parsedValue;
+  }
+  throw new CLIError(
+    "INVALID_ARGS",
+    `Invalid numeric value for config path: ${path}`,
+    { path, value: rawValue },
+  );
+}
+
 export function parseConfigValue(
   path: string,
   rawValue: string,
@@ -41,12 +102,7 @@ export function parseConfigValue(
     return null;
   }
 
-  const types =
-    typeof schemaNode.type === "string"
-      ? [schemaNode.type]
-      : Array.isArray(schemaNode.type)
-        ? schemaNode.type
-        : [];
+  const types = getSchemaTypes(schemaNode);
 
   if (types.includes("object") || schemaNode.properties) {
     throw new CLIError(
@@ -57,45 +113,22 @@ export function parseConfigValue(
   }
 
   if (types.includes("array")) {
-    if (!schemaNode.items || schemaNode.items.type !== "string") {
+    if (!isStringArraySchema(schemaNode)) {
       throw new CLIError(
         "INVALID_ARGS",
         `Config path does not support CLI array values: ${path}`,
         { path },
       );
     }
-    try {
-      return parseStringList(rawValue) ?? [];
-    } catch (error) {
-      throw new CLIError(
-        "INVALID_ARGS",
-        `Invalid array value for config path: ${path}`,
-        { path, value: rawValue, reason: describeCliFailure(error) },
-      );
-    }
+    return parseArrayConfigValue(path, rawValue);
   }
 
   if (types.includes("boolean")) {
-    const normalized = rawValue.trim().toLowerCase();
-    if (normalized === "true" || normalized === "1") return true;
-    if (normalized === "false" || normalized === "0") return false;
-    throw new CLIError(
-      "INVALID_ARGS",
-      `Invalid boolean value for config path: ${path}`,
-      { path, value: rawValue },
-    );
+    return parseBooleanConfigValue(path, rawValue);
   }
 
   if (types.includes("number") || types.includes("integer")) {
-    const parsed = Number(rawValue);
-    if (Number.isNaN(parsed)) {
-      throw new CLIError(
-        "INVALID_ARGS",
-        `Invalid numeric value for config path: ${path}`,
-        { path, value: rawValue },
-      );
-    }
-    return parsed;
+    return parseNumericConfigValue(path, rawValue);
   }
 
   return rawValue;
@@ -133,9 +166,8 @@ export function parseConfigOutputOptions(args: string[]): {
 }
 
 function isSecretConfigPath(path: string): boolean {
-  const parts = path.split(".");
-  const leaf = parts[parts.length - 1];
-  return SECRET_CONFIG_KEYS.has(leaf);
+  const leaf = path.split(".").at(-1);
+  return leaf !== undefined && SECRET_CONFIG_KEYS.has(leaf);
 }
 
 export function redactConfigValue(
@@ -149,10 +181,10 @@ export function redactConfigValue(
   if (isSecretConfigPath(path)) {
     return REDACTED_CONFIG_SECRET;
   }
-  if (value && typeof value === "object") {
-    return redactConfigObject(value);
+  if (!value || typeof value !== "object") {
+    return value;
   }
-  return value;
+  return redactConfigObject(value);
 }
 
 export function redactConfigObject(value: unknown): unknown {
@@ -165,7 +197,7 @@ export function redactConfigObject(value: unknown): unknown {
   }
 
   return Object.fromEntries(
-    Object.entries(value as Record<string, unknown>).map(([key, child]) => [
+    Object.entries(value).map(([key, child]) => [
       key,
       SECRET_CONFIG_KEYS.has(key) && child !== undefined
         ? REDACTED_CONFIG_SECRET
@@ -175,14 +207,8 @@ export function redactConfigObject(value: unknown): unknown {
 }
 
 function schemaAcceptsNull(schemaNode: JsonSchemaNode): boolean {
-  const types =
-    typeof schemaNode.type === "string"
-      ? [schemaNode.type]
-      : Array.isArray(schemaNode.type)
-        ? schemaNode.type
-        : [];
   return (
-    types.includes("null") ||
+    getSchemaTypes(schemaNode).includes("null") ||
     Boolean(schemaNode.anyOf?.some((node) => schemaAcceptsNull(node)))
   );
 }

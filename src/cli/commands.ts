@@ -1,172 +1,185 @@
 import { Effect } from "effect";
-export { runAddCommand } from "./commands/add.js";
+import { renderHelp } from "../agent/manifest.js";
 import { runAddCommand } from "./commands/add.js";
-export { runCapabilitiesCommand } from "./commands/capabilities.js";
 import { runCapabilitiesCommand } from "./commands/capabilities.js";
-export { runConfigCommand } from "./commands/config.js";
 import { runConfigCommand } from "./commands/config.js";
-export { runDoctorCommand } from "./commands/doctor.js";
 import { runDoctorCommand } from "./commands/doctor.js";
-export { runIngestCommand } from "./commands/ingest.js";
 import { runIngestCommand } from "./commands/ingest.js";
-export { runInitCommand } from "./commands/init.js";
 import { runInitCommand } from "./commands/init.js";
-export { runLibraryCommand } from "./commands/library.js";
 import { runLibraryCommand } from "./commands/library.js";
-export { runProvidersCommand } from "./commands/providers.js";
 import { runProvidersCommand } from "./commands/providers.js";
-export { runRechunkCommand } from "./commands/rechunk.js";
 import { runRechunkCommand } from "./commands/rechunk.js";
-export { runReindexCommand } from "./commands/reindex.js";
 import { runReindexCommand } from "./commands/reindex.js";
-export { runRepairCommand } from "./commands/repair.js";
 import { runRepairCommand } from "./commands/repair.js";
-export { runSearchCommand } from "./commands/search.js";
 import { runSearchCommand } from "./commands/search.js";
-export { runSetupCommand } from "./commands/setup.js";
 import { runSetupCommand } from "./commands/setup.js";
-export { runTaxonomyCommand } from "./commands/taxonomy.js";
 import { runTaxonomyCommand } from "./commands/taxonomy.js";
-export type { CliCommandOutput, CliConsole } from "./commands/types.js";
 import {
   CLIError,
-  runCommandWithContext,
   type GlobalCLIOptions,
+  runCommandWithContext,
+  VERSION,
 } from "./runner.js";
-import { renderHelp } from "../agent/manifest.js";
-import { VERSION } from "./runner.js";
+
+export {
+  runAddCommand,
+  runCapabilitiesCommand,
+  runConfigCommand,
+  runDoctorCommand,
+  runIngestCommand,
+  runInitCommand,
+  runLibraryCommand,
+  runProvidersCommand,
+  runRechunkCommand,
+  runReindexCommand,
+  runRepairCommand,
+  runSearchCommand,
+  runSetupCommand,
+  runTaxonomyCommand,
+};
+export type { CliCommandOutput, CliConsole } from "./commands/types.js";
+
+const SEARCH_COMMANDS = new Set(["search", "search-pack"]);
+const DOCTOR_COMMANDS = new Set(["doctor", "check"]);
+const LIBRARY_COMMANDS = new Set([
+  "chunk",
+  "doc",
+  "page",
+  "list",
+  "read",
+  "get",
+  "remove",
+  "tag",
+  "stats",
+]);
+
+function runInformationalCommand(
+  args: string[],
+  globals: GlobalCLIOptions,
+  options: Record<string, unknown>,
+  command: "help" | "version",
+  message: string,
+  resultPayload: Record<string, string>,
+) {
+  return runCommandWithContext(
+    args,
+    globals,
+    ({ Console, format }) =>
+      Effect.gen(function* () {
+        if (format === "text") {
+          yield* Console.log(message);
+        }
+        return {
+          command,
+          resultPayload: format === "text" ? null : resultPayload,
+          agentResult: null,
+        };
+      }),
+    options,
+  );
+}
 
 export function dispatchCommand(
   args: string[],
   globals: GlobalCLIOptions,
   options: Record<string, unknown> = {},
 ) {
-  if (args.length === 0 || args.includes("--help") || args.includes("-h")) {
-    return runCommandWithContext(args, globals, ({ Console, format, getLoadedLibraryStats }) =>
-      Effect.gen(function* () {
-        const serviceFreeHelp = args[0] === "config" || args[0] === "providers";
-        const stats = serviceFreeHelp
-          ? { _tag: "Left" as const }
-          : yield* getLoadedLibraryStats();
-        const statsData = stats._tag === "Right" ? stats.right : undefined;
-        if (format === "text") {
-          yield* Console.log(renderHelp(statsData));
-          return { command: "help", resultPayload: null, agentResult: null };
-        }
-        return {
-          command: "help",
-          resultPayload: { help: renderHelp(statsData) },
-          agentResult: null,
-        };
-      }),
-    options);
+  const command = args[0];
+  if (!command || args.includes("--help") || args.includes("-h")) {
+    const help = renderHelp();
+    return runInformationalCommand(
+      args,
+      globals,
+      options,
+      "help",
+      help,
+      { help },
+    );
   }
 
   if (args.includes("--version") || args.includes("-v")) {
-    return runCommandWithContext(args, globals, ({ Console, format }) =>
-      Effect.gen(function* () {
-        if (format === "text") {
-          yield* Console.log(`poink v${VERSION}`);
-          return { command: "version", resultPayload: null, agentResult: null };
-        }
-        return {
-          command: "version",
-          resultPayload: { version: VERSION },
-          agentResult: null,
-        };
-      }),
-    options);
+    return runInformationalCommand(
+      args,
+      globals,
+      options,
+      "version",
+      `poink v${VERSION}`,
+      { version: VERSION },
+    );
   }
 
-  switch (args[0]) {
-    case "--help":
-      return runCommandWithContext(args, globals, ({ Console, format, getLoadedLibraryStats }) =>
-        Effect.gen(function* () {
-          const stats = yield* getLoadedLibraryStats();
-          const statsData = stats._tag === "Right" ? stats.right : undefined;
-          if (format === "text") {
-            yield* Console.log(renderHelp(statsData));
-            return { command: "help", resultPayload: null, agentResult: null };
-          }
-          return {
-            command: "help",
-            resultPayload: { help: renderHelp(statsData) },
-            agentResult: null,
-          };
-        }),
-      );
-    case "--version":
-      return runCommandWithContext(args, globals, ({ Console, format }) =>
-        Effect.gen(function* () {
-          if (format === "text") {
-            yield* Console.log(`poink v${VERSION}`);
-            return { command: "version", resultPayload: null, agentResult: null };
-          }
-          return {
-            command: "version",
-            resultPayload: { version: VERSION },
-            agentResult: null,
-          };
-        }),
-      );
-    case "capabilities":
-      return runCapabilitiesCommand(args, globals, options);
-    case "add":
-      return runAddCommand(args, globals, options);
-    case "search":
-    case "search-pack":
-      return runSearchCommand(args, globals, options);
-    case "taxonomy":
-      return runTaxonomyCommand(args, globals, options);
-    case "doctor":
-    case "check":
-      return runDoctorCommand(args, globals, options);
-    case "init":
-      return runInitCommand(args, globals, options);
-    case "repair":
-      return runRepairCommand(args, globals, options);
-    case "ingest":
-      return runIngestCommand(args, globals, options);
-    case "reindex":
-      return runReindexCommand(args, globals, options);
-    case "rechunk":
-      return runRechunkCommand(args, globals, options);
-    case "config":
-      return runCommandWithContext(args, globals, ({ Console }) =>
-        runConfigCommand(args, Console, globals.config!),
-    options);
-    case "providers":
-      return runCommandWithContext(args, globals, ({ Console, format }) =>
+  if (command === "capabilities") {
+    return runCapabilitiesCommand(args, globals, options);
+  }
+  if (command === "add") {
+    return runAddCommand(args, globals, options);
+  }
+  if (SEARCH_COMMANDS.has(command)) {
+    return runSearchCommand(args, globals, options);
+  }
+  if (command === "taxonomy") {
+    return runTaxonomyCommand(args, globals, options);
+  }
+  if (DOCTOR_COMMANDS.has(command)) {
+    return runDoctorCommand(args, globals, options);
+  }
+  if (command === "init") {
+    return runInitCommand(args, globals, options);
+  }
+  if (command === "repair") {
+    return runRepairCommand(args, globals, options);
+  }
+  if (command === "ingest") {
+    return runIngestCommand(args, globals, options);
+  }
+  if (command === "reindex") {
+    return runReindexCommand(args, globals, options);
+  }
+  if (command === "rechunk") {
+    return runRechunkCommand(args, globals, options);
+  }
+  if (command === "config") {
+    return runCommandWithContext(
+      args,
+      globals,
+      ({ Console }) => runConfigCommand(args, Console, globals.config!),
+      options,
+    );
+  }
+  if (command === "providers") {
+    return runCommandWithContext(
+      args,
+      globals,
+      ({ Console, format }) =>
         runProvidersCommand(args, format, Console, options),
-      options);
-    case "setup":
-      return runSetupCommand(args, globals, options);
-    case "chunk":
-    case "doc":
-    case "page":
-    case "list":
-    case "read":
-    case "get":
-    case "remove":
-    case "tag":
-    case "stats":
-      return runCommandWithContext(args, globals, ({ Console, format, library, globals }) =>
+      options,
+    );
+  }
+  if (command === "setup") {
+    return runSetupCommand(args, globals, options);
+  }
+  if (LIBRARY_COMMANDS.has(command)) {
+    return runCommandWithContext(
+      args,
+      globals,
+      ({ Console, format, library, globals: contextGlobals }) =>
         runLibraryCommand(
           args,
           format,
           library,
           Console,
-          globals.verbose,
+          contextGlobals.verbose,
           options,
         ),
-    options);
-    default:
-      return runCommandWithContext(args, globals, ({ command }) =>
-        Effect.fail(
-          new CLIError("UNKNOWN_COMMAND", `Unknown command: ${command}`, {
-            command,
-          }),
-        ),
-      );
+      options,
+    );
   }
+
+  return runCommandWithContext(args, globals, ({ command }) =>
+    Effect.fail(
+      new CLIError("UNKNOWN_COMMAND", `Unknown command: ${command}`, {
+        command,
+      }),
+    ),
+  );
 }

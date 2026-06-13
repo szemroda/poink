@@ -3,38 +3,51 @@ import { CLIError, describeCliFailure } from "./runner.js";
 
 export { CLIError, describeCliFailure };
 
+const INVALID_FLAG_ARGUMENT_PREFIXES = [
+  "option '--format",
+  "option '--log-level",
+];
+
+function errorTag(error: unknown): string {
+  if (
+    typeof error !== "object" ||
+    error === null ||
+    !("_tag" in error) ||
+    typeof error._tag !== "string"
+  ) {
+    return "UNKNOWN_ERROR";
+  }
+
+  return error._tag;
+}
+
 export function coerceCliError(error: unknown): CLIError {
   if (error instanceof CLIError) return error;
-  const tag =
-    error &&
-    typeof error === "object" &&
-    "_tag" in error &&
-    typeof (error as { _tag?: unknown })._tag === "string"
-      ? String((error as { _tag: string })._tag)
-      : "UNKNOWN_ERROR";
-  return new CLIError(tag, describeCliFailure(error), error);
+
+  return new CLIError(errorTag(error), describeCliFailure(error), error);
+}
+
+function isInvalidFlagArgument(message: string): boolean {
+  return INVALID_FLAG_ARGUMENT_PREFIXES.some((prefix) =>
+    message.includes(prefix),
+  );
+}
+
+function commanderErrorCode(error: CommanderError): string {
+  if (error.code === "commander.unknownOption") return "INVALID_FLAG";
+  if (error.code === "commander.unknownCommand") return "UNKNOWN_COMMAND";
+  if (
+    error.code === "commander.invalidArgument" &&
+    isInvalidFlagArgument(error.message)
+  ) {
+    return "INVALID_FLAG";
+  }
+
+  return "INVALID_ARGS";
 }
 
 export function mapCommanderError(error: CommanderError): CLIError {
-  const message = error.message;
-  switch (error.code) {
-    case "commander.unknownOption":
-      return new CLIError("INVALID_FLAG", message, { commanderCode: error.code });
-    case "commander.optionMissingArgument":
-      return new CLIError("INVALID_ARGS", message, { commanderCode: error.code });
-    case "commander.missingArgument":
-      return new CLIError("INVALID_ARGS", message, { commanderCode: error.code });
-    case "commander.invalidArgument":
-      return new CLIError(
-        message.includes("option '--format") || message.includes("option '--log-level")
-          ? "INVALID_FLAG"
-          : "INVALID_ARGS",
-        message,
-        { commanderCode: error.code },
-      );
-    case "commander.unknownCommand":
-      return new CLIError("UNKNOWN_COMMAND", message, { commanderCode: error.code });
-    default:
-      return new CLIError("INVALID_ARGS", message, { commanderCode: error.code });
-  }
+  return new CLIError(commanderErrorCode(error), error.message, {
+    commanderCode: error.code,
+  });
 }

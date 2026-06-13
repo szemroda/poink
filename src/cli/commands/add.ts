@@ -1,6 +1,6 @@
 import { Effect } from "effect";
 import { existsSync, mkdirSync } from "fs";
-import { basename, extname, join } from "path";
+import { basename, join } from "path";
 import {
   AddOptions,
   LibraryConfig,
@@ -9,40 +9,21 @@ import {
 import { AutoTagger } from "../../services/AutoTagger.js";
 import { PDFExtractor } from "../../services/PDFExtractor.js";
 import { OfficeExtractor } from "../../services/OfficeExtractor.js";
-import { readFileText } from "../../runtime.js";
 import {
   downloadFile,
-  fileTypeFromExtension,
   filenameFromURL,
   resolveURLDownloadOptions,
-  type ResolvedURLDownloadOptions,
 } from "../../urlDownloads.js";
 import {
   CLIError,
   VERSION,
   describeCliFailure,
+  extractEnrichmentPreview,
   runCommandWithContext,
   type GlobalCLIOptions,
 } from "../runner.js";
 
 const DOCUMENT_TITLE_EXTENSION_RE = /\.(pdf|md|markdown|docx|odt|fodt)$/i;
-const ENRICHMENT_PREVIEW_MAX_CHARS = 8000;
-const ENRICHMENT_PREVIEW_MAX_UNITS = 10;
-
-type PreviewPDFExtractor = {
-  extract: (
-    path: string,
-  ) => Effect.Effect<{ pages: Array<{ text: string }> }, unknown>;
-};
-
-type PreviewOfficeExtractor = {
-  extract: (
-    path: string,
-  ) => Effect.Effect<
-    { sections: Array<{ heading: string; text: string }> },
-    unknown
-  >;
-};
 
 interface AddCommandOptions extends Record<string, unknown> {
   tags?: string;
@@ -64,70 +45,20 @@ function isURL(str: string): boolean {
   return str.startsWith("http://") || str.startsWith("https://");
 }
 
-function trimPreview(content: string): string {
-  return content.length > ENRICHMENT_PREVIEW_MAX_CHARS
-    ? content.slice(0, ENRICHMENT_PREVIEW_MAX_CHARS)
-    : content;
+function parseTags(tags: string | undefined): string[] | undefined {
+  if (!tags) return undefined;
+  return tags.split(",").map((tag) => tag.trim());
 }
 
-function sectionsToPreview(
-  sections: Array<{ heading: string; text: string }>,
-): string {
-  return sections
-    .slice(0, ENRICHMENT_PREVIEW_MAX_UNITS)
-    .map((section) =>
-      section.heading ? `${section.heading}\n\n${section.text}` : section.text,
-    )
-    .join("\n\n");
-}
-
-function extractEnrichmentPreview(
-  path: string,
-  options: {
-    enrich: boolean;
-    pdfExtractor: PreviewPDFExtractor;
-    officeExtractor: PreviewOfficeExtractor;
-  },
-): Effect.Effect<string | undefined, never> {
-  const fileType = fileTypeFromExtension(extname(path));
-
-  if (fileType === "markdown") {
-    return Effect.either(Effect.promise(() => readFileText(path))).pipe(
-      Effect.map((result) =>
-        result._tag === "Right" ? trimPreview(result.right) : undefined,
-      ),
-    );
-  }
-
-  if (!options.enrich) {
-    return Effect.as(Effect.void, undefined);
-  }
-
-  if (fileType === "pdf") {
-    return Effect.either(options.pdfExtractor.extract(path)).pipe(
-      Effect.map((result) => {
-        if (result._tag === "Left") return undefined;
-        return trimPreview(
-          result.right.pages
-            .slice(0, ENRICHMENT_PREVIEW_MAX_UNITS)
-            .map((page) => page.text)
-            .join("\n\n"),
-        );
-      }),
-    );
-  }
-
-  if (fileType === "docx" || fileType === "odt") {
-    return Effect.either(options.officeExtractor.extract(path)).pipe(
-      Effect.map((result) =>
-        result._tag === "Right"
-          ? trimPreview(sectionsToPreview(result.right.sections))
-          : undefined,
-      ),
-    );
-  }
-
-  return Effect.as(Effect.void, undefined);
+function toURLDownloadOptions(
+  options: AddCommandOptions,
+): Record<string, string | boolean> {
+  return Object.fromEntries(
+    Object.entries(options).filter(
+      (entry): entry is [string, string | boolean] =>
+        typeof entry[1] === "string" || typeof entry[1] === "boolean",
+    ),
+  );
 }
 
 export function runAddCommand(
@@ -147,13 +78,10 @@ export function runAddCommand(
         );
       }
 
-      const opts = options;
-      const tags = opts.tags
-        ? (opts.tags as string).split(",").map((t) => t.trim())
-        : undefined;
+      const tags = parseTags(options.tags);
 
       let localPath: string;
-      let title = opts.title as string | undefined;
+      let title = options.title;
 
       if (isURL(pathOrUrl)) {
         const appConfig = globals.config!;
@@ -161,7 +89,7 @@ export function runAddCommand(
         const downloadOptions = yield* Effect.try({
           try: () => resolveURLDownloadOptions(
             appConfig,
-            opts as Record<string, string | boolean>,
+            toURLDownloadOptions(options),
             (code, message, details) => new CLIError(code, message, details),
           ),
           catch: (error) =>
@@ -196,10 +124,10 @@ export function runAddCommand(
 
       yield* Console.log(`Adding: ${localPath}`);
 
-      const autoTag = opts["auto-tag"] === true;
-      const enrich = opts.enrich === true;
+      const autoTag = options["auto-tag"] === true;
+      const enrich = options.enrich === true;
       const addConfig = globals.config!;
-      const visualsExplicit = opts.visuals === true;
+      const visualsExplicit = options.visuals === true;
       const visualsEnabled =
         visualsExplicit || resolveVisualsConfig(addConfig).enabled;
       const visualsMode = visualsEnabled
@@ -207,9 +135,9 @@ export function runAddCommand(
           ? "explicit"
           : "config"
         : undefined;
-      const forceProvider = opts.provider;
+      const forceProvider = options.provider;
       let enrichedTitle = title;
-      let enrichedTags = tags || [];
+      let enrichedTags = tags ?? [];
 
       if (autoTag || enrich) {
         const tagger = yield* AutoTagger;

@@ -1,6 +1,6 @@
 import { Effect } from "effect";
 import { existsSync, statSync } from "fs";
-import { LibraryConfig } from "../../types.js";
+import { LibraryConfig, type Document } from "../../types.js";
 import { assessDocChunker } from "../../chunking.js";
 import {
   assessDoctorHealth,
@@ -10,21 +10,55 @@ import {
 } from "../health.js";
 import {
   runCommandWithContext,
+  type CommandExecutionContext,
   type GlobalCLIOptions,
 } from "../runner.js";
 
+type OpenAICodexRole = "enrichment" | "judge";
+
 type OpenAICodexRuntimeStatus = {
   configured: boolean;
-  roles: Array<"enrichment" | "judge">;
+  roles: OpenAICodexRole[];
   canStart: boolean;
   authenticated: boolean;
   error?: string;
 };
 
+type OrphanedData = {
+  chunks: number;
+  embeddings: number;
+};
+
+type ChunkerHealth = {
+  outdated: number;
+  missing: number;
+  mismatch: number;
+  sample: Array<{
+    id: string;
+    title: string;
+    reason: string;
+    code: string;
+  }>;
+};
+
+type DoctorConsole = CommandExecutionContext["Console"];
+
+type DoctorOutcome = {
+  checks: HealthCheck[];
+  healthy: boolean;
+  shouldFix: boolean;
+  walHealth: WALHealthResult;
+  ollamaReachable: boolean;
+  openAICodexCheck: HealthCheck | undefined;
+  openAICodexStatus: OpenAICodexRuntimeStatus;
+  orphanedData: OrphanedData;
+  chunkerOutdated: number;
+};
+
 async function checkConfiguredOpenAICodexRuntime(
   config: NonNullable<GlobalCLIOptions["config"]>,
 ): Promise<OpenAICodexRuntimeStatus> {
-  const roles: Array<"enrichment" | "judge"> = [];
+  const roles: OpenAICodexRole[] = [];
   if (config.models.enrichment.provider === "openai-codex") {
     roles.push("enrichment");
   }
@@ -53,12 +87,17 @@ function hasDoctorWarnings(checks: HealthCheck[]): boolean {
   return checks.some((check) => healthCheckSeverity(check) === "warning");
 }
 
+function renderDoctorCheckIcon(check: HealthCheck): string {
+  const severity = healthCheckSeverity(check);
+  if (severity === "ok") return "OK";
+  if (severity === "warning") return "!";
+  return "FAIL";
+}
+
 function renderDoctorCheckLines(checks: HealthCheck[]): string[] {
   return checks.map((check) => {
-    const severity = healthCheckSeverity(check);
-    const icon = severity === "ok" ? "OK" : severity === "warning" ? "!" : "FAIL";
     const suffix = check.details ? ` - ${check.details}` : "";
-    return `${icon} ${check.name}${suffix}`;
+    return `${renderDoctorCheckIcon(check)} ${check.name}${suffix}`;
   });
 }
 
@@ -79,6 +118,185 @@ function buildOpenAICodexHealthCheck(
       .filter(Boolean)
       .join("; "),
   };
+}
+
+function readWALHealth(walPath: string) {
+  if (!existsSync(walPath)) {
+    return Effect.succeed<WALHealthResult>({ healthy: true, warnings: [] });
+  }
+
+  return Effect.try({
+    try: () => statSync(walPath).size,
+    catch: () => undefined,
+  }).pipe(
+    Effect.orElseSucceed(() => 0),
+    Effect.map((totalSizeBytes) =>
+      assessWALHealth({ fileCount: 1, totalSizeBytes }),
+    ),
+  );
+}
+
+function assessChunkerHealth(
+  documents: readonly Document[],
+  config: LibraryConfig,
+): ChunkerHealth {
+  let missing = 0;
+  let mismatch = 0;
+  const sample: ChunkerHealth["sample"] = [];
+
+  for (const document of documents) {
+    const assessment = assessDocChunker(document, config);
+    if (!assessment.needsRechunk) continue;
+
+    if (assessment.code === "missing_metadata") {
+      missing++;
+    } else {
+      mismatch++;
+    }
+
+    if (sample.length >= 10) continue;
+    sample.push({
+      id: document.id,
+      title: document.title,
+      reason: assessment.reason,
+      code: assessment.code,
+    });
+  }
+
+  return {
+    outdated: missing + mismatch,
+    missing,
+    mismatch,
+    sample,
+  };
+}
+
+function logLines(Console: DoctorConsole, lines: readonly string[]) {
+  return Effect.forEach(lines, (line) => Console.log(line), {
+    discard: true,
+  });
+}
+
+function logOpenAICodexIssue(
+  Console: DoctorConsole,
+  status: OpenAICodexRuntimeStatus,
+) {
+  return Console.log(
+    `  OpenAI Codex: ${
+      status.error ?? "run poink providers login --provider openai-codex"
+    }`,
+  );
+}
+
+function logUninitializedProviderHealth(
+  Console: DoctorConsole,
+  check: HealthCheck | undefined,
+  status: OpenAICodexRuntimeStatus,
+) {
+  if (!check) return Effect.void;
+
+  return Effect.gen(function* () {
+    yield* Console.log("");
+    yield* Console.log("Provider Health Checks:\n");
+    yield* logLines(Console, renderDoctorCheckLines([check]));
+    if (check.healthy) return;
+
+    yield* Console.log("");
+    yield* Console.log("WARN  Issues detected.\n");
+    yield* logOpenAICodexIssue(Console, status);
+  });
+}
+
+function logRepairResults(
+  Console: DoctorConsole,
+  orphanedData: OrphanedData,
+  chunkerOutdated: number,
+) {
+  return Effect.gen(function* () {
+    yield* Console.log("Attempting auto-repair...\n");
+    if (orphanedData.chunks > 0 || orphanedData.embeddings > 0) {
+      yield* Console.log(
+        `  OK Cleaned ${orphanedData.chunks} orphaned chunks, ${orphanedData.embeddings} orphaned embeddings`,
+      );
+    }
+    if (chunkerOutdated > 0) {
+      yield* Console.log(
+        `  WARN Chunker: ${chunkerOutdated} docs missing/outdated chunker metadata (run rechunk separately)`,
+      );
+    }
+    yield* Console.log(
+      "\nOK Repair complete. Run 'poink doctor' again to verify.",
+    );
+  });
+}
+
+function logRecommendations(
+  Console: DoctorConsole,
+  diagnostics: DoctorOutcome,
+) {
+  return Effect.gen(function* () {
+    yield* Console.log("Recommendations:\n");
+    if (!diagnostics.walHealth.healthy) {
+      yield* Console.log(
+        "  WAL: large write-ahead log detected; run a maintenance write or restart processes using the database",
+      );
+    }
+    if (!diagnostics.ollamaReachable) {
+      yield* Console.log("  Ollama: Ensure Ollama is running (ollama serve)");
+    }
+    if (
+      diagnostics.openAICodexCheck &&
+      !diagnostics.openAICodexCheck.healthy
+    ) {
+      yield* logOpenAICodexIssue(Console, diagnostics.openAICodexStatus);
+    }
+    if (
+      diagnostics.orphanedData.chunks > 0 ||
+      diagnostics.orphanedData.embeddings > 0
+    ) {
+      yield* Console.log("  Orphaned data: Already cleaned automatically");
+    }
+    if (diagnostics.chunkerOutdated > 0) {
+      yield* Console.log(
+        `  Chunker: ${diagnostics.chunkerOutdated} docs missing/outdated chunker metadata`,
+      );
+      yield* Console.log("          Preview: poink rechunk --dry-run");
+      yield* Console.log("          Apply:   poink rechunk");
+    }
+    yield* Console.log("\n  Run 'poink doctor --fix' to auto-repair issues.");
+  });
+}
+
+function logDoctorOutcome(
+  Console: DoctorConsole,
+  diagnostics: DoctorOutcome,
+) {
+  return Effect.gen(function* () {
+    yield* Console.log("Health Check Results:\n");
+    yield* logLines(Console, renderDoctorCheckLines(diagnostics.checks));
+    yield* Console.log("");
+
+    const hasWarnings = hasDoctorWarnings(diagnostics.checks);
+    if (diagnostics.healthy && !hasWarnings) {
+      yield* Console.log("OK All checks passed! Database is healthy.");
+      return;
+    }
+    if (diagnostics.healthy) {
+      yield* Console.log("OK All checks passed (with warnings).");
+      return;
+    }
+
+    yield* Console.log("WARN  Issues detected.\n");
+    if (diagnostics.shouldFix) {
+      yield* logRepairResults(
+        Console,
+        diagnostics.orphanedData,
+        diagnostics.chunkerOutdated,
+      );
+      return;
+    }
+    yield* logRecommendations(Console, diagnostics);
+  });
 }
 
 interface DoctorCommandOptions extends Record<string, unknown> {
@@ -116,23 +334,11 @@ export function runDoctorCommand(
 
       if (!existsSync(dbPath)) {
         yield* Console.log("OK Library not initialized yet (nothing to check)");
-        if (openAICodexCheck) {
-          yield* Console.log("");
-          yield* Console.log("Provider Health Checks:\n");
-          for (const line of renderDoctorCheckLines([openAICodexCheck])) {
-            yield* Console.log(line);
-          }
-          if (!openAICodexCheck.healthy) {
-            yield* Console.log("");
-            yield* Console.log("WARN  Issues detected.\n");
-            yield* Console.log(
-              `  OpenAI Codex: ${
-                openAICodexStatus.error ??
-                "run poink providers login --provider openai-codex"
-              }`,
-            );
-          }
-        }
+        yield* logUninitializedProviderHealth(
+          Console,
+          openAICodexCheck,
+          openAICodexStatus,
+        );
         const healthy = openAICodexCheck ? openAICodexCheck.healthy : true;
         return {
           resultPayload: {
@@ -146,21 +352,12 @@ export function runDoctorCommand(
         };
       }
 
-      let walHealth: WALHealthResult;
-      if (existsSync(walPath)) {
-        const totalSizeBytes = yield* Effect.try({
-          try: () => statSync(walPath).size,
-          catch: () => undefined,
-        }).pipe(Effect.orElseSucceed(() => 0));
-        walHealth = assessWALHealth({ fileCount: 1, totalSizeBytes });
-      } else {
-        walHealth = { healthy: true, warnings: [] };
-      }
+      const walHealth = yield* readWALHealth(walPath);
 
       const readyResult = yield* Effect.either(library.checkReady());
       const ollamaReachable = readyResult._tag === "Right";
 
-      let orphanedData = { chunks: 0, embeddings: 0 };
+      let orphanedData: OrphanedData = { chunks: 0, embeddings: 0 };
       const repairResult = yield* Effect.either(library.repair());
       if (repairResult._tag === "Right") {
         orphanedData = {
@@ -169,39 +366,16 @@ export function runDoctorCommand(
         };
       }
 
-      let chunkerMissing = 0;
-      let chunkerMismatch = 0;
-      const chunkerSample: Array<{
-        id: string;
-        title: string;
-        reason: string;
-        code: string;
-      }> = [];
       const docsResult = yield* Effect.either(library.list());
-      if (docsResult._tag === "Right") {
-        for (const doc of docsResult.right) {
-          const assessment = assessDocChunker(doc, config);
-          if (assessment.needsRechunk) {
-            if (assessment.code === "missing_metadata") chunkerMissing++;
-            else chunkerMismatch++;
-            if (chunkerSample.length < 10) {
-              chunkerSample.push({
-                id: doc.id,
-                title: doc.title,
-                reason: assessment.reason,
-                code: assessment.code,
-              });
-            }
-          }
-        }
-      }
-
-      const chunkerOutdated = chunkerMissing + chunkerMismatch;
+      const chunker =
+        docsResult._tag === "Right"
+          ? assessChunkerHealth(docsResult.right, config)
+          : assessChunkerHealth([], config);
       const doctorHealth = assessDoctorHealth({
         walHealth,
         ollamaReachable,
         orphanedData,
-        chunker: { missing: chunkerMissing, mismatch: chunkerMismatch },
+        chunker,
       });
       const checks = openAICodexCheck
         ? [...doctorHealth.checks, openAICodexCheck]
@@ -216,10 +390,7 @@ export function runDoctorCommand(
         openAICodex: openAICodexStatus,
         orphanedData,
         chunker: {
-          outdated: chunkerOutdated,
-          missing: chunkerMissing,
-          mismatch: chunkerMismatch,
-          sample: chunkerSample,
+          ...chunker,
           chunkSize: config.chunkSize,
           chunkOverlap: config.chunkOverlap,
           unit: "chars",
@@ -227,75 +398,26 @@ export function runDoctorCommand(
         didFix: shouldFix,
       };
 
-      yield* Console.log("Health Check Results:\n");
-      for (const line of renderDoctorCheckLines(checks)) {
-        yield* Console.log(line);
-      }
-      yield* Console.log("");
-
-      const hasWarnings = hasDoctorWarnings(checks);
-      if (healthy && !hasWarnings) {
-        yield* Console.log("OK All checks passed! Database is healthy.");
-      } else if (healthy && hasWarnings) {
-        yield* Console.log("OK All checks passed (with warnings).");
-      } else {
-        yield* Console.log("WARN  Issues detected.\n");
-
-        if (shouldFix) {
-          yield* Console.log("Attempting auto-repair...\n");
-          if (orphanedData.chunks > 0 || orphanedData.embeddings > 0) {
-            yield* Console.log(
-              `  OK Cleaned ${orphanedData.chunks} orphaned chunks, ${orphanedData.embeddings} orphaned embeddings`,
-            );
-          }
-          if (chunkerOutdated > 0) {
-            yield* Console.log(
-              `  WARN Chunker: ${chunkerOutdated} docs missing/outdated chunker metadata (run rechunk separately)`,
-            );
-          }
-          yield* Console.log(
-            "\nOK Repair complete. Run 'poink doctor' again to verify.",
-          );
-        } else {
-          yield* Console.log("Recommendations:\n");
-          if (!walHealth.healthy) {
-            yield* Console.log(
-              "  WAL: large write-ahead log detected; run a maintenance write or restart processes using the database",
-            );
-          }
-          if (!ollamaReachable) {
-            yield* Console.log("  Ollama: Ensure Ollama is running (ollama serve)");
-          }
-          if (openAICodexCheck && !openAICodexCheck.healthy) {
-            yield* Console.log(
-              `  OpenAI Codex: ${
-                openAICodexStatus.error ??
-                "run poink providers login --provider openai-codex"
-              }`,
-            );
-          }
-          if (orphanedData.chunks > 0 || orphanedData.embeddings > 0) {
-            yield* Console.log("  Orphaned data: Already cleaned automatically");
-          }
-          if (chunkerOutdated > 0) {
-            yield* Console.log(
-              `  Chunker: ${chunkerOutdated} docs missing/outdated chunker metadata`,
-            );
-            yield* Console.log("          Preview: poink rechunk --dry-run");
-            yield* Console.log("          Apply:   poink rechunk");
-          }
-          yield* Console.log("\n  Run 'poink doctor --fix' to auto-repair issues.");
-        }
-      }
+      yield* logDoctorOutcome(Console, {
+        checks,
+        healthy,
+        shouldFix,
+        walHealth,
+        ollamaReachable,
+        openAICodexCheck,
+        openAICodexStatus,
+        orphanedData,
+        chunkerOutdated: chunker.outdated,
+      });
 
       return {
         resultPayload,
         agentResult: {
           _tag: "doctor" as const,
           healthy,
-          chunkerOutdated,
-          chunkerMissing,
-          chunkerMismatch,
+          chunkerOutdated: chunker.outdated,
+          chunkerMissing: chunker.missing,
+          chunkerMismatch: chunker.mismatch,
         },
       };
     }),
