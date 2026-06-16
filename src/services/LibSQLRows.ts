@@ -6,7 +6,11 @@ import {
   type DocumentFileType,
 } from "../types.js";
 import type { Concept, ConceptAssignment } from "./TaxonomyService.js";
-import { StorageError } from "./StorageRepositories.js";
+import {
+  StorageError,
+  type DocumentWithSourceIdentity,
+} from "./StorageRepositories.js";
+import { decodeStoredSourceIdentity } from "./SourceIntegrity.js";
 
 const SqlInteger = Schema.Union(Schema.Number, Schema.BigIntFromSelf);
 
@@ -20,6 +24,12 @@ const DocumentRow = Schema.Struct({
   tags: Schema.String,
   metadata: Schema.String,
   file_type: Schema.String,
+});
+
+const DocumentWithSourceIdentityRow = Schema.Struct({
+  ...DocumentRow.fields,
+  source_hash_algorithm: Schema.NullOr(Schema.String),
+  source_hash: Schema.NullOr(Schema.String),
 });
 
 const ChunkRow = Schema.Struct({
@@ -143,6 +153,27 @@ export function decodeDocumentRow(
   operation: string,
 ): Document {
   const decoded = decode(DocumentRow, row, operation);
+  return documentFromDecodedRow(decoded, operation);
+}
+
+export function decodeDocumentWithSourceIdentityRow(
+  row: unknown,
+  operation: string,
+): DocumentWithSourceIdentity {
+  const decoded = decode(DocumentWithSourceIdentityRow, row, operation);
+  return {
+    document: documentFromDecodedRow(decoded, operation),
+    sourceIdentity: decodeStoredSourceIdentity(
+      decoded.source_hash_algorithm,
+      decoded.source_hash,
+    ),
+  };
+}
+
+function documentFromDecodedRow(
+  decoded: Schema.Schema.Type<typeof DocumentRow>,
+  operation: string,
+): Document {
   const addedAt = new Date(decoded.added_at);
   if (Number.isNaN(addedAt.getTime())) {
     throw new StorageError({

@@ -39,7 +39,6 @@ function makeDatabase(
     getChunk: () => Effect.succeed(null),
     listChunksByDocument: () => Effect.succeed([]),
     addEmbeddings: () => Effect.void,
-    replaceDocument: () => Effect.void,
     vectorSearch: () => Effect.succeed([]),
     ftsSearch: () => Effect.succeed([]),
     getExpandedContext: () =>

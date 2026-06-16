@@ -6,9 +6,16 @@ import {
   LibraryConfig,
   resolveVisualsConfig,
 } from "../../types.js";
-import { AutoTagger } from "../../services/AutoTagger.js";
+import {
+  AutoTagger,
+  type EnrichmentResult,
+} from "../../services/AutoTagger.js";
 import { PDFExtractor } from "../../services/PDFExtractor.js";
 import { OfficeExtractor } from "../../services/OfficeExtractor.js";
+import {
+  attachSourceFingerprint,
+  fingerprintSource,
+} from "../../services/SourceIntegrity.js";
 import {
   downloadFile,
   filenameFromURL,
@@ -122,6 +129,7 @@ export function runAddCommand(
         localPath = pathOrUrl;
       }
 
+      const initialFingerprint = yield* fingerprintSource(localPath);
       yield* Console.log(`Adding: ${localPath}`);
 
       const autoTag = options["auto-tag"] === true;
@@ -138,6 +146,7 @@ export function runAddCommand(
       const forceProvider = options.provider;
       let enrichedTitle = title;
       let enrichedTags = tags ?? [];
+      let enrichment: EnrichmentResult | undefined;
 
       if (autoTag || enrich) {
         const tagger = yield* AutoTagger;
@@ -155,16 +164,14 @@ export function runAddCommand(
           const enrichResult = yield* tagger.enrich(localPath, content, {
             provider: forceProvider,
           });
+          enrichment = enrichResult;
           enrichedTitle = enrichedTitle || enrichResult.title;
           enrichedTags = [...enrichedTags, ...enrichResult.tags];
           yield* Console.log(`  Title: ${enrichResult.title}`);
           yield* Console.log(`  Summary: ${enrichResult.summary}`);
-          if (
-            enrichResult.proposedConcepts &&
-            enrichResult.proposedConcepts.length > 0
-          ) {
+          if (enrichResult.proposedConcepts?.length) {
             yield* Console.log(
-              `  Auto-accepted ${enrichResult.proposedConcepts.length} concept(s)`,
+              `  Proposed ${enrichResult.proposedConcepts.length} concept(s)`,
             );
           }
         } else if (enrich && !content) {
@@ -182,15 +189,32 @@ export function runAddCommand(
         }
       }
 
+      const addOptions = new AddOptions({
+        title: enrichedTitle,
+        tags: enrichedTags.length > 0 ? enrichedTags : undefined,
+        visuals: visualsEnabled ? true : undefined,
+        visualsMode,
+      });
+      attachSourceFingerprint(addOptions, initialFingerprint);
       const doc = yield* library.add(
         localPath,
-        new AddOptions({
-          title: enrichedTitle,
-          tags: enrichedTags.length > 0 ? enrichedTags : undefined,
-          visuals: visualsEnabled ? true : undefined,
-          visualsMode,
-        }),
+        addOptions,
       );
+      if (enrichment?.proposedConcepts?.length) {
+        const tagger = yield* AutoTagger;
+        const acceptance = yield* Effect.either(
+          tagger.acceptProposals(enrichment.proposedConcepts),
+        );
+        if (acceptance._tag === "Right") {
+          yield* Console.log(
+            `  Accepted ${acceptance.right.accepted} concept(s)`,
+          );
+        } else {
+          yield* Console.log(
+            "  WARN Document added, but concept acceptance failed",
+          );
+        }
+      }
       yield* Console.log(`OK Added: ${doc.title}`);
       yield* Console.log(`  ID: ${doc.id}`);
       yield* Console.log(`  Pages: ${doc.pageCount}`);

@@ -1094,6 +1094,14 @@ export interface AutoTagger {
     content?: string,
     options?: EnrichmentOptions
   ) => Effect.Effect<TagResult, EnrichmentError>;
+
+  readonly acceptProposals: (
+    proposals: ProposedConcept[],
+  ) => Effect.Effect<
+    { accepted: number; rejected: number },
+    EnrichmentError,
+    TaxonomyService | EmbeddingProvider
+  >;
 }
 
 export const AutoTagger = Context.GenericTag<AutoTagger>("AutoTagger");
@@ -1176,34 +1184,15 @@ export function makeAutoTagger(config: Config) {
               ),
           });
 
-          const validatedProposals = result.proposedConcepts || [];
-          if (validatedProposals.length > 0) {
-            yield* Effect.logDebug(
-              `AutoTagger: processing ${validatedProposals.length} proposed concept(s)...`
-            );
-
-            const autoAcceptResult = yield* Effect.either(
-              autoAcceptProposals(config, validatedProposals)
-            );
-
-            if (autoAcceptResult._tag === "Right") {
-              const { accepted, rejected } = autoAcceptResult.right;
-              yield* Effect.logDebug(
-                `AutoTagger: auto-accept results: ${accepted} accepted, ${rejected} rejected`
-              );
-            } else {
-              yield* Effect.logDebug(
-                `AutoTagger: skipped auto-accept (${autoAcceptResult.left.message})`
-              );
-            }
-          }
-
           return {
             ...result,
             confidence: provider === "ollama" ? 0.7 : 0.9,
             provider,
           };
         }),
+
+      acceptProposals: (proposals: ProposedConcept[]) =>
+        autoAcceptProposals(config, proposals),
 
       generateTags: (
         filePath: string,

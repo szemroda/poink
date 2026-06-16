@@ -18,10 +18,12 @@ import {
   OllamaError,
 } from "../types.js";
 import {
+  DocumentIntegrityRepository,
   DocumentRepository,
   LibraryMaintenance,
   SearchRepository,
   type DocumentRepositoryService,
+  type DocumentIntegrityRepositoryService,
   type LibraryMaintenanceService,
   type SearchRepositoryService,
 } from "./StorageRepositories.js";
@@ -33,6 +35,7 @@ import { VisualEnrichment } from "./VisualEnrichment.js";
 import { DEFAULT_QUEUE_CONFIG } from "./EmbeddingQueue.js";
 
 type DatabaseService = DocumentRepositoryService &
+  DocumentIntegrityRepositoryService &
   SearchRepositoryService &
   LibraryMaintenanceService;
 type EmbeddingProviderService = Context.Tag.Service<typeof EmbeddingProvider>;
@@ -59,6 +62,8 @@ function makeDatabase(
     listChunksByDocument: () => Effect.succeed([]),
     addEmbeddings: () => Effect.void,
     replaceDocument: () => Effect.void,
+    getDocumentWithSourceIdentity: () => Effect.succeed(null),
+    listDocumentsWithSourceIdentity: () => Effect.succeed([]),
     vectorSearch: () => Effect.succeed([]),
     ftsSearch: () => Effect.succeed([]),
     getExpandedContext: () =>
@@ -167,6 +172,7 @@ describe("DocumentIngestion.add", () => {
 
     const deps = Layer.mergeAll(
       Layer.succeed(DocumentRepository, database),
+      Layer.succeed(DocumentIntegrityRepository, database),
       Layer.succeed(SearchRepository, database),
       Layer.succeed(LibraryMaintenance, database),
       Layer.succeed(EmbeddingProvider, embeddingProvider),
@@ -192,6 +198,79 @@ describe("DocumentIngestion.add", () => {
     expect(result._tag).toBe("Left");
     expect(embedBatchCalls).toBe(2);
     expect(persistenceCalls).toEqual([]);
+  });
+
+  test("does not persist when the source changes before the final hash", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "poink-add-change-"));
+    tempDirs.push(dir);
+    const docPath = join(dir, "doc.md");
+    writeFileSync(docPath, "# Doc\n\noriginal\n");
+
+    let persisted = false;
+    const database = makeDatabase({
+      replaceDocument: () =>
+        Effect.sync(() => {
+          persisted = true;
+        }),
+    });
+    const embeddingProvider: EmbeddingProviderService = {
+      provider: "ollama" as const,
+      checkHealth: () => Effect.void,
+      embed: () => Effect.succeed([1, 0, 0]),
+      embedBatch: (texts: string[]) =>
+        Effect.sync(() => {
+          writeFileSync(docPath, "# Doc\n\nchanged\n");
+          return texts.map(() => [1, 0, 0]);
+        }),
+    };
+    const markdownExtractor: MarkdownExtractorService = {
+      extractFrontmatter: () => Effect.succeed({}),
+      extract: () =>
+        Effect.succeed({ frontmatter: {}, sections: [], sectionCount: 0 }),
+      process: () =>
+        Effect.succeed({
+          pageCount: 1,
+          frontmatter: {},
+          chunks: [{ page: 1, chunkIndex: 0, content: "original" }],
+        }),
+    };
+    const deps = Layer.mergeAll(
+      Layer.succeed(DocumentRepository, database),
+      Layer.succeed(DocumentIntegrityRepository, database),
+      Layer.succeed(SearchRepository, database),
+      Layer.succeed(LibraryMaintenance, database),
+      Layer.succeed(EmbeddingProvider, embeddingProvider),
+      Layer.succeed(MarkdownExtractor, markdownExtractor),
+      Layer.succeed(PDFExtractor, unusedPDFExtractor()),
+      Layer.succeed(OfficeExtractor, unusedOfficeExtractor()),
+      Layer.succeed(VisualEnrichment, {
+        enrichDocument: () => Effect.succeed([]),
+      }),
+    );
+
+    const result = await Effect.runPromise(
+      Effect.either(
+        Effect.gen(function* () {
+          const library = yield* DocumentIngestion;
+          return yield* library.add(
+            docPath,
+            new AddOptions({ title: "Doc" }),
+          );
+        }),
+      ).pipe(
+        Effect.provide(
+          makeDocumentIngestion(Config.Default).pipe(Layer.provide(deps)),
+        ),
+      ),
+    );
+
+    expect(result._tag).toBe("Left");
+    if (result._tag === "Left") {
+      expect(result.left).toMatchObject({
+        _tag: "SOURCE_CHANGED_DURING_INGESTION",
+      });
+    }
+    expect(persisted).toBe(false);
   });
 
   test("embeds enriched chunk text while preserving display content", async () => {
@@ -246,6 +325,7 @@ describe("DocumentIngestion.add", () => {
 
     const deps = Layer.mergeAll(
       Layer.succeed(DocumentRepository, database),
+      Layer.succeed(DocumentIntegrityRepository, database),
       Layer.succeed(SearchRepository, database),
       Layer.succeed(LibraryMaintenance, database),
       Layer.succeed(EmbeddingProvider, embeddingProvider),
@@ -332,6 +412,7 @@ describe("DocumentIngestion.add", () => {
 
     const deps = Layer.mergeAll(
       Layer.succeed(DocumentRepository, database),
+      Layer.succeed(DocumentIntegrityRepository, database),
       Layer.succeed(SearchRepository, database),
       Layer.succeed(LibraryMaintenance, database),
       Layer.succeed(EmbeddingProvider, embeddingProvider),

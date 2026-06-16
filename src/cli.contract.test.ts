@@ -1,5 +1,6 @@
 ﻿import { describe, expect, test } from "vitest";
 import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { createServer } from "net";
 import { tmpdir } from "os";
@@ -7,6 +8,7 @@ import { join } from "path";
 import { Client } from "@modelcontextprotocol/sdk/client";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { createClient } from "@libsql/client";
+import { removeDirWithRetries } from "./testUtils.js";
 
 function nodeTsxArgs(args: string[]): string[] {
   return ["--import", "tsx", "src/cli.ts", ...args];
@@ -203,7 +205,7 @@ async function withTempLibraryPathAsync<T>(
   try {
     return await fn(dir);
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    await removeDirWithRetries(dir);
   }
 }
 
@@ -612,6 +614,125 @@ describe("CLI JSON Envelope Contract", () => {
       expect(obj.error.code).toBe("INVALID_ARGS");
       expect(String(obj.error.message)).toContain("--max-docs");
     }));
+
+  test(
+    "source integrity drives rechunk planning and deep doctor without exposing hashes",
+    async () =>
+      withTempLibraryPathAsync(async (libraryPath) => {
+      const configPath = join(libraryPath, "config.json");
+      const sourcePath = join(libraryPath, "source.md");
+      writeTestConfig(configPath, libraryPath);
+      writeFileSync(sourcePath, "# Source\n\noriginal\n");
+      const env = envForConfig(configPath);
+
+      expect(runCli(["stats", "--format", "json"], { env }).exitCode).toBe(0);
+
+      const db = createClient({
+        url: `file:${join(libraryPath, "library.db")}`,
+      });
+      const chunker = {
+        id: "markdown-extractor:shared-context-v3",
+        version: 3,
+        unit: "chars",
+        chunkSize: 2000,
+        chunkOverlap: 200,
+      };
+      await db.execute({
+        sql: `INSERT INTO documents
+                (id, title, path, added_at, page_count, size_bytes, tags,
+                 file_type, metadata)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        args: [
+          "doc-1",
+          "Source",
+          sourcePath,
+          "2026-01-01T00:00:00.000Z",
+          1,
+          Buffer.byteLength("# Source\n\noriginal\n"),
+          "[]",
+          "markdown",
+          JSON.stringify({ chunker }),
+        ],
+      });
+      db.close();
+
+      const bulk = JSON.parse(
+        runCli(["rechunk", "--dry-run", "--format", "json"], { env }).stdout,
+      );
+      expect(bulk.result.planned).toBe(0);
+      expect(bulk.result.skippedMissing).toBe(1);
+
+      const includeMissing = JSON.parse(
+        runCli(
+          [
+            "rechunk",
+            "--dry-run",
+            "--include-missing",
+            "--format",
+            "json",
+          ],
+          { env },
+        ).stdout,
+      );
+      expect(includeMissing.result.planned).toBe(1);
+      expect(includeMissing.result.docs[0].code).toBe("missing_identity");
+
+      const explicitMissing = JSON.parse(
+        runCli(
+          ["rechunk", "--dry-run", "--doc", "doc-1", "--format", "json"],
+          { env },
+        ).stdout,
+      );
+      expect(explicitMissing.result.planned).toBe(1);
+
+      const sourceHash = createHash("sha256")
+        .update(readFileSync(sourcePath))
+        .digest("hex");
+      const identityDb = createClient({
+        url: `file:${join(libraryPath, "library.db")}`,
+      });
+      await identityDb.execute({
+        sql: `UPDATE documents
+              SET source_hash_algorithm = 'sha256', source_hash = ?
+              WHERE id = 'doc-1'`,
+        args: [sourceHash],
+      });
+      identityDb.close();
+
+      writeFileSync(sourcePath, "# Source\n\nchanged\n");
+
+      const explicitChanged = JSON.parse(
+        runCli(
+          ["rechunk", "--dry-run", "--doc", "doc-1", "--format", "json"],
+          { env },
+        ).stdout,
+      );
+      expect(explicitChanged.result.docs[0].code).toBe("source_changed");
+      expect(JSON.stringify(explicitChanged)).not.toContain(sourceHash);
+      expect(JSON.stringify(explicitChanged)).not.toContain("sha256");
+
+      const normalDoctor = JSON.parse(
+        runCli(["doctor", "--format", "json"], { env }).stdout,
+      );
+      expect(normalDoctor.result.sourceIntegrity.checked).toBe(0);
+      expect(normalDoctor.result.sourceIntegrity.changed).toBe(0);
+
+      const deepDoctor = JSON.parse(
+        runCli(["doctor", "--deep", "--format", "json"], { env }).stdout,
+      );
+      expect(deepDoctor.result.sourceIntegrity.checked).toBe(1);
+      expect(deepDoctor.result.sourceIntegrity.changed).toBe(1);
+      expect(deepDoctor.result.sourceIntegrity.sample[0]).toMatchObject({
+        id: "doc-1",
+        title: "Source",
+        codes: ["source_changed"],
+      });
+      expect(JSON.stringify(deepDoctor)).not.toContain(sourceHash);
+      expect(JSON.stringify(deepDoctor)).not.toContain("sha256");
+      expect(JSON.stringify(deepDoctor)).not.toContain(sourcePath);
+      }),
+    60_000,
+  );
 
   test("capabilities is self-describing without embedding JSON Schemas", () =>
     withTempLibraryPath((libraryPath) => {

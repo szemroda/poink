@@ -3,12 +3,14 @@ import { Effect, Layer } from "effect";
 import { inferFileTypeFromPath } from "../chunking.js";
 import type { Config, Document } from "../types.js";
 import {
+  DocumentIntegrityRepository,
   DocumentRepository,
   LibraryMaintenance,
   SearchRepository,
   storageEffect,
   type ChunkInput,
   type DocumentRepositoryService,
+  type DocumentIntegrityRepositoryService,
   type EmbeddingInput,
   type LibraryMaintenanceService,
   type SearchRepositoryService,
@@ -20,10 +22,12 @@ import {
   decodeCountRow,
   decodeDocumentCountRow,
   decodeDocumentRow,
+  decodeDocumentWithSourceIdentityRow,
   decodeFtsSearchRow,
   decodeVectorSearchRow,
 } from "./LibSQLRows.js";
 import { tableExists } from "./LibSQLSchema.js";
+import type { SourceIdentity } from "./SourceIntegrity.js";
 
 type RepositoryConfig = {
   embeddingProvider: string;
@@ -34,7 +38,7 @@ const CONTEXT_QUERY_LIMIT = 20;
 const CONTEXT_LENGTH_TOLERANCE = 1.2;
 const DOCUMENT_COUNT_BATCH_SIZE = 500;
 
-function documentArgs(doc: Document): InValue[] {
+function documentBaseArgs(doc: Document): InValue[] {
   return [
     doc.id,
     doc.title,
@@ -48,21 +52,54 @@ function documentArgs(doc: Document): InValue[] {
   ];
 }
 
-function documentUpsertStatement(doc: Document): InStatement {
+function documentArgs(doc: Document, sourceIdentity: SourceIdentity): InValue[] {
+  return [
+    ...documentBaseArgs(doc),
+    sourceIdentity.algorithm,
+    sourceIdentity.hash,
+  ];
+}
+
+function documentInsertStatement(
+  doc: Document,
+  sourceIdentity: SourceIdentity,
+): InStatement {
   return {
     sql: `INSERT INTO documents
-            (id, title, path, added_at, page_count, size_bytes, tags, metadata, file_type)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-          ON CONFLICT (id) DO UPDATE SET
-            title = excluded.title,
-            path = excluded.path,
-            added_at = excluded.added_at,
-            page_count = excluded.page_count,
-            size_bytes = excluded.size_bytes,
-            tags = excluded.tags,
-            metadata = excluded.metadata,
-            file_type = excluded.file_type`,
-    args: documentArgs(doc),
+            (id, title, path, added_at, page_count, size_bytes, tags, metadata,
+             file_type, source_hash_algorithm, source_hash)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    args: documentArgs(doc, sourceIdentity),
+  };
+}
+
+function refreshDocumentStatement(
+  doc: Document,
+  sourceIdentity: SourceIdentity,
+): InStatement {
+  const chunker = JSON.stringify(doc.metadata?.chunker ?? null);
+  const visuals = JSON.stringify(doc.metadata?.visuals ?? null);
+  return {
+    sql: `UPDATE documents
+          SET page_count = ?,
+              size_bytes = ?,
+              metadata = json_set(
+                COALESCE(metadata, '{}'),
+                '$.chunker', json(?),
+                '$.visuals', json(?)
+              ),
+              source_hash_algorithm = ?,
+              source_hash = ?
+          WHERE id = ?`,
+    args: [
+      doc.pageCount,
+      doc.sizeBytes,
+      chunker,
+      visuals,
+      sourceIdentity.algorithm,
+      sourceIdentity.hash,
+      doc.id,
+    ],
   };
 }
 
@@ -92,10 +129,19 @@ function embeddingUpsertStatement(item: EmbeddingInput): InStatement {
   };
 }
 
+function validateSourceIdentity(sourceIdentity: SourceIdentity): void {
+  if (
+    sourceIdentity.algorithm !== "sha256" ||
+    !/^[0-9a-f]{64}$/.test(sourceIdentity.hash)
+  ) {
+    throw new Error("Invalid source identity");
+  }
+}
+
 function makeDocumentRepository(
   db: LibSQLClientService,
   config: RepositoryConfig,
-): DocumentRepositoryService {
+): DocumentRepositoryService & DocumentIntegrityRepositoryService {
   const { client, vectors } = db;
   const embeddingIdentity = {
     provider: config.embeddingProvider,
@@ -105,7 +151,12 @@ function makeDocumentRepository(
   return {
     addDocument: (doc) =>
       storageEffect("add document", async () => {
-        await client.execute(documentUpsertStatement(doc));
+        await client.execute({
+          sql: `INSERT INTO documents
+                  (id, title, path, added_at, page_count, size_bytes, tags, metadata, file_type)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          args: documentBaseArgs(doc),
+        });
       }),
 
     getDocument: (id) =>
@@ -203,11 +254,14 @@ function makeDocumentRepository(
         );
       }),
 
-    replaceDocument: (doc, chunks, embeddings) =>
+    replaceDocument: (doc, chunks, embeddings, sourceIdentity, mode) =>
       storageEffect("replace document", async () => {
+        validateSourceIdentity(sourceIdentity);
         await vectors.ensureForEmbeddings(embeddings, embeddingIdentity);
         const statements: InStatement[] = [
-          documentUpsertStatement(doc),
+          mode === "add"
+            ? documentInsertStatement(doc, sourceIdentity)
+            : refreshDocumentStatement(doc, sourceIdentity),
           {
             sql: "DELETE FROM chunks WHERE doc_id = ?",
             args: [doc.id],
@@ -216,6 +270,40 @@ function makeDocumentRepository(
           ...embeddings.map(embeddingUpsertStatement),
         ];
         await client.batch(statements, "write");
+      }),
+
+    getDocumentWithSourceIdentity: (id) =>
+      storageEffect("get document source identity", async () => {
+        const result = await client.execute({
+          sql: "SELECT * FROM documents WHERE id = ?",
+          args: [id],
+        });
+        const row = result.rows[0];
+        return row
+          ? decodeDocumentWithSourceIdentityRow(
+              row,
+              "get document source identity",
+            )
+          : null;
+      }),
+
+    listDocumentsWithSourceIdentity: (tag) =>
+      storageEffect("list document source identities", async () => {
+        let sql = "SELECT * FROM documents";
+        const args: InValue[] = [];
+        if (tag) {
+          sql +=
+            " WHERE json_array_length(tags) > 0 AND EXISTS (SELECT 1 FROM json_each(tags) WHERE value = ?)";
+          args.push(tag);
+        }
+        sql += " ORDER BY added_at DESC";
+        const result = await client.execute({ sql, args });
+        return result.rows.map((row) =>
+          decodeDocumentWithSourceIdentityRow(
+            row,
+            "list document source identities",
+          ),
+        );
       }),
   };
 }
@@ -579,6 +667,12 @@ export function makeLibSQLRepositories(config: Config) {
   return Layer.mergeAll(
     Layer.effect(
       DocumentRepository,
+      Effect.map(LibSQLClient, (client) =>
+        makeDocumentRepository(client, repositoryConfig),
+      ),
+    ),
+    Layer.effect(
+      DocumentIntegrityRepository,
       Effect.map(LibSQLClient, (client) =>
         makeDocumentRepository(client, repositoryConfig),
       ),

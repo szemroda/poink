@@ -7,6 +7,7 @@ import { afterEach, describe, expect, test } from "vitest";
 import { Config, Document, SearchOptions } from "../types.js";
 import { removeDirWithRetries } from "../testUtils.js";
 import {
+  DocumentIntegrityRepository,
   DocumentRepository,
   LibraryMaintenance,
   SearchRepository,
@@ -14,7 +15,10 @@ import {
 } from "./StorageRepositories.js";
 import { makeStorageLayer } from "./StorageLayer.js";
 import { TaxonomyService } from "./TaxonomyService.js";
-import { classifyLibsqlUrl } from "./LibSQLSchema.js";
+import {
+  classifyLibsqlUrl,
+  initializeLibSQLSchema,
+} from "./LibSQLSchema.js";
 
 const tempDirs: string[] = [];
 
@@ -50,12 +54,18 @@ function makeDocument(id = "doc-1"): Document {
   });
 }
 
+const TEST_SOURCE_IDENTITY = {
+  algorithm: "sha256" as const,
+  hash: "a".repeat(64),
+};
+
 function runStorage<A, E>(
   config: Config,
   effect: Effect.Effect<
     A,
     E,
     | DocumentRepository
+    | DocumentIntegrityRepository
     | SearchRepository
     | LibraryMaintenance
     | TaxonomyService
@@ -108,10 +118,11 @@ describe("libSQL storage", () => {
       makeConfig(),
       Effect.gen(function* () {
         const documents = yield* DocumentRepository;
+        const integrity = yield* DocumentIntegrityRepository;
         const maintenance = yield* LibraryMaintenance;
         const doc = makeDocument();
 
-        yield* documents.replaceDocument(
+        yield* integrity.replaceDocument(
           doc,
           [
             {
@@ -123,10 +134,21 @@ describe("libSQL storage", () => {
             },
           ],
           [{ chunkId: "chunk-1", embedding: [1, 0, 0] }],
+          TEST_SOURCE_IDENTITY,
+          "add",
         );
 
-        const updated = new Document({ ...doc, title: "Updated" });
-        yield* documents.replaceDocument(
+        const updated = new Document({
+          ...doc,
+          title: "Stale title",
+          tags: ["stale"],
+          metadata: {
+            source: "stale",
+            chunker: { id: "new", version: 2 },
+            visuals: { enabled: true, version: 1 },
+          },
+        });
+        yield* integrity.replaceDocument(
           updated,
           [
             {
@@ -138,9 +160,25 @@ describe("libSQL storage", () => {
             },
           ],
           [{ chunkId: "chunk-2", embedding: [0, 1, 0] }],
+          TEST_SOURCE_IDENTITY,
+          "refresh",
         );
 
-        expect((yield* documents.getDocument(doc.id))?.title).toBe("Updated");
+        const stored = yield* documents.getDocument(doc.id);
+        expect(stored?.title).toBe("Document");
+        expect(stored?.tags).toEqual(["test"]);
+        expect(stored?.metadata).toEqual({
+          source: "test",
+          chunker: { id: "new", version: 2 },
+          visuals: { enabled: true, version: 1 },
+        });
+        expect(
+          (yield* integrity.getDocumentWithSourceIdentity(doc.id))
+            ?.sourceIdentity,
+        ).toEqual({
+          status: "valid",
+          identity: TEST_SOURCE_IDENTITY,
+        });
         expect(
           (yield* documents.listChunksByDocument(doc.id)).map(
             (chunk) => chunk.id,
@@ -160,9 +198,10 @@ describe("libSQL storage", () => {
       makeConfig(),
       Effect.gen(function* () {
         const documents = yield* DocumentRepository;
+        const integrity = yield* DocumentIntegrityRepository;
         const doc = makeDocument();
         const result = yield* Effect.either(
-          documents.replaceDocument(
+          integrity.replaceDocument(
             doc,
             [
               {
@@ -174,6 +213,8 @@ describe("libSQL storage", () => {
               },
             ],
             [{ chunkId: "missing-chunk", embedding: [1, 0, 0] }],
+            TEST_SOURCE_IDENTITY,
+            "add",
           ),
         );
 
@@ -199,9 +240,10 @@ describe("libSQL storage", () => {
       makeConfig(),
       Effect.gen(function* () {
         const documents = yield* DocumentRepository;
+        const integrity = yield* DocumentIntegrityRepository;
         const search = yield* SearchRepository;
         const doc = makeDocument();
-        yield* documents.replaceDocument(
+        yield* integrity.replaceDocument(
           doc,
           [
             {
@@ -213,6 +255,8 @@ describe("libSQL storage", () => {
             },
           ],
           [{ chunkId: "chunk-1", embedding: [1, 0, 0] }],
+          TEST_SOURCE_IDENTITY,
+          "add",
         );
 
         const vector = yield* search.vectorSearch(
@@ -270,8 +314,13 @@ describe("libSQL storage", () => {
       makeConfig(url),
       Effect.gen(function* () {
         const documents = yield* DocumentRepository;
+        const integrity = yield* DocumentIntegrityRepository;
         const document = yield* documents.getDocument("legacy");
         expect(document?.fileType).toBe("markdown");
+        expect(
+          (yield* integrity.getDocumentWithSourceIdentity("legacy"))
+            ?.sourceIdentity,
+        ).toEqual({ status: "missing" });
       }),
     );
 
@@ -288,7 +337,112 @@ describe("libSQL storage", () => {
     expect(
       chunkColumns.rows.some((row) => row.name === "embedding_content"),
     ).toBe(true);
+    expect(
+      documentColumns.rows.some(
+        (row) => row.name === "source_hash_algorithm",
+      ),
+    ).toBe(true);
+    expect(
+      documentColumns.rows.some((row) => row.name === "source_hash"),
+    ).toBe(true);
+    const legacyIdentity = await verification.execute(
+      "SELECT source_hash_algorithm, source_hash FROM documents WHERE id = 'legacy'",
+    );
+    expect(legacyIdentity.rows[0]?.source_hash_algorithm).toBeNull();
+    expect(legacyIdentity.rows[0]?.source_hash).toBeNull();
     verification.close();
+  });
+
+  test("isolates malformed source identity from ordinary document reads", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "poink-integrity-"));
+    tempDirs.push(directory);
+    const url = `file:${join(directory, "library.db")}`;
+
+    await runStorage(
+      makeConfig(url),
+      Effect.gen(function* () {
+        const documents = yield* DocumentRepository;
+        yield* documents.addDocument(makeDocument());
+      }),
+    );
+
+    const client = createClient({ url });
+    await client.execute({
+      sql: `UPDATE documents
+            SET source_hash_algorithm = 'sha256', source_hash = ?
+            WHERE id = 'doc-1'`,
+      args: ["g".repeat(64)],
+    });
+    client.close();
+
+    await runStorage(
+      makeConfig(url),
+      Effect.gen(function* () {
+        const documents = yield* DocumentRepository;
+        const integrity = yield* DocumentIntegrityRepository;
+        expect((yield* documents.getDocument("doc-1"))?.id).toBe("doc-1");
+        expect(
+          (yield* integrity.getDocumentWithSourceIdentity("doc-1"))
+            ?.sourceIdentity,
+        ).toEqual({ status: "invalid" });
+      }),
+    );
+  });
+
+  test("fresh schema rejects half-null and uppercase identities", async () => {
+    const client = createClient({ url: ":memory:" });
+    try {
+      await initializeLibSQLSchema(client, "memory");
+      await client.execute(`
+        INSERT INTO documents
+          (id, title, path, added_at, page_count, size_bytes, tags,
+           file_type, metadata)
+        VALUES
+          ('doc-1', 'Document', '/doc.md', '2026-01-01T00:00:00.000Z',
+           1, 10, '[]', 'markdown', '{}')
+      `);
+
+      await expect(
+        client.execute(
+          `UPDATE documents
+           SET source_hash_algorithm = 'sha256', source_hash = NULL
+           WHERE id = 'doc-1'`,
+        ),
+      ).rejects.toThrow();
+      await expect(
+        client.execute({
+          sql: `UPDATE documents
+                SET source_hash_algorithm = 'sha256', source_hash = ?
+                WHERE id = 'doc-1'`,
+          args: ["A".repeat(64)],
+        }),
+      ).rejects.toThrow();
+    } finally {
+      client.close();
+    }
+  });
+
+  test("rejects malformed source identity writes before persistence", async () => {
+    await runStorage(
+      makeConfig(),
+      Effect.gen(function* () {
+        const documents = yield* DocumentRepository;
+        const integrity = yield* DocumentIntegrityRepository;
+        const doc = makeDocument();
+        const result = yield* Effect.either(
+          integrity.replaceDocument(
+            doc,
+            [],
+            [],
+            { algorithm: "sha256", hash: "g".repeat(64) },
+            "add",
+          ),
+        );
+
+        expect(result._tag).toBe("Left");
+        expect(yield* documents.getDocument(doc.id)).toBeNull();
+      }),
+    );
   });
 
   test("fails startup with a diagnostic for an incompatible schema", async () => {

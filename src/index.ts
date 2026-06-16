@@ -2,16 +2,23 @@ export * from "./types.js";
 export { makeStorageLayer } from "./services/StorageLayer.js";
 export { makeLibraryLayer } from "./services/LibraryLayer.js";
 export {
+  DocumentIntegrityRepository,
   DocumentRepository,
   LibraryMaintenance,
   SearchRepository,
   StorageError,
   type ChunkInput,
+  type DocumentIntegrityRepositoryService,
   type DocumentRepositoryService,
+  type DocumentWithSourceIdentity,
   type EmbeddingInput,
   type LibraryMaintenanceService,
   type SearchRepositoryService,
 } from "./services/StorageRepositories.js";
+export type {
+  SourceIdentity,
+  StoredSourceIdentity,
+} from "./services/SourceIntegrity.js";
 export {
   TaxonomyService,
   TaxonomyError,

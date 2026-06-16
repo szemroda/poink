@@ -2,6 +2,7 @@ import { Effect } from "effect";
 import { DocumentIngestion } from "../../services/DocumentIngestion.js";
 import { LibraryStore } from "../../services/LibraryStore.js";
 import { SemanticLibrary } from "../../services/SemanticLibrary.js";
+import { DocumentIntegrityRepository } from "../../services/StorageRepositories.js";
 import { runAddCommand } from "../commands/add.js";
 import { runIngestCommand } from "../commands/ingest.js";
 import { runRechunkCommand } from "../commands/rechunk.js";
@@ -37,9 +38,16 @@ export const runFamily: FamilyRunner = async ({
     const store = yield* LibraryStore;
     const semantic = yield* SemanticLibrary;
     const ingestion = yield* DocumentIngestion;
+    const integrity = yield* DocumentIntegrityRepository;
     const commandGlobals = {
       ...globals,
-      library: { ...store, ...semantic, ...ingestion },
+      library: {
+        ...store,
+        ...semantic,
+        ...ingestion,
+        getWithSourceIdentity: integrity.getDocumentWithSourceIdentity,
+        listWithSourceIdentity: integrity.listDocumentsWithSourceIdentity,
+      },
     };
     const command = parsed.args[0];
     const handler = command ? COMMAND_HANDLERS[command] : undefined;

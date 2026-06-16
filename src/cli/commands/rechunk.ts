@@ -1,12 +1,18 @@
 import { Effect } from "effect";
-import { existsSync } from "fs";
 import { assessDocChunker } from "../../chunking.js";
 import { EmbeddingProvider } from "../../services/EmbeddingProvider.js";
+import type {
+  DocumentWithSourceIdentity,
+} from "../../services/StorageRepositories.js";
+import {
+  attachSourceFingerprint,
+  fingerprintSource,
+  type SourceFingerprint,
+} from "../../services/SourceIntegrity.js";
 import {
   AddOptions,
   LibraryConfig,
   resolveVisualsConfig,
-  type Document,
 } from "../../types.js";
 import {
   CLIError,
@@ -115,12 +121,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function getVisualsMetadata(doc: Document): unknown {
+function getVisualsMetadata(
+  doc: DocumentWithSourceIdentity["document"],
+): unknown {
   return doc.metadata?.visuals;
 }
 
 function needsVisualRefresh(
-  doc: Document,
+  doc: DocumentWithSourceIdentity["document"],
   visualsEnabled: boolean,
   visualsConfig: VisualsConfig,
 ): boolean {
@@ -138,13 +146,15 @@ function needsVisualRefresh(
 }
 
 function buildPlan(
-  docs: readonly Document[],
+  records: readonly DocumentWithSourceIdentity[],
   config: LibraryConfig,
   options: {
     forceAll: boolean;
     includeMissing: boolean;
     visualsEnabled: boolean;
     visualsConfig: VisualsConfig;
+    explicitDocument: boolean;
+    explicitFingerprint?: SourceFingerprint;
   },
 ): RechunkPlan {
   const items: RechunkPlanItem[] = [];
@@ -153,9 +163,17 @@ function buildPlan(
   let plannedVisuals = 0;
   let skippedMissing = 0;
 
-  for (const doc of docs) {
+  for (const record of records) {
+    const doc = record.document;
     const assessment = assessDocChunker(doc, config);
     const isMissing = assessment.code === "missing_metadata";
+    const identityMissing = record.sourceIdentity.status === "missing";
+    const identityInvalid = record.sourceIdentity.status === "invalid";
+    const sourceChanged =
+      record.sourceIdentity.status === "valid" &&
+      options.explicitFingerprint !== undefined &&
+      record.sourceIdentity.identity.hash !==
+        options.explicitFingerprint.identity.hash;
     const visualRefresh = needsVisualRefresh(
       doc,
       options.visualsEnabled,
@@ -164,31 +182,46 @@ function buildPlan(
     const shouldInclude =
       options.forceAll ||
       visualRefresh ||
-      (assessment.needsRechunk && (!isMissing || options.includeMissing));
+      identityInvalid ||
+      sourceChanged ||
+      (identityMissing &&
+        (options.explicitDocument || options.includeMissing)) ||
+      (assessment.needsRechunk &&
+        (!isMissing || options.includeMissing || options.explicitDocument));
 
     if (
-      assessment.needsRechunk &&
-      isMissing &&
+      ((assessment.needsRechunk && isMissing) || identityMissing) &&
       !options.includeMissing &&
-      !options.forceAll
+      !options.forceAll &&
+      !options.explicitDocument
     ) {
       skippedMissing++;
     }
 
     if (!shouldInclude) continue;
 
+    let reason = assessment.reason;
+    let code: string = assessment.code;
+    if (sourceChanged) {
+      reason = "source content changed";
+      code = "source_changed";
+    } else if (identityInvalid) {
+      reason = "source identity is invalid";
+      code = "invalid_identity";
+    } else if (identityMissing) {
+      reason = "source identity is missing";
+      code = "missing_identity";
+    } else if (visualRefresh && !assessment.needsRechunk) {
+      reason = "visual enrichment metadata mismatch";
+      code = "visuals_mismatch";
+    }
+
     items.push({
       id: doc.id,
       title: doc.title,
       path: doc.path,
-      reason:
-        visualRefresh && !assessment.needsRechunk
-          ? "visual enrichment metadata mismatch"
-          : assessment.reason,
-      code:
-        visualRefresh && !assessment.needsRechunk
-          ? "visuals_mismatch"
-          : assessment.code,
+      reason,
+      code,
       expected: assessment.expected,
       actual: visualRefresh
         ? {
@@ -198,9 +231,14 @@ function buildPlan(
         : assessment.actual,
     });
 
-    if (assessment.needsRechunk) {
-      if (isMissing) plannedMissing++;
-      else plannedMismatch++;
+    if (identityMissing || (assessment.needsRechunk && isMissing)) {
+      plannedMissing++;
+    } else if (
+      identityInvalid ||
+      sourceChanged ||
+      assessment.needsRechunk
+    ) {
+      plannedMismatch++;
     }
     if (visualRefresh) plannedVisuals++;
   }
@@ -306,13 +344,13 @@ export function runRechunkCommand(
         : undefined;
       const { maxDocs, maxChunks } = yield* parseLimits(options);
       const config = LibraryConfig.fromConfig(appConfig);
-      const docs = singleDocId
-        ? yield* library.get(singleDocId).pipe(
-            Effect.map((doc) => (doc ? [doc] : [])),
+      const records = singleDocId
+        ? yield* library.getWithSourceIdentity(singleDocId).pipe(
+            Effect.map((record) => (record ? [record] : [])),
           )
-        : yield* library.list(tag);
+        : yield* library.listWithSourceIdentity(tag);
 
-      if (docs.length === 0) {
+      if (records.length === 0) {
         return {
           resultPayload: {
             dryRun,
@@ -325,11 +363,16 @@ export function runRechunkCommand(
         };
       }
 
-      const plan = buildPlan(docs, config, {
+      const explicitFingerprint = singleDocId
+        ? yield* fingerprintSource(records[0].document.path)
+        : undefined;
+      const plan = buildPlan(records, config, {
         forceAll,
         includeMissing,
         visualsEnabled,
         visualsConfig,
+        explicitDocument: singleDocId !== undefined,
+        explicitFingerprint,
       });
       let planned = plan.items;
 
@@ -407,7 +450,7 @@ export function runRechunkCommand(
         visualSettings: getVisualSettings(visualsEnabled, visualsConfig),
         tag: tag ?? null,
         docId: singleDocId ?? null,
-        totalCandidates: docs.length,
+        totalCandidates: records.length,
         planned: planned.length,
         plannedMissing: plan.plannedMissing,
         plannedMismatch: plan.plannedMismatch,
@@ -472,20 +515,24 @@ export function runRechunkCommand(
         const itemResult = yield* Effect.either(
           Effect.gen(function* () {
             const doc = yield* library.get(item.id);
-            if (!doc || !existsSync(doc.path)) return false;
+            if (!doc) return false;
 
+            const replaceOptions = new AddOptions({
+              title: doc.title,
+              tags: doc.tags.length > 0 ? doc.tags : undefined,
+              metadata: doc.metadata,
+              visuals: visualsEnabled ? true : undefined,
+              visualsMode,
+              addedAt: doc.addedAt,
+            });
+            if (singleDocId === item.id && explicitFingerprint) {
+              attachSourceFingerprint(
+                replaceOptions,
+                explicitFingerprint,
+              );
+            }
             const replaceResult = yield* Effect.either(
-              library.replace(
-                doc.path,
-                new AddOptions({
-                  title: doc.title,
-                  tags: doc.tags.length > 0 ? doc.tags : undefined,
-                  metadata: doc.metadata,
-                  visuals: visualsEnabled ? true : undefined,
-                  visualsMode,
-                  addedAt: doc.addedAt,
-                }),
-              ),
+              library.replace(doc.path, replaceOptions),
             );
             if (replaceResult._tag === "Right") return true;
 

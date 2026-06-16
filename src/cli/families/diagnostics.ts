@@ -1,6 +1,7 @@
 import { Effect } from "effect";
 import { EmbeddingProvider } from "../../services/EmbeddingProvider.js";
 import { LibraryStore } from "../../services/LibraryStore.js";
+import { DocumentIntegrityRepository } from "../../services/StorageRepositories.js";
 import { runDoctorCommand } from "../commands/doctor.js";
 import { runInitCommand } from "../commands/init.js";
 import { CLIError, type CliLibrary } from "../runner.js";
@@ -17,12 +18,15 @@ export const runFamily: FamilyRunner = async ({
   const program = Effect.gen(function* () {
     const store = yield* LibraryStore;
     const embedding = yield* EmbeddingProvider;
+    const integrity = yield* DocumentIntegrityRepository;
     const command = parsed.args[0];
     const commandGlobals = {
       ...globals,
       library: {
         ...store,
         checkReady: () => embedding.checkHealth(),
+        getWithSourceIdentity: integrity.getDocumentWithSourceIdentity,
+        listWithSourceIdentity: integrity.listDocumentsWithSourceIdentity,
       } as CliLibrary,
     };
 

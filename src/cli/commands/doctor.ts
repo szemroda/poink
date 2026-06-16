@@ -1,7 +1,19 @@
 import { Effect } from "effect";
 import { existsSync, statSync } from "fs";
-import { LibraryConfig, type Document } from "../../types.js";
+import {
+  LibraryConfig,
+  resolveLibsqlUrl,
+  type Document,
+} from "../../types.js";
 import { assessDocChunker } from "../../chunking.js";
+import { classifyLibsqlUrl } from "../../services/LibSQLSchema.js";
+import type {
+  DocumentWithSourceIdentity,
+} from "../../services/StorageRepositories.js";
+import {
+  fingerprintSource,
+  SourceFileUnavailableError,
+} from "../../services/SourceIntegrity.js";
 import {
   assessDoctorHealth,
   assessWALHealth,
@@ -39,6 +51,25 @@ type ChunkerHealth = {
     reason: string;
     code: string;
   }>;
+};
+
+type SourceIntegritySample = {
+  id: string;
+  title: string;
+  codes: string[];
+  reason: string;
+};
+
+type SourceIntegrityHealth = {
+  checked: number;
+  verified: number;
+  missingIdentity: number;
+  invalidIdentity: number;
+  unavailable: number;
+  unreadable: number;
+  changed: number;
+  sizeMismatch: number;
+  sample: SourceIntegritySample[];
 };
 
 type DoctorConsole = CommandExecutionContext["Console"];
@@ -168,6 +199,167 @@ function assessChunkerHealth(
     missing,
     mismatch,
     sample,
+  };
+}
+
+function sourceIntegrityBase(
+  records: readonly DocumentWithSourceIdentity[],
+): SourceIntegrityHealth {
+  const result: SourceIntegrityHealth = {
+    checked: 0,
+    verified: 0,
+    missingIdentity: 0,
+    invalidIdentity: 0,
+    unavailable: 0,
+    unreadable: 0,
+    changed: 0,
+    sizeMismatch: 0,
+    sample: [],
+  };
+
+  for (const record of records) {
+    if (record.sourceIdentity.status === "missing") {
+      result.missingIdentity++;
+      addSourceIntegritySample(result, record.document, "missing_identity");
+    } else if (record.sourceIdentity.status === "invalid") {
+      result.invalidIdentity++;
+      addSourceIntegritySample(result, record.document, "invalid_identity");
+    }
+  }
+  return result;
+}
+
+function sourceIssueReason(codes: readonly string[]): string {
+  const labels: Record<string, string> = {
+    missing_identity: "missing source identity",
+    invalid_identity: "invalid source identity",
+    source_unavailable: "source unavailable on this host",
+    source_unreadable: "source unreadable",
+    source_changed: "source content changed",
+    size_mismatch: "stored size is stale",
+  };
+  return codes.map((code) => labels[code] ?? code).join("; ");
+}
+
+function addSourceIntegritySample(
+  result: SourceIntegrityHealth,
+  document: Document,
+  code: string,
+): void {
+  const existing = result.sample.find((sample) => sample.id === document.id);
+  if (existing) {
+    if (!existing.codes.includes(code)) existing.codes.push(code);
+    existing.reason = sourceIssueReason(existing.codes);
+    return;
+  }
+  if (result.sample.length >= 10) return;
+  result.sample.push({
+    id: document.id,
+    title: document.title,
+    codes: [code],
+    reason: sourceIssueReason([code]),
+  });
+}
+
+function auditSources(
+  records: readonly DocumentWithSourceIdentity[],
+  initial: SourceIntegrityHealth,
+  Console: DoctorConsole,
+  showProgress: boolean,
+) {
+  return Effect.gen(function* () {
+    const result = initial;
+    for (let index = 0; index < records.length; index++) {
+      const record = records[index];
+      if (showProgress) {
+        yield* Console.log(
+          `Checking source ${index + 1}/${records.length}: ${record.document.title}`,
+        );
+      }
+
+      const fingerprint = yield* Effect.either(
+        fingerprintSource(record.document.path),
+      );
+      if (fingerprint._tag === "Left") {
+        if (fingerprint.left instanceof SourceFileUnavailableError) {
+          result.unavailable++;
+          addSourceIntegritySample(
+            result,
+            record.document,
+            "source_unavailable",
+          );
+        } else {
+          result.unreadable++;
+          addSourceIntegritySample(
+            result,
+            record.document,
+            "source_unreadable",
+          );
+        }
+        continue;
+      }
+
+      result.checked++;
+      if (record.sourceIdentity.status !== "valid") continue;
+      if (
+        record.sourceIdentity.identity.hash !==
+        fingerprint.right.identity.hash
+      ) {
+        result.changed++;
+        addSourceIntegritySample(result, record.document, "source_changed");
+        continue;
+      }
+
+      result.verified++;
+      if (record.document.sizeBytes !== fingerprint.right.sizeBytes) {
+        result.sizeMismatch++;
+        addSourceIntegritySample(result, record.document, "size_mismatch");
+      }
+    }
+    return result;
+  });
+}
+
+function sourceIntegrityHealthCheck(
+  sourceIntegrity: SourceIntegrityHealth,
+): HealthCheck {
+  const errors =
+    sourceIntegrity.invalidIdentity +
+    sourceIntegrity.unreadable +
+    sourceIntegrity.changed;
+  const warnings =
+    sourceIntegrity.missingIdentity +
+    sourceIntegrity.unavailable +
+    sourceIntegrity.sizeMismatch;
+  return {
+    name: "Source Integrity",
+    healthy: errors === 0,
+    severity: errors > 0 ? "error" : warnings > 0 ? "warning" : "ok",
+    details:
+      errors + warnings > 0
+        ? [
+            sourceIntegrity.missingIdentity
+              ? `${sourceIntegrity.missingIdentity} missing identity`
+              : null,
+            sourceIntegrity.invalidIdentity
+              ? `${sourceIntegrity.invalidIdentity} invalid identity`
+              : null,
+            sourceIntegrity.unavailable
+              ? `${sourceIntegrity.unavailable} unavailable`
+              : null,
+            sourceIntegrity.unreadable
+              ? `${sourceIntegrity.unreadable} unreadable`
+              : null,
+            sourceIntegrity.changed
+              ? `${sourceIntegrity.changed} changed`
+              : null,
+            sourceIntegrity.sizeMismatch
+              ? `${sourceIntegrity.sizeMismatch} stale size`
+              : null,
+          ]
+            .filter((value): value is string => value !== null)
+            .join("; ")
+        : undefined,
   };
 }
 
@@ -301,6 +493,7 @@ function logDoctorOutcome(
 
 interface DoctorCommandOptions extends Record<string, unknown> {
   fix?: boolean;
+  deep?: boolean;
 }
 
 export function runDoctorCommand(
@@ -321,6 +514,7 @@ export function runDoctorCommand(
 
       const opts = options;
       const shouldFix = opts.fix === true;
+      const deep = opts.deep === true;
       const appConfig = globals.config!;
       const config = LibraryConfig.fromConfig(appConfig);
       const openAICodexStatus = yield* Effect.promise(() =>
@@ -332,7 +526,8 @@ export function runDoctorCommand(
 
       yield* Console.log("Checking database health...\n");
 
-      if (!existsSync(dbPath)) {
+      const connectionMode = classifyLibsqlUrl(resolveLibsqlUrl(appConfig));
+      if (connectionMode === "local" && !existsSync(dbPath)) {
         yield* Console.log("OK Library not initialized yet (nothing to check)");
         yield* logUninitializedProviderHealth(
           Console,
@@ -371,15 +566,26 @@ export function runDoctorCommand(
         docsResult._tag === "Right"
           ? assessChunkerHealth(docsResult.right, config)
           : assessChunkerHealth([], config);
+      const sourceRecords = yield* library.listWithSourceIdentity();
+      const sourceIntegrityInitial = sourceIntegrityBase(sourceRecords);
+      const sourceIntegrity = deep
+        ? yield* auditSources(
+            sourceRecords,
+            sourceIntegrityInitial,
+            Console,
+            process.stdout.isTTY === true,
+          )
+        : sourceIntegrityInitial;
       const doctorHealth = assessDoctorHealth({
         walHealth,
         ollamaReachable,
         orphanedData,
         chunker,
       });
+      const sourceCheck = sourceIntegrityHealthCheck(sourceIntegrity);
       const checks = openAICodexCheck
-        ? [...doctorHealth.checks, openAICodexCheck]
-        : doctorHealth.checks;
+        ? [...doctorHealth.checks, sourceCheck, openAICodexCheck]
+        : [...doctorHealth.checks, sourceCheck];
       const healthy = checks.every((check) => check.healthy);
 
       const resultPayload = {
@@ -395,6 +601,8 @@ export function runDoctorCommand(
           chunkOverlap: config.chunkOverlap,
           unit: "chars",
         },
+        sourceIntegrity,
+        deep,
         didFix: shouldFix,
       };
 

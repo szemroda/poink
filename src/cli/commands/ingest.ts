@@ -11,6 +11,10 @@ import {
 import { PDFExtractor } from "../../services/PDFExtractor.js";
 import { OfficeExtractor } from "../../services/OfficeExtractor.js";
 import {
+  attachSourceFingerprint,
+  fingerprintSource,
+} from "../../services/SourceIntegrity.js";
+import {
   createInitialState,
   renderIngestProgress,
   type FileStatus,
@@ -238,11 +242,29 @@ function logEnrichmentDetails(Console: CliConsole, metadata: DocumentMetadata) {
     }
     if (enrichment.proposedConcepts?.length) {
       yield* Console.log(
-        `    Auto-accepted: ${enrichment.proposedConcepts
+        `    Proposed: ${enrichment.proposedConcepts
           .map((concept) => concept.prefLabel)
           .join(", ")}`,
       );
     }
+  });
+}
+
+function acceptProposalsAfterCommit(
+  Console: CliConsole,
+  metadata: DocumentMetadata,
+) {
+  return Effect.gen(function* () {
+    const proposals = metadata.enrichment?.proposedConcepts;
+    if (!proposals?.length) return;
+
+    const tagger = yield* AutoTagger;
+    const result = yield* Effect.either(tagger.acceptProposals(proposals));
+    if (result._tag === "Right") return;
+
+    yield* Console.log(
+      "    WARN Document added, but concept acceptance failed",
+    );
   });
 }
 
@@ -430,6 +452,8 @@ export function runIngestCommand(
 
               const fileResult = yield* Effect.either(
                 Effect.gen(function* () {
+                  const initialFingerprint =
+                    yield* fingerprintSource(filePath);
                   const metadata = yield* prepareDocumentMetadata(
                     filePath,
                     settings,
@@ -441,16 +465,19 @@ export function runIngestCommand(
                   );
 
                   // Add the file
+                  const addOptions = new AddOptions({
+                    title: metadata.title,
+                    tags:
+                      metadata.tags.length > 0 ? metadata.tags : undefined,
+                    visuals: visualsEnabled ? true : undefined,
+                    visualsMode,
+                  });
+                  attachSourceFingerprint(addOptions, initialFingerprint);
                   const doc = yield* library.add(
                     filePath,
-                    new AddOptions({
-                      title: metadata.title,
-                      tags:
-                        metadata.tags.length > 0 ? metadata.tags : undefined,
-                      visuals: visualsEnabled ? true : undefined,
-                      visualsMode,
-                    }),
+                    addOptions,
                   );
+                  yield* acceptProposalsAfterCommit(Console, metadata);
 
                   currentFile.status = "done";
                   currentFile.chunks = doc.pageCount;
@@ -559,6 +586,8 @@ export function runIngestCommand(
                   }`,
                 );
 
+                const initialFingerprint =
+                  yield* fingerprintSource(filePath);
                 const metadata = yield* prepareDocumentMetadata(
                   filePath,
                   settings,
@@ -573,15 +602,18 @@ export function runIngestCommand(
                 );
                 yield* logEnrichmentDetails(Console, metadata);
 
+                const addOptions = new AddOptions({
+                  title: metadata.title,
+                  tags: metadata.tags.length > 0 ? metadata.tags : undefined,
+                  visuals: visualsEnabled ? true : undefined,
+                  visualsMode,
+                });
+                attachSourceFingerprint(addOptions, initialFingerprint);
                 const doc = yield* library.add(
                   filePath,
-                  new AddOptions({
-                    title: metadata.title,
-                    tags: metadata.tags.length > 0 ? metadata.tags : undefined,
-                    visuals: visualsEnabled ? true : undefined,
-                    visualsMode,
-                  }),
+                  addOptions,
                 );
+                yield* acceptProposalsAfterCommit(Console, metadata);
                 yield* Console.log(
                   `  OK ${doc.title} (${doc.pageCount} pages)`,
                 );

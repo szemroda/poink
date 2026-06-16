@@ -6,7 +6,6 @@
 
 import { Context, Duration, Effect, Layer } from "effect";
 import { createHash } from "node:crypto";
-import { statSync } from "node:fs";
 import { basename } from "node:path";
 
 import {
@@ -31,10 +30,18 @@ import {
   type VisualsMode,
 } from "./VisualEnrichment.js";
 import {
+  DocumentIntegrityRepository,
   DocumentRepository,
   LibraryMaintenance,
+  type ChunkInput,
+  type EmbeddingInput,
 } from "./StorageRepositories.js";
 import { buildChunkerMetadata, inferFileTypeFromPath } from "../chunking.js";
+import {
+  assertStableSource,
+  fingerprintSource,
+  takeSourceFingerprint,
+} from "./SourceIntegrity.js";
 
 // ============================================================================
 // Helper Functions
@@ -61,8 +68,10 @@ const makeDocumentIngestionService = (appConfig: Config) =>
     const officeExtractor = yield* OfficeExtractor;
     const visualEnrichment = yield* VisualEnrichment;
     const documents = yield* DocumentRepository;
+    const documentIntegrity = yield* DocumentIntegrityRepository;
     const maintenance = yield* LibraryMaintenance;
     const config = LibraryConfig.fromConfig(appConfig);
+    const visualsConfig = resolveVisualsConfig(appConfig);
 
     const fallbackTitle = (path: string) =>
       basename(path).replace(DOCUMENT_TITLE_EXTENSION_RE, "");
@@ -107,7 +116,7 @@ const makeDocumentIngestionService = (appConfig: Config) =>
       options: AddOptions,
     ): VisualsMode => {
       if (options.visuals === true) return options.visualsMode ?? "explicit";
-      return resolveVisualsConfig(appConfig).enabled ? "config" : "disabled";
+      return visualsConfig.enabled ? "config" : "disabled";
     };
 
     const splitVisualChunk = (
@@ -252,6 +261,73 @@ const makeDocumentIngestionService = (appConfig: Config) =>
       return `${context.join("\n")}\n\n${body}`;
     };
 
+    const generateEmbeddings = (
+      documentId: string,
+      chunks: readonly ChunkInput[],
+      logProgress: boolean,
+    ): Effect.Effect<EmbeddingInput[], unknown> =>
+      Effect.gen(function* () {
+        const batchSize = DEFAULT_QUEUE_CONFIG.batchSize;
+        const contents = chunks.map(
+          (chunk) => chunk.embeddingContent ?? chunk.content,
+        );
+        const embeddings: EmbeddingInput[] = [];
+
+        if (logProgress) {
+          yield* Effect.logDebug(
+            `Generating embeddings for ${chunks.length} chunks (batch size: ${batchSize})...`,
+          );
+        }
+
+        for (
+          let batchIndex = 0;
+          batchIndex * batchSize < contents.length;
+          batchIndex++
+        ) {
+          const batchStart = batchIndex * batchSize;
+          const batchEnd = Math.min(batchStart + batchSize, contents.length);
+          const batchContents = contents.slice(batchStart, batchEnd);
+
+          if (logProgress) {
+            yield* Effect.logDebug(
+              `  Batch ${batchIndex}: generating embeddings for indices ${batchStart}-${batchEnd - 1}`,
+            );
+          }
+
+          const batchEmbeddings = yield* embedProvider.embedBatch(
+            batchContents,
+            DEFAULT_QUEUE_CONFIG.concurrency,
+          );
+
+          for (let index = 0; index < batchEmbeddings.length; index++) {
+            embeddings.push({
+              chunkId: `${documentId}-${batchStart + index}`,
+              embedding: batchEmbeddings[index],
+            });
+          }
+
+          if (logProgress) {
+            yield* Effect.logDebug(
+              `  Batch ${batchIndex}: got ${batchEmbeddings.length} embeddings`,
+            );
+            yield* Effect.logDebug(
+              `  Batch ${batchIndex}: prepared embeddings for ${documentId}-${batchStart} to ${documentId}-${batchEnd - 1}`,
+            );
+            yield* Effect.logDebug(
+              `  Processed ${batchEnd}/${contents.length} embeddings`,
+            );
+          }
+
+          if (batchEnd < contents.length) {
+            yield* Effect.sleep(
+              Duration.millis(DEFAULT_QUEUE_CONFIG.batchDelayMs),
+            );
+          }
+        }
+
+        return embeddings;
+      });
+
     return {
       /**
        * Check if embedding provider is ready
@@ -276,10 +352,13 @@ const makeDocumentIngestionService = (appConfig: Config) =>
             });
           }
 
+          const initialFingerprint =
+            takeSourceFingerprint(options) ??
+            (yield* fingerprintSource(resolvedPath));
+
           // Check embedding provider
           yield* embedProvider.checkHealth();
 
-          const stat = statSync(resolvedPath);
           const id = createHash("sha256")
             .update(resolvedPath)
             .digest("hex")
@@ -320,9 +399,8 @@ const makeDocumentIngestionService = (appConfig: Config) =>
             visuals: {
               enabled: visualsMode !== "disabled",
               version: 1,
-              maxImageBytes: resolveVisualsConfig(appConfig).maxImageBytes,
-              maxImagesPerDocument:
-                resolveVisualsConfig(appConfig).maxImagesPerDocument,
+              maxImageBytes: visualsConfig.maxImageBytes,
+              maxImagesPerDocument: visualsConfig.maxImagesPerDocument,
             },
           };
 
@@ -332,7 +410,7 @@ const makeDocumentIngestionService = (appConfig: Config) =>
             path: resolvedPath,
             addedAt: options.addedAt ?? new Date(),
             pageCount,
-            sizeBytes: stat.size,
+            sizeBytes: initialFingerprint.sizeBytes,
             tags: options.tags || [],
             fileType,
             metadata: mergedMetadata,
@@ -347,87 +425,33 @@ const makeDocumentIngestionService = (appConfig: Config) =>
             embeddingContent: buildEmbeddingContent(doc, chunk),
           }));
 
-          // Generate embeddings with gated batching to prevent WASM OOM.
           // Generate every embedding before touching the DB. Otherwise a
-          // mid-file embedding failure can leave a document/chunks row that
-          // causes later ingest runs to skip an incomplete vector index.
-          const batchSize = DEFAULT_QUEUE_CONFIG.batchSize;
-          yield* Effect.logDebug(
-            `Generating embeddings for ${chunks.length} chunks (batch size: ${batchSize})...`,
+          // mid-file failure can leave an incomplete vector index.
+          const embeddingRecords = yield* generateEmbeddings(
+            id,
+            chunkRecords,
+            true,
           );
 
-          const contents = chunkRecords.map(
-            (c) => c.embeddingContent ?? c.content,
-          );
-          const embeddingRecords: Array<{
-            chunkId: string;
-            embedding: number[];
-          }> = [];
-
-          // Process embeddings in gated batches, then commit once below.
-          for (
-            let batchIdx = 0;
-            batchIdx * batchSize < contents.length;
-            batchIdx++
-          ) {
-            const batchStart = batchIdx * batchSize;
-            const batchEnd = Math.min(batchStart + batchSize, contents.length);
-            const batchContents = contents.slice(batchStart, batchEnd);
-
-            yield* Effect.logDebug(
-              `  Batch ${batchIdx}: generating embeddings for indices ${batchStart}-${
-                batchEnd - 1
-              }`,
-            );
-
-            // Generate embeddings for this batch with bounded concurrency
-            const batchEmbeddings = yield* embedProvider.embedBatch(
-              batchContents,
-              DEFAULT_QUEUE_CONFIG.concurrency,
-            );
-
-            yield* Effect.logDebug(
-              `  Batch ${batchIdx}: got ${batchEmbeddings.length} embeddings`,
-            );
-
-            // NOTE: Use explicit for-loop to avoid Effect generator closure issues
-            // The .map() closure was capturing stale batchStart values
-            for (let i = 0; i < batchEmbeddings.length; i++) {
-              const chunkIndex = batchIdx * batchSize + i;
-              embeddingRecords.push({
-                chunkId: `${id}-${chunkIndex}`,
-                embedding: batchEmbeddings[i],
-              });
-            }
-
-            yield* Effect.logDebug(
-              `  Batch ${batchIdx}: prepared embeddings for ${id}-${batchStart} to ${id}-${
-                batchEnd - 1
-              }`,
-            );
-
-            yield* Effect.logDebug(
-              `  Processed ${batchEnd}/${contents.length} embeddings`,
-            );
-
-            // Backpressure: small delay between batches to let GC run
-            if (batchEnd < contents.length) {
-              yield* Effect.sleep(
-                Duration.millis(DEFAULT_QUEUE_CONFIG.batchDelayMs),
-              );
-            }
-          }
+          const finalFingerprint = yield* fingerprintSource(resolvedPath);
+          yield* assertStableSource(initialFingerprint, finalFingerprint);
+          const committedDoc = new Document({
+            ...doc,
+            sizeBytes: finalFingerprint.sizeBytes,
+          });
 
           // Commit document + chunks + embeddings atomically only after all
           // embeddings have been generated.
-          yield* documents.replaceDocument(
-            doc,
+          yield* documentIntegrity.replaceDocument(
+            committedDoc,
             chunkRecords,
             embeddingRecords,
+            finalFingerprint.identity,
+            "add",
           );
           yield* maintenance.checkpoint();
 
-          return doc;
+          return committedDoc;
         }),
 
       /**
@@ -449,14 +473,17 @@ const makeDocumentIngestionService = (appConfig: Config) =>
             return yield* new DocumentNotFoundError({ query: resolvedPath });
           }
 
+          const initialFingerprint =
+            takeSourceFingerprint(options) ??
+            (yield* fingerprintSource(resolvedPath));
+
           // Check embedding provider before doing any work
           yield* embedProvider.checkHealth();
 
-          const stat = statSync(resolvedPath);
           const id = existing.id;
 
           // Detect file type and route to appropriate extractor
-          const fileType = inferFileTypeFromPath(resolvedPath);
+          const fileType = existing.fileType;
 
           // Preserve existing title/tags/metadata by default
           const title = options.title ?? existing.title;
@@ -487,9 +514,8 @@ const makeDocumentIngestionService = (appConfig: Config) =>
             visuals: {
               enabled: visualsMode !== "disabled",
               version: 1,
-              maxImageBytes: resolveVisualsConfig(appConfig).maxImageBytes,
-              maxImagesPerDocument:
-                resolveVisualsConfig(appConfig).maxImagesPerDocument,
+              maxImageBytes: visualsConfig.maxImageBytes,
+              maxImagesPerDocument: visualsConfig.maxImagesPerDocument,
             },
           };
 
@@ -499,7 +525,7 @@ const makeDocumentIngestionService = (appConfig: Config) =>
             path: resolvedPath,
             addedAt: options.addedAt ?? existing.addedAt,
             pageCount,
-            sizeBytes: stat.size,
+            sizeBytes: initialFingerprint.sizeBytes,
             tags,
             fileType,
             metadata: mergedMetadata,
@@ -515,54 +541,30 @@ const makeDocumentIngestionService = (appConfig: Config) =>
           }));
 
           // Generate all embeddings before touching the DB (non-destructive).
-          const batchSize = DEFAULT_QUEUE_CONFIG.batchSize;
-          const contents = chunkRecords.map(
-            (c) => c.embeddingContent ?? c.content,
+          const embeddingRecords = yield* generateEmbeddings(
+            id,
+            chunkRecords,
+            false,
           );
 
-          const embeddingRecords: Array<{
-            chunkId: string;
-            embedding: number[];
-          }> = [];
-
-          for (
-            let batchIdx = 0;
-            batchIdx * batchSize < contents.length;
-            batchIdx++
-          ) {
-            const batchStart = batchIdx * batchSize;
-            const batchEnd = Math.min(batchStart + batchSize, contents.length);
-            const batchContents = contents.slice(batchStart, batchEnd);
-
-            const batchEmbeddings = yield* embedProvider.embedBatch(
-              batchContents,
-              DEFAULT_QUEUE_CONFIG.concurrency,
-            );
-
-            for (let i = 0; i < batchEmbeddings.length; i++) {
-              const chunkIndex = batchIdx * batchSize + i;
-              embeddingRecords.push({
-                chunkId: `${id}-${chunkIndex}`,
-                embedding: batchEmbeddings[i],
-              });
-            }
-
-            if (batchEnd < contents.length) {
-              yield* Effect.sleep(
-                Duration.millis(DEFAULT_QUEUE_CONFIG.batchDelayMs),
-              );
-            }
-          }
+          const finalFingerprint = yield* fingerprintSource(resolvedPath);
+          yield* assertStableSource(initialFingerprint, finalFingerprint);
+          const committedDoc = new Document({
+            ...doc,
+            sizeBytes: finalFingerprint.sizeBytes,
+          });
 
           // Atomic DB replacement
-          yield* documents.replaceDocument(
-            doc,
+          yield* documentIntegrity.replaceDocument(
+            committedDoc,
             chunkRecords,
             embeddingRecords,
+            finalFingerprint.identity,
+            "refresh",
           );
           yield* maintenance.checkpoint();
 
-          return doc;
+          return (yield* documents.getDocument(id)) ?? committedDoc;
         }),
 
     };

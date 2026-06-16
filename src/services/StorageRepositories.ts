@@ -5,6 +5,10 @@ import type {
   PDFChunk,
   SearchOptions,
 } from "../types.js";
+import type {
+  SourceIdentity,
+  StoredSourceIdentity,
+} from "./SourceIntegrity.js";
 
 export class StorageError extends Schema.TaggedError<StorageError>()(
   "StorageError",
@@ -44,6 +48,11 @@ export type EmbeddingInput = {
   embedding: number[];
 };
 
+export type DocumentWithSourceIdentity = {
+  document: Document;
+  sourceIdentity: StoredSourceIdentity;
+};
+
 export interface DocumentRepositoryService {
   readonly addDocument: (
     doc: Document,
@@ -77,16 +86,34 @@ export interface DocumentRepositoryService {
   readonly addEmbeddings: (
     embeddings: EmbeddingInput[],
   ) => Effect.Effect<void, StorageError>;
+}
+
+export interface DocumentIntegrityRepositoryService {
   readonly replaceDocument: (
     doc: Document,
     chunks: ChunkInput[],
     embeddings: EmbeddingInput[],
+    sourceIdentity: SourceIdentity,
+    mode: "add" | "refresh",
   ) => Effect.Effect<void, StorageError>;
+  readonly getDocumentWithSourceIdentity: (
+    id: string,
+  ) => Effect.Effect<DocumentWithSourceIdentity | null, StorageError>;
+  readonly listDocumentsWithSourceIdentity: (
+    tag?: string,
+  ) => Effect.Effect<DocumentWithSourceIdentity[], StorageError>;
 }
 
 export class DocumentRepository extends Context.Tag("DocumentRepository")<
   DocumentRepository,
   DocumentRepositoryService
+>() {}
+
+export class DocumentIntegrityRepository extends Context.Tag(
+  "DocumentIntegrityRepository",
+)<
+  DocumentIntegrityRepository,
+  DocumentIntegrityRepositoryService
 >() {}
 
 export interface SearchRepositoryService {

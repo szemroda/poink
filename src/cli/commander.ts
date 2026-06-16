@@ -288,7 +288,7 @@ function registerMaintenanceCommands(
   program: Command,
   register: RegisterExecutable,
 ): void {
-  register(program.command("doctor").option("--fix"));
+  register(program.command("doctor").option("--fix").option("--deep"));
   register(program.command("check"));
   register(program.command("init"));
   register(program.command("repair"));

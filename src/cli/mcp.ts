@@ -331,9 +331,15 @@ export async function connectMcpServer<E>(
 
   tool("doctor", {
     description: "Health check and upgrade recommendations.",
-    inputSchema: z.object({ fix: z.boolean().optional() }),
+    inputSchema: z.object({
+      fix: z.boolean().optional(),
+      deep: z.boolean().optional(),
+    }),
   }, (input) => {
-    return { argv: ["doctor"], options: { fix: input.fix } };
+    return {
+      argv: ["doctor"],
+      options: { fix: input.fix, deep: input.deep },
+    };
   });
 
   tool("rechunk", {

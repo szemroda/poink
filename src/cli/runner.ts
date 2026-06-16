@@ -15,6 +15,9 @@ import { readFileText } from "../runtime.js";
 import type { DocumentIngestionService } from "../services/DocumentIngestion.js";
 import type { LibraryStoreService } from "../services/LibraryStore.js";
 import type { SemanticLibraryService } from "../services/SemanticLibrary.js";
+import type {
+  DocumentWithSourceIdentity,
+} from "../services/StorageRepositories.js";
 import type { Concept, TaxonomyService } from "../services/TaxonomyService.js";
 import type { Config } from "../types.js";
 import { parseArgs } from "./args.js";
@@ -43,7 +46,14 @@ try {
 
 export type CliLibrary = LibraryStoreService &
   SemanticLibraryService &
-  DocumentIngestionService;
+  DocumentIngestionService & {
+    getWithSourceIdentity: (
+      id: string,
+    ) => Effect.Effect<DocumentWithSourceIdentity | null, unknown>;
+    listWithSourceIdentity: (
+      tag?: string,
+    ) => Effect.Effect<DocumentWithSourceIdentity[], unknown>;
+  };
 
 export class CLIError extends Error {
   readonly _tag = "CLIError";

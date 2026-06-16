@@ -56,7 +56,19 @@ async function initializeDocumentSchema(client: Client): Promise<void> {
       size_bytes INTEGER NOT NULL,
       tags TEXT DEFAULT '[]',
       file_type TEXT NOT NULL DEFAULT 'pdf',
-      metadata TEXT DEFAULT '{}'
+      metadata TEXT DEFAULT '{}',
+      source_hash_algorithm TEXT,
+      source_hash TEXT,
+      CHECK (
+        (source_hash_algorithm IS NULL AND source_hash IS NULL)
+        OR (
+          source_hash_algorithm IS NOT NULL
+          AND source_hash IS NOT NULL
+          AND source_hash_algorithm = 'sha256'
+          AND length(source_hash) = 64
+          AND source_hash = lower(source_hash)
+        )
+      )
     )
   `);
   await ensureColumn(
@@ -72,6 +84,18 @@ async function initializeDocumentSchema(client: Client): Promise<void> {
        ELSE 'pdf'
      END`,
   );
+  await ensureColumn(
+    client,
+    "documents",
+    "source_hash_algorithm",
+    "ALTER TABLE documents ADD COLUMN source_hash_algorithm TEXT",
+  );
+  await ensureColumn(
+    client,
+    "documents",
+    "source_hash",
+    "ALTER TABLE documents ADD COLUMN source_hash TEXT",
+  );
   await verifyColumns(client, "documents", [
     "id",
     "title",
@@ -82,6 +106,8 @@ async function initializeDocumentSchema(client: Client): Promise<void> {
     "tags",
     "file_type",
     "metadata",
+    "source_hash_algorithm",
+    "source_hash",
   ]);
 
   await client.execute(`
@@ -459,11 +485,14 @@ async function ensureColumn(
   table: string,
   column: string,
   alterSql: string,
-  backfillSql: string,
+  backfillSql?: string,
 ): Promise<void> {
   const columns = await readColumns(client, table);
   if (columns.has(column)) return;
-  await client.batch([alterSql, backfillSql], "write");
+  await client.batch(
+    backfillSql ? [alterSql, backfillSql] : [alterSql],
+    "write",
+  );
 }
 
 async function verifyColumns(
