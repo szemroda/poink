@@ -12,6 +12,25 @@ import { buildStoreLayer } from "../runtime.js";
 import { runFamilyEffect } from "./shared.js";
 import type { FamilyRunner } from "./types.js";
 
+const LIBRARY_COMMANDS = new Set([
+  "chunk",
+  "doc",
+  "page",
+  "list",
+  "read",
+  "get",
+  "remove",
+  "tag",
+  "stats",
+]);
+
+function unknownStoreCommand(command: string | undefined): CLIError {
+  return new CLIError(
+    "UNKNOWN_COMMAND",
+    `Unknown store command: ${command}`,
+  );
+}
+
 export const runFamily: FamilyRunner = async ({
   parsed,
   globals,
@@ -32,34 +51,23 @@ export const runFamily: FamilyRunner = async ({
         parsed.options,
       );
     }
-    if (
-      command === "chunk" ||
-      command === "doc" ||
-      command === "page" ||
-      command === "list" ||
-      command === "read" ||
-      command === "get" ||
-      command === "remove" ||
-      command === "tag" ||
-      command === "stats"
-    ) {
-      return yield* runCommandWithContext(
-        parsed.args,
-        commandGlobals,
-        ({ Console, format, library, globals: contextGlobals }) =>
-          runLibraryCommand(
-            parsed.args,
-            format,
-            library,
-            Console,
-            contextGlobals.verbose,
-            parsed.options,
-          ),
-        parsed.options,
-      );
+    if (!command || !LIBRARY_COMMANDS.has(command)) {
+      return yield* Effect.fail(unknownStoreCommand(command));
     }
-    return yield* Effect.fail(
-      new CLIError("UNKNOWN_COMMAND", `Unknown store command: ${command}`),
+
+    return yield* runCommandWithContext(
+      parsed.args,
+      commandGlobals,
+      ({ Console, format, library, globals: contextGlobals }) =>
+        runLibraryCommand(
+          parsed.args,
+          format,
+          library,
+          Console,
+          contextGlobals.verbose,
+          parsed.options,
+        ),
+      parsed.options,
     );
   });
   return runFamilyEffect(

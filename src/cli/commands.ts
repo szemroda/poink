@@ -53,6 +53,24 @@ const LIBRARY_COMMANDS = new Set([
   "stats",
 ]);
 
+type CommandRunner = (
+  args: string[],
+  globals: GlobalCLIOptions,
+  options: Record<string, unknown>,
+) => ReturnType<typeof runAddCommand>;
+
+const DIRECT_COMMANDS = new Map<string, CommandRunner>([
+  ["capabilities", runCapabilitiesCommand],
+  ["add", runAddCommand],
+  ["taxonomy", runTaxonomyCommand],
+  ["init", runInitCommand],
+  ["repair", runRepairCommand],
+  ["ingest", runIngestCommand],
+  ["reindex", runReindexCommand],
+  ["rechunk", runRechunkCommand],
+  ["setup", runSetupCommand],
+]);
+
 function runInformationalCommand(
   args: string[],
   globals: GlobalCLIOptions,
@@ -108,35 +126,15 @@ export function dispatchCommand(
     );
   }
 
-  if (command === "capabilities") {
-    return runCapabilitiesCommand(args, globals, options);
-  }
-  if (command === "add") {
-    return runAddCommand(args, globals, options);
+  const directCommand = DIRECT_COMMANDS.get(command);
+  if (directCommand) {
+    return directCommand(args, globals, options);
   }
   if (SEARCH_COMMANDS.has(command)) {
     return runSearchCommand(args, globals, options);
   }
-  if (command === "taxonomy") {
-    return runTaxonomyCommand(args, globals, options);
-  }
   if (DOCTOR_COMMANDS.has(command)) {
     return runDoctorCommand(args, globals, options);
-  }
-  if (command === "init") {
-    return runInitCommand(args, globals, options);
-  }
-  if (command === "repair") {
-    return runRepairCommand(args, globals, options);
-  }
-  if (command === "ingest") {
-    return runIngestCommand(args, globals, options);
-  }
-  if (command === "reindex") {
-    return runReindexCommand(args, globals, options);
-  }
-  if (command === "rechunk") {
-    return runRechunkCommand(args, globals, options);
   }
   if (command === "config") {
     return runCommandWithContext(
@@ -154,9 +152,6 @@ export function dispatchCommand(
         runProvidersCommand(args, format, Console, options),
       options,
     );
-  }
-  if (command === "setup") {
-    return runSetupCommand(args, globals, options);
   }
   if (LIBRARY_COMMANDS.has(command)) {
     return runCommandWithContext(

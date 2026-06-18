@@ -5,6 +5,10 @@ import { resolveLibraryPath } from "../types.js";
 import type { LogLevel } from "../agent/protocol.js";
 import { toEffectLogLevel } from "../logger.js";
 
+function ensureLibraryDirectory(config: Config): void {
+  mkdirSync(resolveLibraryPath(config), { recursive: true });
+}
+
 export function withConfiguredLogging<A, E, R>(
   effect: Effect.Effect<A, E, R>,
   logLevel: LogLevel,
@@ -13,7 +17,7 @@ export function withConfiguredLogging<A, E, R>(
 }
 
 export async function buildStoreLayer(config: Config) {
-  mkdirSync(resolveLibraryPath(config), { recursive: true });
+  ensureLibraryDirectory(config);
   const [{ makeStorageLayer }, { makeLibraryStore }] = await Promise.all([
     import("../services/StorageLayer.js"),
     import("../services/LibraryStore.js"),
@@ -23,7 +27,7 @@ export async function buildStoreLayer(config: Config) {
 }
 
 export async function buildSearchLayer(config: Config) {
-  mkdirSync(resolveLibraryPath(config), { recursive: true });
+  ensureLibraryDirectory(config);
   const [
     { makeStorageLayer },
     { makeEmbeddingProvider },
@@ -45,7 +49,7 @@ export async function buildSearchLayer(config: Config) {
 }
 
 export async function buildIngestionLayer(config: Config) {
-  mkdirSync(resolveLibraryPath(config), { recursive: true });
+  ensureLibraryDirectory(config);
   const [
     { makeStorageLayer },
     { makeEmbeddingProvider },
@@ -118,7 +122,7 @@ export async function buildIngestionLayer(config: Config) {
 }
 
 export async function buildDiagnosticsLayer(config: Config) {
-  mkdirSync(resolveLibraryPath(config), { recursive: true });
+  ensureLibraryDirectory(config);
   const [
     { makeStorageLayer },
     { makeEmbeddingProvider },

@@ -18,11 +18,18 @@ type SearchCommandHandler = (
   options: Record<string, unknown>,
 ) => Effect.Effect<unknown, unknown, unknown>;
 
+const SEARCH_FAMILY_NAME = "search";
+
 const COMMAND_HANDLERS: Readonly<Record<string, SearchCommandHandler>> = {
   search: runSearchCommand,
   "search-pack": runSearchCommand,
   taxonomy: runTaxonomyCommand,
 };
+
+function resolveCommandHandler(command: string | undefined) {
+  if (!command) return undefined;
+  return COMMAND_HANDLERS[command];
+}
 
 export const runFamily: FamilyRunner = async ({
   parsed,
@@ -38,12 +45,12 @@ export const runFamily: FamilyRunner = async ({
       library: { ...store, ...semantic } as CliLibrary,
     };
     const command = parsed.args[0];
-    const handler = command ? COMMAND_HANDLERS[command] : undefined;
+    const handler = resolveCommandHandler(command);
     if (!handler) {
       return yield* Effect.fail(
         new CLIError(
           "UNKNOWN_COMMAND",
-          `Unknown search command: ${command}`,
+          `Unknown ${SEARCH_FAMILY_NAME} command: ${command}`,
         ),
       );
     }

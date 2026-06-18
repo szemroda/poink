@@ -13,6 +13,10 @@ import {
 import { type Config, OpenAICodexError } from "../types.js";
 
 export const MIN_CODEX_VERSION = "0.130.0";
+const MISSING_RUNTIME_ERROR =
+  "Bundled Codex runtime was not found. Reinstall poink so @openai/codex is present.";
+const AUTHENTICATION_ERROR =
+  "Codex authentication is missing or expired. Run: poink providers login --provider openai-codex";
 
 export type CodexProviderManager = {
   getLanguageModel(modelId: string): LanguageModelV3;
@@ -45,10 +49,7 @@ function managedCodexPath(): string | undefined {
 function requireManagedCodexPath(): string {
   const path = managedCodexPath();
   if (!path) {
-    throw new OpenAICodexError({
-      reason:
-        "Bundled Codex runtime was not found. Reinstall poink so @openai/codex is present.",
-    });
+    throw new OpenAICodexError({ reason: MISSING_RUNTIME_ERROR });
   }
   return path;
 }
@@ -139,8 +140,10 @@ export async function runOpenAICodexLogin(
 function createManager(): CodexProviderManager {
   let provider: CodexAppServerProvider | null = null;
 
-  const getProvider = () => {
-    if (provider) return provider;
+  const getProvider = (): CodexAppServerProvider => {
+    if (provider) {
+      return provider;
+    }
     provider = createCodexAppServer({
       defaultSettings: {
         codexPath: requireManagedCodexPath(),
@@ -183,7 +186,9 @@ const managerScope = new AsyncLocalStorage<Set<string>>();
 const managers = new Map<string, ManagerEntry>();
 
 async function closeManagerEntry(key: string, entry: ManagerEntry): Promise<void> {
-  if (managers.get(key) !== entry) return;
+  if (managers.get(key) !== entry) {
+    return;
+  }
   managers.delete(key);
   await entry.manager.close();
 }
@@ -237,31 +242,38 @@ export async function closeOpenAICodexProviderManager(): Promise<void> {
   await Promise.all(entries.map(([, entry]) => entry.manager.close()));
 }
 
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "message" in error &&
+    typeof error.message === "string"
+  ) {
+    return error.message;
+  }
+  return String(error);
+}
+
 export function describeOpenAICodexRuntimeError(error: unknown): string {
   if (isAuthenticationError(error)) {
-    return "Codex authentication is missing or expired. Run: poink providers login --provider openai-codex";
+    return AUTHENTICATION_ERROR;
   }
 
   if (isUnsupportedFeatureError(error)) {
     return `Bundled Codex runtime is too old for app-server support. Reinstall poink so @openai/codex is current. Minimum supported version: ${MIN_CODEX_VERSION}.`;
   }
 
-  const message =
-    error instanceof Error
-      ? error.message
-      : typeof error === "object" &&
-          error !== null &&
-          "message" in error &&
-          typeof (error as { message?: unknown }).message === "string"
-        ? (error as { message: string }).message
-        : String(error);
+  const message = getErrorMessage(error);
 
   if (/ENOENT|not found|cannot find|no such file/i.test(message)) {
-    return "Bundled Codex runtime was not found. Reinstall poink so @openai/codex is present.";
+    return MISSING_RUNTIME_ERROR;
   }
 
   if (/unauth|login|oauth|forbidden|401|403/i.test(message)) {
-    return "Codex authentication is missing or expired. Run: poink providers login --provider openai-codex";
+    return AUTHENTICATION_ERROR;
   }
 
   return message;
@@ -290,7 +302,7 @@ export async function checkOpenAICodexRuntime(
       ...base,
       canStart: false,
       authenticated: false,
-      error: "Bundled Codex runtime was not found. Reinstall poink so @openai/codex is present.",
+      error: MISSING_RUNTIME_ERROR,
     };
   }
 

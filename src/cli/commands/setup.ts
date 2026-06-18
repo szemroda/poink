@@ -111,6 +111,11 @@ type SetupPlan = {
   codexAuthAction: CodexAuthAction | null;
 };
 
+type ModelSelection = {
+  embeddingProvider: EmbeddingProviderName;
+  languageProvider: ProviderName;
+};
+
 interface SetupCommandOptions extends Record<string, unknown> {
   dryRun?: boolean;
   "dry-run"?: boolean;
@@ -254,6 +259,95 @@ function providerChoices<T extends string>(providers: readonly T[]) {
     name: provider,
     value: provider,
   }));
+}
+
+async function promptRequiredText(
+  message: string,
+  defaultValue: string,
+  requiredMessage: string,
+): Promise<string> {
+  return (
+    await input({
+      message,
+      default: defaultValue,
+      validate: (value) => value.trim().length > 0 || requiredMessage,
+    })
+  ).trim();
+}
+
+async function promptLibraryPath(
+  mode: SetupMode,
+  config: Config,
+): Promise<string> {
+  if (mode !== "init") return config.library.path;
+  return promptRequiredText(
+    "Library path",
+    config.library.path,
+    "Library path is required",
+  );
+}
+
+async function promptModelSelection(
+  config: Config,
+  target: ConfigDraft,
+  changes: ConfigChange[],
+  visualsEnabled: boolean,
+): Promise<ModelSelection> {
+  const currentEmbeddingProvider = isEmbeddingProvider(
+    config.models.embedding.provider,
+  )
+    ? config.models.embedding.provider
+    : "ollama";
+  const embeddingProvider = await select({
+    message: "Embedding provider",
+    default: currentEmbeddingProvider,
+    choices: providerChoices(EMBEDDING_PROVIDERS),
+  });
+  applyChange(target, "models.embedding.provider", embeddingProvider, changes);
+
+  const embeddingModel = await promptRequiredText(
+    "Embedding model",
+    selectDefaultModel({
+      kind: "embedding",
+      currentProvider: config.models.embedding.provider,
+      currentModel: config.models.embedding.model,
+      selectedProvider: embeddingProvider,
+    }),
+    "Embedding model is required",
+  );
+  applyChange(target, "models.embedding.model", embeddingModel, changes);
+
+  if (visualsEnabled) {
+    console.log("Choose an enrichment/judge model that can process images.");
+  }
+
+  const currentLanguageProvider = isLanguageProvider(
+    config.models.enrichment.provider,
+  )
+    ? config.models.enrichment.provider
+    : "ollama";
+  const languageProvider = await select({
+    message: "Enrichment and judge provider",
+    default: currentLanguageProvider,
+    choices: providerChoices(LANGUAGE_PROVIDERS),
+  });
+  applyChange(target, "models.enrichment.provider", languageProvider, changes);
+  applyChange(target, "models.judge.provider", languageProvider, changes);
+
+  const languageModel = await promptRequiredText(
+    "Enrichment and judge model",
+    selectDefaultModel({
+      kind: "language",
+      currentProvider: config.models.enrichment.provider,
+      currentModel: config.models.enrichment.model,
+      selectedProvider: languageProvider,
+    }),
+    "Language model is required",
+  );
+  applyChange(target, "models.enrichment.model", languageModel, changes);
+  applyChange(target, "models.judge.model", languageModel, changes);
+
+  return { embeddingProvider, languageProvider };
 }
 
 async function promptAuthForProvider(
@@ -422,14 +516,7 @@ async function buildSetupPlan(mode: SetupMode, dryRun: boolean): Promise<SetupPl
   }
   console.log("");
 
-  const selectedLibraryPath =
-    mode === "init"
-      ? (await input({
-          message: "Library path",
-          default: config.library.path,
-          validate: (value) => value.trim().length > 0 || "Library path is required",
-        })).trim()
-      : config.library.path;
+  const selectedLibraryPath = await promptLibraryPath(mode, config);
 
   const target = cloneConfig(config);
   const changes: ConfigChange[] = [];
@@ -444,55 +531,12 @@ async function buildSetupPlan(mode: SetupMode, dryRun: boolean): Promise<SetupPl
   });
   applyChange(target, "ingest.visuals.enabled", visualsEnabled, changes);
 
-  const currentEmbeddingProvider = isEmbeddingProvider(config.models.embedding.provider)
-    ? config.models.embedding.provider
-    : "ollama";
-  const embeddingProvider = await select({
-    message: "Embedding provider",
-    default: currentEmbeddingProvider,
-    choices: providerChoices(EMBEDDING_PROVIDERS),
-  });
-  applyChange(target, "models.embedding.provider", embeddingProvider, changes);
-
-  const embeddingModel = (await input({
-    message: "Embedding model",
-    default: selectDefaultModel({
-      kind: "embedding",
-      currentProvider: config.models.embedding.provider,
-      currentModel: config.models.embedding.model,
-      selectedProvider: embeddingProvider,
-    }),
-    validate: (value) => value.trim().length > 0 || "Embedding model is required",
-  })).trim();
-  applyChange(target, "models.embedding.model", embeddingModel, changes);
-
-  if (visualsEnabled) {
-    console.log("Choose an enrichment/judge model that can process images.");
-  }
-
-  const currentLanguageProvider = isLanguageProvider(config.models.enrichment.provider)
-    ? config.models.enrichment.provider
-    : "ollama";
-  const languageProvider = await select({
-    message: "Enrichment and judge provider",
-    default: currentLanguageProvider,
-    choices: providerChoices(LANGUAGE_PROVIDERS),
-  });
-  applyChange(target, "models.enrichment.provider", languageProvider, changes);
-  applyChange(target, "models.judge.provider", languageProvider, changes);
-
-  const languageModel = (await input({
-    message: "Enrichment and judge model",
-    default: selectDefaultModel({
-      kind: "language",
-      currentProvider: config.models.enrichment.provider,
-      currentModel: config.models.enrichment.model,
-      selectedProvider: languageProvider,
-    }),
-    validate: (value) => value.trim().length > 0 || "Language model is required",
-  })).trim();
-  applyChange(target, "models.enrichment.model", languageModel, changes);
-  applyChange(target, "models.judge.model", languageModel, changes);
+  const { embeddingProvider, languageProvider } = await promptModelSelection(
+    config,
+    target,
+    changes,
+    visualsEnabled,
+  );
 
   const rolesByProvider = selectedProviderRoles({
     embeddingProvider,

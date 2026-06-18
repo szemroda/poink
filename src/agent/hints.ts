@@ -74,6 +74,165 @@ function shellAction(description: string, ...argv: string[]): NextAction {
   return { kind: "shell", argv, description };
 }
 
+type SearchResult = Extract<CommandResult, { _tag: "search" }>;
+type NoResultsResult = Extract<CommandResult, { _tag: "noResults" }>;
+
+function hasNoSearchMatches(result: SearchResult): boolean {
+  return result.results.length === 0 && result.concepts.length === 0;
+}
+
+function generateNoResultHints(result: NoResultsResult): string[] {
+  const alternativeSearch = result.wasFts
+    ? `\`poink search "${result.query}"\` -- Try semantic vector search`
+    : `\`poink search "${result.query}" --fts\` -- Try full-text keyword search`;
+
+  return [
+    alternativeSearch,
+    `\`poink list\` -- Browse all documents`,
+    `\`poink taxonomy search "${result.query}"\` -- Search taxonomy concepts`,
+  ];
+}
+
+function generateSearchHints(result: SearchResult): string[] {
+  if (hasNoSearchMatches(result)) {
+    return generateNoResultHints({
+      _tag: "noResults",
+      query: result.query,
+      wasFts: result.wasFts,
+    });
+  }
+
+  const hints: string[] = [];
+  const topResult = result.results[0];
+  if (topResult) {
+    hints.push(
+      `\`poink read "${topResult.title}"\` -- Full metadata for top result`,
+    );
+    if (!result.hadExpand) {
+      hints.push(
+        `\`poink search "${result.query}" --expand 2000\` -- Get expanded context around matches`,
+      );
+    }
+  }
+
+  const topConcept = result.concepts[0];
+  if (topConcept) {
+    hints.push(
+      `\`poink taxonomy tree "${topConcept.id}"\` -- Navigate concept hierarchy`,
+    );
+  }
+
+  if (topResult && !result.wasFts) {
+    hints.push(
+      `\`poink search "${result.query}" --fts\` -- Try keyword matching instead`,
+    );
+  }
+  return hints;
+}
+
+function generateNoResultActions(result: NoResultsResult): NextAction[] {
+  const alternativeSearch = result.wasFts
+    ? shellAction(
+        "Try semantic vector search",
+        "poink",
+        "search",
+        result.query,
+      )
+    : shellAction(
+        "Try full-text keyword search",
+        "poink",
+        "search",
+        result.query,
+        "--fts",
+      );
+
+  return [
+    alternativeSearch,
+    shellAction("Browse all documents", "poink", "list"),
+    shellAction(
+      "Search taxonomy concepts",
+      "poink",
+      "taxonomy",
+      "search",
+      result.query,
+    ),
+  ];
+}
+
+function generateSearchActions(result: SearchResult): NextAction[] {
+  if (hasNoSearchMatches(result)) {
+    return generateNoResultActions({
+      _tag: "noResults",
+      query: result.query,
+      wasFts: result.wasFts,
+    });
+  }
+
+  const actions: NextAction[] = [];
+  const topResult = result.results[0];
+  if (topResult) {
+    actions.push(
+      shellAction(
+        "Full metadata for top result",
+        "poink",
+        "read",
+        topResult.docId,
+      ),
+    );
+
+    if (topResult.chunkId) {
+      actions.push(
+        shellAction(
+          "Fetch exact top chunk text",
+          "poink",
+          "chunk",
+          "get",
+          topResult.chunkId,
+        ),
+      );
+    }
+
+    if (!result.hadExpand) {
+      actions.push(
+        shellAction(
+          "Get expanded context around matches",
+          "poink",
+          "search",
+          result.query,
+          "--expand",
+          "2000",
+        ),
+      );
+    }
+  }
+
+  const topConcept = result.concepts[0];
+  if (topConcept) {
+    actions.push(
+      shellAction(
+        "Navigate concept hierarchy",
+        "poink",
+        "taxonomy",
+        "tree",
+        topConcept.id,
+      ),
+    );
+  }
+
+  if (topResult && !result.wasFts) {
+    actions.push(
+      shellAction(
+        "Try keyword matching instead",
+        "poink",
+        "search",
+        result.query,
+        "--fts",
+      ),
+    );
+  }
+  return actions;
+}
+
 /**
  * Generate contextual next-action hints from a command result.
  * Returns an array of copy-pasteable command strings with descriptions.
@@ -81,37 +240,7 @@ function shellAction(description: string, ...argv: string[]): NextAction {
 export function generateHints(result: CommandResult): string[] {
   switch (result._tag) {
     case "search": {
-      const hints: string[] = [];
-      if (result.results.length > 0) {
-        const top = result.results[0];
-        hints.push(
-          `\`poink read "${top.title}"\` -- Full metadata for top result`
-        );
-        if (!result.hadExpand) {
-          hints.push(
-            `\`poink search "${result.query}" --expand 2000\` -- Get expanded context around matches`
-          );
-        }
-      }
-      if (result.concepts.length > 0) {
-        const topConcept = result.concepts[0];
-        hints.push(
-          `\`poink taxonomy tree "${topConcept.id}"\` -- Navigate concept hierarchy`
-        );
-      }
-      if (result.results.length > 0 && !result.wasFts) {
-        hints.push(
-          `\`poink search "${result.query}" --fts\` -- Try keyword matching instead`
-        );
-      }
-      if (result.results.length === 0 && result.concepts.length === 0) {
-        return generateHints({
-          _tag: "noResults",
-          query: result.query,
-          wasFts: result.wasFts,
-        });
-      }
-      return hints;
+      return generateSearchHints(result);
     }
 
     case "searchPack": {
@@ -135,21 +264,7 @@ export function generateHints(result: CommandResult): string[] {
     }
 
     case "noResults": {
-      const hints: string[] = [];
-      if (!result.wasFts) {
-        hints.push(
-          `\`poink search "${result.query}" --fts\` -- Try full-text keyword search`
-        );
-      } else {
-        hints.push(
-          `\`poink search "${result.query}"\` -- Try semantic vector search`
-        );
-      }
-      hints.push(
-        `\`poink list\` -- Browse all documents`,
-        `\`poink taxonomy search "${result.query}"\` -- Search taxonomy concepts`
-      );
-      return hints;
+      return generateNoResultHints(result);
     }
 
     case "read": {
@@ -378,73 +493,7 @@ export function generateHints(result: CommandResult): string[] {
 export function generateNextActions(result: CommandResult): NextAction[] {
   switch (result._tag) {
     case "search": {
-      const actions: NextAction[] = [];
-      if (result.results.length > 0) {
-        const top = result.results[0];
-        actions.push(
-          shellAction("Full metadata for top result", "poink", "read", top.docId),
-        );
-
-        if (top.chunkId) {
-          actions.push(
-            shellAction(
-              "Fetch exact top chunk text",
-              "poink",
-              "chunk",
-              "get",
-              top.chunkId,
-            ),
-          );
-        }
-
-        if (!result.hadExpand) {
-          actions.push(
-            shellAction(
-              "Get expanded context around matches",
-              "poink",
-              "search",
-              result.query,
-              "--expand",
-              "2000",
-            ),
-          );
-        }
-      }
-
-      if (result.concepts.length > 0) {
-        const topConcept = result.concepts[0];
-        actions.push(
-          shellAction(
-            "Navigate concept hierarchy",
-            "poink",
-            "taxonomy",
-            "tree",
-            topConcept.id,
-          ),
-        );
-      }
-
-      if (result.results.length > 0 && !result.wasFts) {
-        actions.push(
-          shellAction(
-            "Try keyword matching instead",
-            "poink",
-            "search",
-            result.query,
-            "--fts",
-          ),
-        );
-      }
-
-      if (result.results.length === 0 && result.concepts.length === 0) {
-        return generateNextActions({
-          _tag: "noResults",
-          query: result.query,
-          wasFts: result.wasFts,
-        });
-      }
-
-      return actions;
+      return generateSearchActions(result);
     }
 
     case "searchPack": {
@@ -478,32 +527,7 @@ export function generateNextActions(result: CommandResult): NextAction[] {
     }
 
     case "noResults": {
-      const alternativeSearch = result.wasFts
-        ? shellAction(
-            "Try semantic vector search",
-            "poink",
-            "search",
-            result.query,
-          )
-        : shellAction(
-            "Try full-text keyword search",
-            "poink",
-            "search",
-            result.query,
-            "--fts",
-          );
-
-      return [
-        alternativeSearch,
-        shellAction("Browse all documents", "poink", "list"),
-        shellAction(
-          "Search taxonomy concepts",
-          "poink",
-          "taxonomy",
-          "search",
-          result.query,
-        ),
-      ];
+      return generateNoResultActions(result);
     }
 
     case "read": {

@@ -9,6 +9,12 @@
 
 import { Context, Effect, Layer } from "effect";
 
+type Embedding = { id: string; vector: number[] };
+type ClusteringComputation = {
+  centroids: number[][];
+  assignments: number[];
+};
+
 // ============================================================================
 // Types - Hard Clustering (K-Means)
 // ============================================================================
@@ -162,7 +168,7 @@ export interface ClusteringService {
    * Cluster embeddings using k-means algorithm (hard clustering)
    */
   readonly cluster: (
-    embeddings: Array<{ id: string; vector: number[] }>,
+    embeddings: Embedding[],
     options: ClusterOptions
   ) => Effect.Effect<ClusterResult, ClusteringError>;
 
@@ -171,7 +177,7 @@ export interface ClusteringService {
    * Returns probability-based assignments where chunks can belong to multiple clusters
    */
   readonly clusterSoft: (
-    embeddings: Array<{ id: string; vector: number[] }>,
+    embeddings: Embedding[],
     options: SoftClusterOptions
   ) => Effect.Effect<SoftClusterResult, ClusteringError>;
 
@@ -180,7 +186,7 @@ export interface ClusteringService {
    * Uses O(batch_size) memory instead of O(n), suitable for 500k+ embeddings
    */
   readonly clusterMiniBatch: (
-    embeddings: Array<{ id: string; vector: number[] }>,
+    embeddings: Embedding[],
     options: MiniBatchClusterOptions
   ) => Effect.Effect<ClusterResult, ClusteringError>;
 }
@@ -218,6 +224,24 @@ function meanVector(vectors: number[][]): number[] {
  */
 function arraysEqual(a: number[], b: number[]): boolean {
   return a.length === b.length && a.every((v, i) => v === b[i]);
+}
+
+function nearestCentroidIndex(
+  vector: number[],
+  centroids: number[][],
+): number {
+  let nearestIndex = 0;
+  let nearestDistance = Infinity;
+
+  for (let index = 0; index < centroids.length; index++) {
+    const distance = euclideanDistance(vector, centroids[index]);
+    if (distance < nearestDistance) {
+      nearestDistance = distance;
+      nearestIndex = index;
+    }
+  }
+
+  return nearestIndex;
 }
 
 /**
@@ -262,7 +286,7 @@ function kMeans(
   k: number,
   maxIterations = 100,
   rng: () => number = Math.random
-): { centroids: number[][]; assignments: number[] } {
+): ClusteringComputation {
   if (vectors.length === 0) {
     throw new Error("Cannot cluster empty vector array");
   }
@@ -279,18 +303,9 @@ function kMeans(
 
   for (let iter = 0; iter < maxIterations; iter++) {
     // Assign each vector to nearest centroid
-    const newAssignments = vectors.map((v) => {
-      let minDist = Infinity;
-      let minIdx = 0;
-      for (let i = 0; i < k; i++) {
-        const dist = euclideanDistance(v, centroids[i]);
-        if (dist < minDist) {
-          minDist = dist;
-          minIdx = i;
-        }
-      }
-      return minIdx;
-    });
+    const newAssignments = vectors.map((vector) =>
+      nearestCentroidIndex(vector, centroids)
+    );
 
     // Check convergence
     if (arraysEqual(assignments, newAssignments)) break;
@@ -446,7 +461,7 @@ function miniBatchKMeans(
   batchSize = 100,
   maxIterations = 100,
   rng: () => number = Math.random
-): { centroids: number[][]; assignments: number[] } {
+): ClusteringComputation {
   if (vectors.length === 0) {
     throw new Error("Cannot cluster empty vector array");
   }
@@ -484,18 +499,9 @@ function miniBatchKMeans(
     }
 
     // Assign batch points to nearest centroids
-    const batchAssignments = batchIndices.map((idx) => {
-      let minDist = Infinity;
-      let minIdx = 0;
-      for (let i = 0; i < k; i++) {
-        const dist = euclideanDistance(vectors[idx], centroids[i]);
-        if (dist < minDist) {
-          minDist = dist;
-          minIdx = i;
-        }
-      }
-      return minIdx;
-    });
+    const batchAssignments = batchIndices.map((idx) =>
+      nearestCentroidIndex(vectors[idx], centroids)
+    );
 
     // Update centroids incrementally
     for (let i = 0; i < batchIndices.length; i++) {
@@ -524,18 +530,9 @@ function miniBatchKMeans(
   }
 
   // Final assignment of all points
-  const assignments = vectors.map((v) => {
-    let minDist = Infinity;
-    let minIdx = 0;
-    for (let i = 0; i < k; i++) {
-      const dist = euclideanDistance(v, centroids[i]);
-      if (dist < minDist) {
-        minDist = dist;
-        minIdx = i;
-      }
-    }
-    return minIdx;
-  });
+  const assignments = vectors.map((vector) =>
+    nearestCentroidIndex(vector, centroids)
+  );
 
   return { centroids, assignments };
 }
@@ -589,6 +586,77 @@ function softCluster(
   return { centroids, softAssignments };
 }
 
+function buildClusterResult(
+  embeddings: Embedding[],
+  computation: ClusteringComputation,
+): ClusterResult {
+  const { centroids, assignments } = computation;
+  const clusterSizes = new Array<number>(centroids.length).fill(0);
+  for (const clusterId of assignments) {
+    clusterSizes[clusterId] += 1;
+  }
+
+  return {
+    clusters: centroids.map((centroid, id) => ({
+      id,
+      centroid,
+      size: clusterSizes[id],
+    })),
+    assignments: embeddings.map((embedding, index) => {
+      const clusterId = assignments[index];
+      return {
+        id: embedding.id,
+        clusterId,
+        distance: euclideanDistance(embedding.vector, centroids[clusterId]),
+      };
+    }),
+  };
+}
+
+function validateVectorDimensions(vectors: number[][]): void {
+  const dimensions = vectors[0].length;
+  for (let index = 1; index < vectors.length; index++) {
+    if (vectors[index].length === dimensions) {
+      continue;
+    }
+    throw new Error(
+      `Dimension mismatch: vector ${index} has ${vectors[index].length} dims, expected ${dimensions}`
+    );
+  }
+}
+
+function selectClusterCount(
+  vectors: number[][],
+  maxClusters: number,
+  maxIterations: number,
+  useBIC: boolean,
+): { selectedK: number; bicScores: Array<{ k: number; bic: number }> } {
+  const maxK = Math.min(maxClusters, vectors.length);
+  if (!useBIC || maxK <= 1) {
+    return { selectedK: maxK, bicScores: [] };
+  }
+
+  let selectedK = 1;
+  let bestBIC = Infinity;
+  const bicScores: Array<{ k: number; bic: number }> = [];
+
+  for (let k = 1; k <= maxK; k++) {
+    try {
+      const { centroids, assignments } = kMeans(vectors, k, maxIterations);
+      const bic = calculateBIC(vectors, centroids, assignments);
+      bicScores.push({ k, bic });
+      if (bic < bestBIC) {
+        bestBIC = bic;
+        selectedK = k;
+      }
+    } catch {
+      // Skip invalid k values.
+    }
+  }
+
+  return { selectedK, bicScores };
+}
+
 // ============================================================================
 // Service Implementation
 // ============================================================================
@@ -606,33 +674,10 @@ export const ClusteringServiceImpl = {
           try: () => {
             const vectors = embeddings.map((e) => e.vector);
             const rng = getRng(options.seed);
-            const { centroids, assignments } = kMeans(
-              vectors,
-              options.k,
-              options.maxIterations,
-              rng
+            return buildClusterResult(
+              embeddings,
+              kMeans(vectors, options.k, options.maxIterations, rng),
             );
-
-            // Build cluster metadata
-            const clusters: Cluster[] = centroids.map((centroid, id) => ({
-              id,
-              centroid,
-              size: assignments.filter((a) => a === id).length,
-            }));
-
-            // Build assignments with distances
-            const clusterAssignments: ClusterAssignment[] = embeddings.map(
-              (e, idx) => ({
-                id: e.id,
-                clusterId: assignments[idx],
-                distance: euclideanDistance(
-                  vectors[idx],
-                  centroids[assignments[idx]]
-                ),
-              })
-            );
-
-            return { clusters, assignments: clusterAssignments };
           },
           catch: (e) => new ClusteringError(String(e)),
         }),
@@ -663,16 +708,7 @@ export const ClusteringServiceImpl = {
             }
 
             const vectors = embeddings.map((e) => e.vector);
-            const dims = vectors[0].length;
-
-            // Validate dimensions
-            for (let i = 1; i < vectors.length; i++) {
-              if (vectors[i].length !== dims) {
-                throw new Error(
-                  `Dimension mismatch: vector ${i} has ${vectors[i].length} dims, expected ${dims}`
-                );
-              }
-            }
+            validateVectorDimensions(vectors);
 
             const {
               maxClusters = 10,
@@ -681,42 +717,17 @@ export const ClusteringServiceImpl = {
               maxIterations = 100,
             } = options;
 
-            // Determine k range
-            const maxK = Math.min(maxClusters, vectors.length);
-            const minK = 1;
-
-            let bestK = 1;
-            let bestBIC = Infinity;
-            const bicScores: Array<{ k: number; bic: number }> = [];
-
-            if (useBIC && maxK > 1) {
-              // Try different k values and select best by BIC
-              for (let k = minK; k <= maxK; k++) {
-                try {
-                  const { centroids, assignments } = kMeans(
-                    vectors,
-                    k,
-                    maxIterations
-                  );
-                  const bic = calculateBIC(vectors, centroids, assignments);
-                  bicScores.push({ k, bic });
-
-                  if (bic < bestBIC) {
-                    bestBIC = bic;
-                    bestK = k;
-                  }
-                } catch {
-                  // Skip invalid k values
-                }
-              }
-            } else {
-              bestK = maxK;
-            }
+            const { selectedK, bicScores } = selectClusterCount(
+              vectors,
+              maxClusters,
+              maxIterations,
+              useBIC,
+            );
 
             // Run soft clustering with best k
             const { centroids, softAssignments: rawAssignments } = softCluster(
               vectors,
-              bestK,
+              selectedK,
               maxIterations
             );
 
@@ -738,10 +749,10 @@ export const ClusteringServiceImpl = {
             );
 
             return {
-              numClusters: bestK,
+              numClusters: selectedK,
               softAssignments,
               centroids: clusterCentroids,
-              metadata: useBIC ? { bicScores, selectedK: bestK } : undefined,
+              metadata: useBIC ? { bicScores, selectedK } : undefined,
             };
           },
           catch: (e) => new ClusteringError(String(e)),
@@ -755,34 +766,16 @@ export const ClusteringServiceImpl = {
             const { batchSize = 100, maxIterations = 100 } = options;
             const rng = getRng(options.seed);
 
-            const { centroids, assignments } = miniBatchKMeans(
-              vectors,
-              options.k,
-              batchSize,
-              maxIterations,
-              rng
+            return buildClusterResult(
+              embeddings,
+              miniBatchKMeans(
+                vectors,
+                options.k,
+                batchSize,
+                maxIterations,
+                rng
+              ),
             );
-
-            // Build cluster metadata
-            const clusters: Cluster[] = centroids.map((centroid, id) => ({
-              id,
-              centroid,
-              size: assignments.filter((a) => a === id).length,
-            }));
-
-            // Build assignments with distances
-            const clusterAssignments: ClusterAssignment[] = embeddings.map(
-              (e, idx) => ({
-                id: e.id,
-                clusterId: assignments[idx],
-                distance: euclideanDistance(
-                  vectors[idx],
-                  centroids[assignments[idx]]
-                ),
-              })
-            );
-
-            return { clusters, assignments: clusterAssignments };
           },
           catch: (e) => new ClusteringError(String(e)),
         }),

@@ -33,6 +33,11 @@ type ChunkerAssessment = {
   actual: ChunkerMetadata | null;
 };
 
+const CHUNK_UNIT = "chars" as const;
+const MARKDOWN_EXTENSIONS = [".md", ".markdown"] as const;
+const ODT_EXTENSIONS = [".odt", ".fodt"] as const;
+const MIN_CHUNK_LENGTH = 20;
+
 export const CURRENT_CHUNKER: Record<DocumentFileType, ChunkerIdentity> = {
   // v6: shared chunking + optional visual enrichment chunks
   pdf: { id: "pdf-extractor:shared-context-v6", version: 6 },
@@ -62,6 +67,33 @@ function suffixAtWordBoundary(text: string, targetChars: number): string {
   }
 
   return suffix.slice(boundary).trim();
+}
+
+function hardSplitText(text: string, chunkSize: number): string[] {
+  const chunks: string[] = [];
+  for (let index = 0; index < text.length; index += chunkSize) {
+    chunks.push(text.slice(index, index + chunkSize).trim());
+  }
+  return chunks;
+}
+
+function hasExtension(path: string, extensions: readonly string[]): boolean {
+  return extensions.some((extension) => path.endsWith(extension));
+}
+
+function chunkerAssessment(
+  expected: ChunkerMetadata,
+  actual: ChunkerMetadata | null,
+  code: Exclude<ChunkerAssessmentCode, "ok">,
+  reason: string,
+): ChunkerAssessment {
+  return {
+    needsRechunk: true,
+    code,
+    reason,
+    expected,
+    actual,
+  };
 }
 
 export function buildChunkOverlapPrefix(
@@ -183,9 +215,7 @@ function chunkOversizedParagraph(
       continue;
     }
 
-    for (let index = 0; index < sentence.length; index += chunkSize) {
-      chunks.push(sentence.slice(index, index + chunkSize).trim());
-    }
+    chunks.push(...hardSplitText(sentence, chunkSize));
     currentChunk = "";
   }
 
@@ -229,16 +259,16 @@ export function chunkNormalizedText(
   }
 
   return applyAdjacentChunkOverlap(
-    chunks.filter((chunk) => chunk.length > 20),
+    chunks.filter((chunk) => chunk.length > MIN_CHUNK_LENGTH),
     chunkOverlap,
   );
 }
 
 export function inferFileTypeFromPath(path: string): DocumentFileType {
   const lower = path.toLowerCase();
-  if (lower.endsWith(".md") || lower.endsWith(".markdown")) return "markdown";
+  if (hasExtension(lower, MARKDOWN_EXTENSIONS)) return "markdown";
   if (lower.endsWith(".docx")) return "docx";
-  if (lower.endsWith(".odt") || lower.endsWith(".fodt")) return "odt";
+  if (hasExtension(lower, ODT_EXTENSIONS)) return "odt";
   return "pdf";
 }
 
@@ -268,7 +298,7 @@ export function buildChunkerMetadata(
   return {
     id: base.id,
     version: base.version,
-    unit: "chars",
+    unit: CHUNK_UNIT,
     chunkSize: config.chunkSize,
     chunkOverlap: config.chunkOverlap,
   };
@@ -282,7 +312,7 @@ export function parseChunkerMetadata(value: unknown): ChunkerMetadata | null {
     typeof id !== "string" ||
     !id ||
     typeof version !== "number" ||
-    unit !== "chars" ||
+    unit !== CHUNK_UNIT ||
     typeof chunkSize !== "number" ||
     typeof chunkOverlap !== "number"
   ) {
@@ -306,43 +336,42 @@ export function assessDocChunker(
   const actual = getDocChunkerMetadata(doc);
 
   if (!actual) {
-    return {
-      needsRechunk: true,
-      code: "missing_metadata",
-      reason: "missing chunker metadata",
+    return chunkerAssessment(
       expected,
-      actual: null,
-    };
+      null,
+      "missing_metadata",
+      "missing chunker metadata",
+    );
   }
 
   if (actual.id !== expected.id || actual.version !== expected.version) {
-    return {
-      needsRechunk: true,
-      code: "id_version_mismatch",
-      reason: `chunker id/version mismatch (${actual.id}@${actual.version} != ${expected.id}@${expected.version})`,
+    return chunkerAssessment(
       expected,
       actual,
-    };
+      "id_version_mismatch",
+      `chunker id/version mismatch (${actual.id}@${actual.version} != ${expected.id}@${expected.version})`,
+    );
   }
 
-  if (actual.chunkSize !== expected.chunkSize || actual.chunkOverlap !== expected.chunkOverlap) {
-    return {
-      needsRechunk: true,
-      code: "config_mismatch",
-      reason: `chunkSize/chunkOverlap mismatch (${actual.chunkSize}/${actual.chunkOverlap} != ${expected.chunkSize}/${expected.chunkOverlap})`,
+  if (
+    actual.chunkSize !== expected.chunkSize ||
+    actual.chunkOverlap !== expected.chunkOverlap
+  ) {
+    return chunkerAssessment(
       expected,
       actual,
-    };
+      "config_mismatch",
+      `chunkSize/chunkOverlap mismatch (${actual.chunkSize}/${actual.chunkOverlap} != ${expected.chunkSize}/${expected.chunkOverlap})`,
+    );
   }
 
   if (actual.unit !== expected.unit) {
-    return {
-      needsRechunk: true,
-      code: "unit_mismatch",
-      reason: `chunk unit mismatch (${actual.unit} != ${expected.unit})`,
+    return chunkerAssessment(
       expected,
       actual,
-    };
+      "unit_mismatch",
+      `chunk unit mismatch (${actual.unit} != ${expected.unit})`,
+    );
   }
 
   return { needsRechunk: false, code: "ok", reason: "ok", expected, actual };

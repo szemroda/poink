@@ -86,8 +86,14 @@ const languageModels = new WeakMap<
   Map<string, Promise<ResolvedLanguageModel>>
 >();
 
-function cachedValue<K extends object, V>(
-  cache: WeakMap<K, Promise<V>>,
+interface PromiseCache<K, V> {
+  get(key: K): Promise<V> | undefined;
+  set(key: K, value: Promise<V>): unknown;
+  delete(key: K): unknown;
+}
+
+function cachedValue<K, V>(
+  cache: PromiseCache<K, V>,
   key: K,
   create: () => Promise<V>,
 ): Promise<V> {
@@ -114,15 +120,7 @@ function cachedMapValue<V>(
     cache.set(config, values);
   }
 
-  const existing = values.get(key);
-  if (existing) return existing;
-
-  const pending = create().catch((error) => {
-    values.delete(key);
-    throw error;
-  });
-  values.set(key, pending);
-  return pending;
+  return cachedValue(values, key, create);
 }
 
 const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1";
@@ -142,49 +140,56 @@ export function normalizeOllamaBaseUrl(
 }
 
 export function describeLanguageModelError(error: unknown): string {
-  if (error instanceof Error && typeof error.message === "string") {
-    const request = error as Error & {
-      requestBodyValues?: { model?: unknown };
-      responseBody?: unknown;
-      url?: unknown;
-    };
-    const model =
-      typeof request.requestBodyValues?.model === "string"
-        ? request.requestBodyValues.model
-        : undefined;
-    const url = typeof request.url === "string" ? request.url : undefined;
+  const message = getErrorMessage(error);
+  if (!(error instanceof Error)) return message;
 
-    if (typeof request.responseBody === "string") {
-      try {
-        const parsed = JSON.parse(request.responseBody) as { error?: unknown };
-        if (typeof parsed.error === "string") {
-          if (model && /model .* not found/i.test(parsed.error)) {
-            return `Ollama model "${model}" not found. Configure an exact installed model name from \`ollama list\` (for example \`llama3.2:3b\` or \`llama3.2:11b\`).`;
-          }
-          return parsed.error;
-        }
-      } catch {
-        // Fall through to the generic message.
-      }
+  const request = error as Error & {
+    requestBodyValues?: { model?: unknown };
+    responseBody?: unknown;
+    url?: unknown;
+  };
+  const model = getString(request.requestBodyValues?.model);
+  const url = getString(request.url);
+  const responseError = parseResponseError(request.responseBody);
+
+  if (responseError) {
+    if (model && /model .* not found/i.test(responseError)) {
+      return `Ollama model "${model}" not found. Configure an exact installed model name from \`ollama list\` (for example \`llama3.2:3b\` or \`llama3.2:11b\`).`;
     }
-
-    if (model && url && error.message === "Not Found") {
-      return `Ollama model "${model}" not found at ${url}. Configure an exact installed model name from \`ollama list\`.`;
-    }
-
-    return error.message;
+    return responseError;
   }
 
-  if (
-    typeof error === "object" &&
-    error !== null &&
-    "message" in error &&
-    typeof (error as { message?: unknown }).message === "string"
-  ) {
-    return (error as { message: string }).message;
+  if (model && url && message === "Not Found") {
+    return `Ollama model "${model}" not found at ${url}. Configure an exact installed model name from \`ollama list\`.`;
   }
 
-  return String(error);
+  return message;
+}
+
+function getString(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error !== "object" || error === null || !("message" in error)) {
+    return String(error);
+  }
+  return getString(error.message) ?? String(error);
+}
+
+function parseResponseError(responseBody: unknown): string | undefined {
+  if (typeof responseBody !== "string") return undefined;
+
+  try {
+    const parsed: unknown = JSON.parse(responseBody);
+    if (typeof parsed !== "object" || parsed === null || !("error" in parsed)) {
+      return undefined;
+    }
+    return getString(parsed.error);
+  } catch {
+    return undefined;
+  }
 }
 
 function requireGatewayApiKey(config: Config): string {

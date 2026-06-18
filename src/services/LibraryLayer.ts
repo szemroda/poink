@@ -1,6 +1,10 @@
 import { mkdirSync } from "node:fs";
 import { Layer } from "effect";
-import { resolveLibraryPath, type Config } from "../types.js";
+import {
+  LibraryConfig,
+  resolveLibraryPath,
+  type Config,
+} from "../types.js";
 import { makeAutoTagger } from "./AutoTagger.js";
 import { makeDocumentIngestion } from "./DocumentIngestion.js";
 import { makeEmbeddingProvider } from "./EmbeddingProvider.js";
@@ -12,10 +16,10 @@ import { makeSemanticLibrary } from "./SemanticLibrary.js";
 import { makeStorageLayer } from "./StorageLayer.js";
 import { makeVisualEnrichment } from "./VisualEnrichment.js";
 import { SourceFileTypeDetectorLive } from "./SourceFileType.js";
-import { LibraryConfig } from "../types.js";
 
 export function makeLibraryLayer(config: Config) {
   mkdirSync(resolveLibraryPath(config), { recursive: true });
+
   const storage = makeStorageLayer(config);
   const embedding = makeEmbeddingProvider(config);
   const libraryConfig = LibraryConfig.fromConfig(config);
@@ -30,21 +34,21 @@ export function makeLibraryLayer(config: Config) {
   const visuals = makeVisualEnrichment(config).pipe(
     Layer.provide(Layer.merge(pdfExtractor, officeExtractor)),
   );
+  const ingestionDependencies = Layer.mergeAll(
+    storage,
+    embedding,
+    extractors,
+    visuals,
+    SourceFileTypeDetectorLive,
+  );
   const ingestion = makeDocumentIngestion(config).pipe(
-    Layer.provide(
-      Layer.mergeAll(
-        storage,
-        embedding,
-        extractors,
-        visuals,
-        SourceFileTypeDetectorLive,
-      ),
-    ),
+    Layer.provide(ingestionDependencies),
   );
   const store = makeLibraryStore(config).pipe(Layer.provide(storage));
   const semantic = makeSemanticLibrary(config).pipe(
     Layer.provide(Layer.merge(storage, embedding)),
   );
+  const autoTagger = makeAutoTagger(config);
 
   return Layer.mergeAll(
     storage,
@@ -55,6 +59,6 @@ export function makeLibraryLayer(config: Config) {
     extractors,
     visuals,
     SourceFileTypeDetectorLive,
-    makeAutoTagger(config),
+    autoTagger,
   );
 }

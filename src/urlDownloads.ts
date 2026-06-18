@@ -94,21 +94,40 @@ const SUPPORTED_DOCUMENT_EXTENSIONS = [
   ".fodt",
 ] as const;
 
+const DOCUMENT_FILE_TYPES_BY_EXTENSION: Readonly<
+  Record<(typeof SUPPORTED_DOCUMENT_EXTENSIONS)[number], DocumentFileType>
+> = {
+  ".pdf": "pdf",
+  ".md": "markdown",
+  ".markdown": "markdown",
+  ".docx": "docx",
+  ".odt": "odt",
+  ".fodt": "odt",
+};
+
+const SIZE_MULTIPLIERS = {
+  b: 1,
+  kb: 1024,
+  mb: 1024 ** 2,
+  gb: 1024 ** 3,
+} as const;
+
+const DURATION_MULTIPLIERS = {
+  ms: 1,
+  s: 1000,
+  m: 60_000,
+} as const;
+
 export function fileTypeFromExtension(ext: string): DocumentFileType | null {
-  switch (ext.toLowerCase()) {
-    case ".pdf":
-      return "pdf";
-    case ".md":
-    case ".markdown":
-      return "markdown";
-    case ".docx":
-      return "docx";
-    case ".odt":
-    case ".fodt":
-      return "odt";
-    default:
-      return null;
+  const normalized = ext.toLowerCase();
+  if (!SUPPORTED_DOCUMENT_EXTENSIONS.includes(
+    normalized as (typeof SUPPORTED_DOCUMENT_EXTENSIONS)[number],
+  )) {
+    return null;
   }
+  return DOCUMENT_FILE_TYPES_BY_EXTENSION[
+    normalized as (typeof SUPPORTED_DOCUMENT_EXTENSIONS)[number]
+  ];
 }
 
 function isSupportedDocumentPath(path: string): boolean {
@@ -160,35 +179,25 @@ export function looksLikeMarkdown(content: string): boolean {
 }
 
 export function hasMarkdownExtension(url: string): boolean {
-  try {
-    const pathname = new URL(url).pathname;
-    const ext = extname(pathname).toLowerCase();
-    return ext === ".md" || ext === ".markdown";
-  } catch {
-    return url.endsWith(".md") || url.endsWith(".markdown");
-  }
+  const extension = extensionFromURL(url);
+  return extension === ".md" || extension === ".markdown";
 }
 
 function hasPdfExtension(url: string): boolean {
+  return extensionFromURL(url) === ".pdf";
+}
+
+function extensionFromURL(url: string): string {
   try {
     const pathname = new URL(url).pathname;
-    return extname(pathname).toLowerCase() === ".pdf";
+    return extname(pathname).toLowerCase();
   } catch {
-    return url.toLowerCase().endsWith(".pdf");
+    return extname(url).toLowerCase();
   }
 }
 
 function fileTypeFromURLExtension(url: string): DocumentFileType | null {
-  try {
-    const pathname = new URL(url).pathname;
-    return fileTypeFromExtension(extname(pathname));
-  } catch {
-    const lower = url.toLowerCase();
-    const match = SUPPORTED_DOCUMENT_EXTENSIONS.find((ext) =>
-      lower.endsWith(ext),
-    );
-    return match ? fileTypeFromExtension(match) : null;
-  }
+  return fileTypeFromExtension(extensionFromURL(url));
 }
 
 function normalizeURLHostname(hostname: string): string {
@@ -233,47 +242,45 @@ function ipv4FromMappedIPv6(address: string): string | null {
   ].join(".");
 }
 
-export function parseSizeString(value: string): number {
-  const match = value.trim().match(/^(\d+(?:\.\d+)?)\s*(b|kb|mb|gb)$/i);
+function parseMeasuredValue<Unit extends string>(
+  value: string,
+  pattern: RegExp,
+  multipliers: Readonly<Record<Unit, number>>,
+  expectedFormatMessage: string,
+  invalidValueLabel: string,
+): number {
+  const match = value.trim().match(pattern);
   if (!match) {
-    throw new Error(
-      "Expected size with a unit suffix, such as 500kb, 100mb, or 1gb",
-    );
+    throw new Error(expectedFormatMessage);
   }
 
   const amount = Number(match[1]);
-  const unit = match[2].toLowerCase();
-  const multiplier =
-    unit === "b"
-      ? 1
-      : unit === "kb"
-        ? 1024
-        : unit === "mb"
-          ? 1024 * 1024
-          : 1024 * 1024 * 1024;
-  const bytes = Math.floor(amount * multiplier);
-  if (!Number.isFinite(bytes) || bytes <= 0) {
-    throw new Error(`Invalid size value: ${value}`);
+  const unit = match[2].toLowerCase() as Unit;
+  const result = Math.floor(amount * multipliers[unit]);
+  if (!Number.isFinite(result) || result <= 0) {
+    throw new Error(`Invalid ${invalidValueLabel} value: ${value}`);
   }
-  return bytes;
+  return result;
+}
+
+export function parseSizeString(value: string): number {
+  return parseMeasuredValue(
+    value,
+    /^(\d+(?:\.\d+)?)\s*(b|kb|mb|gb)$/i,
+    SIZE_MULTIPLIERS,
+    "Expected size with a unit suffix, such as 500kb, 100mb, or 1gb",
+    "size",
+  );
 }
 
 export function parseDurationString(value: string): number {
-  const match = value.trim().match(/^(\d+(?:\.\d+)?)\s*(ms|s|m)$/i);
-  if (!match) {
-    throw new Error(
-      "Expected duration with a unit suffix, such as 500ms, 30s, or 2m",
-    );
-  }
-
-  const amount = Number(match[1]);
-  const unit = match[2].toLowerCase();
-  const multiplier = unit === "ms" ? 1 : unit === "s" ? 1000 : 60_000;
-  const milliseconds = Math.floor(amount * multiplier);
-  if (!Number.isFinite(milliseconds) || milliseconds <= 0) {
-    throw new Error(`Invalid duration value: ${value}`);
-  }
-  return milliseconds;
+  return parseMeasuredValue(
+    value,
+    /^(\d+(?:\.\d+)?)\s*(ms|s|m)$/i,
+    DURATION_MULTIPLIERS,
+    "Expected duration with a unit suffix, such as 500ms, 30s, or 2m",
+    "duration",
+  );
 }
 
 export function isPrivateNetworkAddress(address: string): boolean {
@@ -376,9 +383,9 @@ function hostAllowsPrivateNetwork(
   options: ResolvedURLDownloadOptions,
 ): boolean {
   const normalized = normalizeURLHostname(hostname);
-  return options.allowedPrivateNetworkHosts
-    .map(normalizeURLHostname)
-    .includes(normalized);
+  return options.allowedPrivateNetworkHosts.some(
+    (allowedHost) => normalizeURLHostname(allowedHost) === normalized,
+  );
 }
 
 async function resolveDownloadAddresses(
@@ -389,8 +396,9 @@ async function resolveDownloadAddresses(
   const normalized = normalizeURLHostname(hostname);
   if (!normalized) throw new Error("URL host is required");
 
-  const addresses = isIP(normalized)
-    ? [{ address: normalized, family: isIP(normalized) }]
+  const addressFamily = isIP(normalized);
+  const addresses = addressFamily
+    ? [{ address: normalized, family: addressFamily }]
     : await lookup(normalized, { all: true, verbatim: true });
 
   if (options.allowPrivateNetwork || hostAllowsPrivateNetwork(normalized, options)) {

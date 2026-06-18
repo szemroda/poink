@@ -5,13 +5,15 @@
 import dedent from "dedent";
 import { DEFAULT_CLI_OUTPUT_FORMAT, OUTPUT_FORMATS } from "./protocol.js";
 
-const OUTPUT_FORMAT_HELP = OUTPUT_FORMATS
-  .map((format) =>
-    format === DEFAULT_CLI_OUTPUT_FORMAT ? `${format} (default)` : format,
-  )
-  .join(", ");
+function describeOutputFormat(format: (typeof OUTPUT_FORMATS)[number]): string {
+  return format === DEFAULT_CLI_OUTPUT_FORMAT
+    ? `${format} (default)`
+    : format;
+}
 
-const HELP_TEXT = dedent`
+const OUTPUT_FORMAT_HELP = OUTPUT_FORMATS.map(describeOutputFormat).join(", ");
+
+const AGENT_HELP_TEXT = dedent`
   # poink
 
   Local knowledge base for PDFs, Markdown, DOCX, and ODT with vector search, full-text search, enrichment, and MCP access.
@@ -75,5 +77,5 @@ const HELP_TEXT = dedent`
 `;
 
 export function renderHelp(): string {
-  return HELP_TEXT;
+  return AGENT_HELP_TEXT;
 }

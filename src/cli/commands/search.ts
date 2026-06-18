@@ -80,6 +80,19 @@ type DedupedChunkHandle = ChunkHandle & {
   matchedQueries: string[];
 };
 
+type SearchFlag =
+  | readonly ["concepts-only", "conceptsOnly"]
+  | readonly ["docs-only", "docsOnly"]
+  | readonly ["include-clusters", "includeClusters"]
+  | readonly ["with-content", "withContent"];
+
+const SEARCH_FLAGS = {
+  conceptsOnly: ["concepts-only", "conceptsOnly"],
+  docsOnly: ["docs-only", "docsOnly"],
+  includeClusters: ["include-clusters", "includeClusters"],
+  withContent: ["with-content", "withContent"],
+} as const satisfies Record<string, SearchFlag>;
+
 function parseCommonSearchOptions(
   options: SearchCommandOptions,
 ): CommonSearchOptions {
@@ -98,18 +111,19 @@ function parseCommonSearchOptions(
 
 function isEnabled(
   options: SearchCommandOptions,
-  dashedName:
-    | "concepts-only"
-    | "docs-only"
-    | "include-clusters"
-    | "with-content",
-  camelName:
-    | "conceptsOnly"
-    | "docsOnly"
-    | "includeClusters"
-    | "withContent",
+  [dashedName, camelName]: SearchFlag,
 ): boolean {
   return options[dashedName] === true || options[camelName] === true;
+}
+
+function documentRetrievalMode(ftsOnly: boolean): DocumentRetrievalMode {
+  return ftsOnly ? "fts" : "hybrid";
+}
+
+function searchModeLabel(conceptsOnly: boolean, docsOnly: boolean): string {
+  if (conceptsOnly) return " (concepts only)";
+  if (docsOnly) return " (docs only)";
+  return "";
 }
 
 function mapSemanticSearchFailure(error: unknown): unknown {
@@ -287,29 +301,14 @@ function runSingleSearch(
 
     const { limit, tags, ftsOnly, expandChars } =
       parseCommonSearchOptions(options);
-    const conceptsOnly = isEnabled(
-      options,
-      "concepts-only",
-      "conceptsOnly",
-    );
-    const docsOnly = isEnabled(options, "docs-only", "docsOnly");
-    const includeClusters = isEnabled(
-      options,
-      "include-clusters",
-      "includeClusters",
-    );
+    const conceptsOnly = isEnabled(options, SEARCH_FLAGS.conceptsOnly);
+    const docsOnly = isEnabled(options, SEARCH_FLAGS.docsOnly);
+    const includeClusters = isEnabled(options, SEARCH_FLAGS.includeClusters);
     const searchDocs = !conceptsOnly;
     const searchConcepts = !docsOnly;
-    const retrievalMode: RetrievalMode = searchDocs
-      ? ftsOnly
-        ? "fts"
-        : "hybrid"
-      : "none";
-    const modeLabel = conceptsOnly
-      ? " (concepts only)"
-      : docsOnly
-        ? " (docs only)"
-        : "";
+    const documentMode = documentRetrievalMode(ftsOnly);
+    const retrievalMode: RetrievalMode = searchDocs ? documentMode : "none";
+    const modeLabel = searchModeLabel(conceptsOnly, docsOnly);
 
     yield* Console.log(
       `Searching: "${query}"${ftsOnly ? " (FTS only)" : ""}${modeLabel}${
@@ -335,7 +334,7 @@ function runSingleSearch(
             expandChars,
             includeClusterSummaries: includeClusters,
           }),
-          ftsOnly ? "fts" : "hybrid",
+          documentMode,
         )
       : [];
     const documents = results.map((result) =>
@@ -491,12 +490,8 @@ function runSearchPack(
     const { globals, library } = context;
     const { limit, tags, ftsOnly, expandChars } =
       parseCommonSearchOptions(options);
-    const retrievalMode: DocumentRetrievalMode = ftsOnly ? "fts" : "hybrid";
-    const withContent = isEnabled(
-      options,
-      "with-content",
-      "withContent",
-    );
+    const retrievalMode = documentRetrievalMode(ftsOnly);
+    const withContent = isEnabled(options, SEARCH_FLAGS.withContent);
     const globalLimitRaw = options["global-limit"] ?? options.globalLimit;
     const globalLimit =
       globalLimitRaw !== undefined

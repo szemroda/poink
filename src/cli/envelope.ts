@@ -10,12 +10,11 @@ export function writeEnvelope<T>(
   envelope: AgentEnvelope<T>,
   pretty: boolean,
 ): void {
-  if (format === DEFAULT_CLI_OUTPUT_FORMAT) {
-    return;
-  }
+  if (format === DEFAULT_CLI_OUTPUT_FORMAT) return;
 
   try {
-    process.stdout.write(toJsonLine(envelope, { pretty }));
+    const line = toJsonLine(envelope, { pretty });
+    process.stdout.write(line);
   } catch {
     // Envelope output is best-effort, including serialization and closed-pipe failures.
   }

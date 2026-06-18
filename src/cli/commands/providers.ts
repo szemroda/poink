@@ -21,11 +21,44 @@ interface ProvidersCommandOptions extends Record<string, unknown> {
   "device-code"?: boolean;
 }
 
+function isEnabled(
+  options: ProvidersCommandOptions,
+  camelCaseName: keyof ProvidersCommandOptions,
+  kebabCaseName: keyof ProvidersCommandOptions,
+): boolean {
+  return options[camelCaseName] === true || options[kebabCaseName] === true;
+}
+
+function validateProvider(provider: string | undefined): void {
+  if (provider === OPENAI_CODEX_PROVIDER) return;
+
+  throw new CLIError(
+    "INVALID_ARGS",
+    "providers login currently supports only --provider openai-codex",
+    {
+      provider,
+      hint: PROVIDERS_LOGIN_HINT,
+    },
+  );
+}
+
+function validateInteractiveFormat(format: OutputFormat): void {
+  if (format === "text") return;
+
+  throw new CLIError(
+    "INVALID_ARGS",
+    "providers login is interactive and requires --format text",
+    {
+      hint: PROVIDERS_LOGIN_TEXT_HINT,
+    },
+  );
+}
+
 function parseProvidersLoginOptions(
   options: ProvidersCommandOptions,
   format: OutputFormat,
 ): ProvidersLoginOptions {
-  if (options.deviceCode === true || options["device-code"] === true) {
+  if (isEnabled(options, "deviceCode", "device-code")) {
     throw new CLIError(
       "INVALID_ARGS",
       "Unsupported providers login flag: --device-code",
@@ -36,34 +69,27 @@ function parseProvidersLoginOptions(
     );
   }
 
-  const loginOptions = {
-    provider:
-      typeof options.provider === "string" ? options.provider : undefined,
-    deviceAuth: options.deviceAuth === true || options["device-auth"] === true,
+  const provider =
+    typeof options.provider === "string" ? options.provider : undefined;
+  validateProvider(provider);
+  validateInteractiveFormat(format);
+
+  return {
+    provider,
+    deviceAuth: isEnabled(options, "deviceAuth", "device-auth"),
   };
+}
 
-  if (loginOptions.provider !== OPENAI_CODEX_PROVIDER) {
-    throw new CLIError(
-      "INVALID_ARGS",
-      "providers login currently supports only --provider openai-codex",
-      {
-        provider: loginOptions.provider,
-        hint: PROVIDERS_LOGIN_HINT,
-      },
-    );
-  }
+function invalidOptionsError(error: unknown): CLIError {
+  return error instanceof CLIError
+    ? error
+    : new CLIError("INVALID_ARGS", describeCliFailure(error));
+}
 
-  if (format !== "text") {
-    throw new CLIError(
-      "INVALID_ARGS",
-      "providers login is interactive and requires --format text",
-      {
-        hint: PROVIDERS_LOGIN_TEXT_HINT,
-      },
-    );
-  }
-
-  return loginOptions;
+function authenticationError(error: unknown): CLIError {
+  return new CLIError("AUTH_FAILED", describeCliFailure(error), {
+    cause: error,
+  });
 }
 
 export function runProvidersCommand(
@@ -88,10 +114,7 @@ export function runProvidersCommand(
 
     const opts = yield* Effect.try({
       try: () => parseProvidersLoginOptions(options, format),
-      catch: (error) =>
-        error instanceof CLIError
-          ? error
-          : new CLIError("INVALID_ARGS", describeCliFailure(error)),
+      catch: invalidOptionsError,
     });
 
     yield* Console.log("Starting OpenAI Codex login...");
@@ -101,8 +124,7 @@ export function runProvidersCommand(
           stdio: "inherit",
           deviceAuth: opts.deviceAuth,
         }),
-      catch: (error) =>
-        new CLIError("AUTH_FAILED", describeCliFailure(error), { cause: error }),
+      catch: authenticationError,
     });
     yield* Console.log("OpenAI Codex login complete");
 

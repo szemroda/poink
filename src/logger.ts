@@ -1,18 +1,27 @@
 import type { LogLevel } from "./agent/protocol.js";
 import { LogLevel as EffectLogLevel } from "effect";
 
-let currentLevel: LogLevel = (() => {
-  const raw = process.env.POINK_LOG_LEVEL;
-  if (
-    raw === "silent" ||
-    raw === "error" ||
-    raw === "info" ||
-    raw === "debug"
-  ) {
-    return raw;
-  }
-  return "silent";
-})();
+const LOG_LEVELS: ReadonlySet<string> = new Set<LogLevel>([
+  "silent",
+  "error",
+  "info",
+  "debug",
+]);
+
+const EFFECT_LOG_LEVELS: Readonly<Record<LogLevel, EffectLogLevel.LogLevel>> = {
+  silent: EffectLogLevel.None,
+  error: EffectLogLevel.Error,
+  info: EffectLogLevel.Info,
+  debug: EffectLogLevel.Debug,
+};
+
+function isLogLevel(value: string | undefined): value is LogLevel {
+  return value !== undefined && LOG_LEVELS.has(value);
+}
+
+let currentLevel: LogLevel = isLogLevel(process.env.POINK_LOG_LEVEL)
+  ? process.env.POINK_LOG_LEVEL
+  : "silent";
 
 export function setLogLevel(level: LogLevel): void {
   currentLevel = level;
@@ -24,14 +33,5 @@ export function getLogLevel(): LogLevel {
 }
 
 export function toEffectLogLevel(level: LogLevel): EffectLogLevel.LogLevel {
-  switch (level) {
-    case "silent":
-      return EffectLogLevel.None;
-    case "error":
-      return EffectLogLevel.Error;
-    case "info":
-      return EffectLogLevel.Info;
-    case "debug":
-      return EffectLogLevel.Debug;
-  }
+  return EFFECT_LOG_LEVELS[level];
 }

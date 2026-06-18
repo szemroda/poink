@@ -16,6 +16,11 @@ import {
 import { EmbeddingProvider } from "./EmbeddingProvider.js";
 import { DEFAULT_QUEUE_CONFIG } from "./EmbeddingQueue.js";
 
+type EmbeddingRecord = {
+  chunkId: string;
+  embedding: number[];
+};
+
 function sectionFromChunkContent(content: string): string | null {
   return content.match(/^#{1,6}\s+(.+)$/m)?.[1]?.trim() ?? null;
 }
@@ -77,6 +82,72 @@ function providerFailureReason(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function mergeHybridResults(
+  vectorResults: readonly DocumentSearchResult[],
+  ftsResults: readonly DocumentSearchResult[],
+): DocumentSearchResult[] {
+  const results = [...vectorResults];
+  for (const fts of ftsResults) {
+    const existingIndex = results.findIndex(
+      (result) =>
+        result.docId === fts.docId &&
+        result.page === fts.page &&
+        result.chunkIndex === fts.chunkIndex,
+    );
+    if (existingIndex < 0) {
+      results.push(fts);
+      continue;
+    }
+
+    const existing = results[existingIndex]!;
+    const vectorScore = existing.vectorScore ?? existing.score;
+    const combined = Math.min(
+      1,
+      Math.max(vectorScore, fts.score) * 1.05,
+    );
+    results[existingIndex] = new DocumentSearchResult({
+      ...existing,
+      score: combined,
+      matchType: "hybrid",
+      scoreType: "hybrid",
+      rawScore: combined,
+      vectorScore,
+      ftsRank: fts.ftsRank ?? fts.rawScore,
+    });
+  }
+  return results;
+}
+
+function expandSearchResults(
+  results: readonly DocumentSearchResult[],
+  limit: number,
+  expandChars: number,
+  search: Context.Tag.Service<typeof SearchRepository>,
+) {
+  const maxChars = expandChars > 0 ? expandChars : 500;
+  return Effect.all(
+    [...results]
+      .sort((a, b) => b.score - a.score)
+      .slice(0, limit)
+      .map((result) =>
+        Effect.map(
+          search.getExpandedContext(
+            result.docId,
+            result.page,
+            result.chunkIndex,
+            { maxChars },
+          ),
+          (expanded) =>
+            new DocumentSearchResult({
+              ...result,
+              expandedContent: expanded.content,
+              expandedRange: { start: 0, end: 0 },
+            }),
+        ),
+      ),
+  );
+}
+
 const makeSemanticLibraryService = (_config: Config) =>
   Effect.gen(function* () {
     const documents = yield* DocumentRepository;
@@ -91,7 +162,6 @@ const makeSemanticLibraryService = (_config: Config) =>
       ) =>
         Effect.gen(function* () {
           const { hybrid, limit, expandChars = 0 } = options;
-          const results: DocumentSearchResult[] = [];
           const mapProviderFailure = (error: unknown) =>
             new SemanticSearchProviderError({
               provider: embedProvider.provider,
@@ -103,61 +173,22 @@ const makeSemanticLibraryService = (_config: Config) =>
           const queryEmbedding = yield* embedProvider.embed(query).pipe(
             Effect.mapError(mapProviderFailure),
           );
-          results.push(
-            ...(yield* search.vectorSearch(queryEmbedding, options)),
+          const vectorResults = yield* search.vectorSearch(
+            queryEmbedding,
+            options,
           );
+          const results = hybrid
+            ? mergeHybridResults(
+                vectorResults,
+                yield* search.ftsSearch(query, options),
+              )
+            : vectorResults;
 
-          if (hybrid) {
-            const ftsResults = yield* search.ftsSearch(query, options);
-            for (const fts of ftsResults) {
-              const existing = results.find(
-                (result) =>
-                  result.docId === fts.docId &&
-                  result.page === fts.page &&
-                  result.chunkIndex === fts.chunkIndex,
-              );
-              if (!existing) {
-                results.push(fts);
-                continue;
-              }
-              const vectorScore = existing.vectorScore ?? existing.score;
-              const combined = Math.min(
-                1,
-                Math.max(vectorScore, fts.score) * 1.05,
-              );
-              results[results.indexOf(existing)] = new DocumentSearchResult({
-                ...existing,
-                score: combined,
-                matchType: "hybrid",
-                scoreType: "hybrid",
-                rawScore: combined,
-                vectorScore,
-                ftsRank: fts.ftsRank ?? fts.rawScore,
-              });
-            }
-          }
-
-          const effectiveExpand = expandChars > 0 ? expandChars : 500;
-          return yield* Effect.all(
-            results
-              .sort((a, b) => b.score - a.score)
-              .slice(0, limit)
-              .map((result) =>
-                Effect.map(
-                  search.getExpandedContext(
-                    result.docId,
-                    result.page,
-                    result.chunkIndex,
-                    { maxChars: effectiveExpand },
-                  ),
-                  (expanded) =>
-                    new DocumentSearchResult({
-                      ...result,
-                      expandedContent: expanded.content,
-                      expandedRange: { start: 0, end: 0 },
-                    }),
-                ),
-              ),
+          return yield* expandSearchResults(
+            results,
+            limit,
+            expandChars,
+            search,
           );
         }),
       reindexEmbeddings: (docId: string) =>
@@ -174,10 +205,7 @@ const makeSemanticLibraryService = (_config: Config) =>
             });
           }
 
-          const embeddingRecords: Array<{
-            chunkId: string;
-            embedding: number[];
-          }> = [];
+          const embeddingRecords: EmbeddingRecord[] = [];
           const batchSize = DEFAULT_QUEUE_CONFIG.batchSize;
 
           for (

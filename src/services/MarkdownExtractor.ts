@@ -13,7 +13,7 @@ import remarkFrontmatter from "remark-frontmatter";
 import remarkGfm from "remark-gfm";
 import { toString as mdastToString } from "mdast-util-to-string";
 import matter from "gray-matter";
-import type { Root, Heading, RootContent } from "mdast";
+import type { Root, RootContent, Table } from "mdast";
 import {
   assertValidChunking,
   chunkNormalizedText,
@@ -79,6 +79,12 @@ export interface ProcessedChunk {
   content: string;
 }
 
+interface ProcessedMarkdown {
+  pageCount: number;
+  chunks: ProcessedChunk[];
+  frontmatter: MarkdownFrontmatter;
+}
+
 // ============================================================================
 // Service Definition
 // ============================================================================
@@ -99,12 +105,10 @@ export class MarkdownExtractor extends Context.Tag("MarkdownExtractor")<
     /**
      * Process markdown into chunks suitable for embedding
      */
-    readonly process: (path: string) => Effect.Effect<
-      {
-        pageCount: number;
-        chunks: ProcessedChunk[];
-        frontmatter: MarkdownFrontmatter;
-      },
+    readonly process: (
+      path: string,
+    ) => Effect.Effect<
+      ProcessedMarkdown,
       MarkdownExtractionError | MarkdownNotFoundError
     >;
 
@@ -146,7 +150,8 @@ function createProcessor() {
  * Check if a node is a frontmatter node (yaml or toml)
  */
 function isFrontmatterNode(node: RootContent): boolean {
-  return node.type === "yaml" || (node as { type: string }).type === "toml";
+  const nodeType: string = node.type;
+  return nodeType === "yaml" || nodeType === "toml";
 }
 
 function escapeTableCell(value: string): string {
@@ -163,14 +168,10 @@ function renderTableSeparator(align: unknown): string {
 function renderMarkdownTable(node: RootContent): string | null {
   if (node.type !== "table") return null;
 
-  const table = node as {
-    align?: unknown[];
-    children?: Array<{ children?: RootContent[] }>;
-  };
-  const rows =
-    table.children?.map((row) =>
-      (row.children ?? []).map((cell) => escapeTableCell(mdastToString(cell))),
-    ) ?? [];
+  const table: Table = node;
+  const rows = table.children.map((row) =>
+    row.children.map((cell) => escapeTableCell(mdastToString(cell))),
+  );
 
   if (rows.length === 0) return "";
 
@@ -256,7 +257,7 @@ function parseMarkdownAST(content: string): ExtractedSection[] {
       // Start new section
       currentSection = sections.length + 1;
       currentHeading = mdastToString(node);
-      currentHeadingLevel = (node as Heading).depth;
+      currentHeadingLevel = node.depth;
       headingStack[currentHeadingLevel - 1] = currentHeading;
       headingStack.length = currentHeadingLevel;
       currentHeadingPath = compactHeadingPath(
@@ -307,6 +308,24 @@ function extractFrontmatterData(content: string): MarkdownFrontmatter {
   } catch {
     return {};
   }
+}
+
+function readMarkdownContent(
+  path: string,
+): Effect.Effect<string, MarkdownExtractionError | MarkdownNotFoundError> {
+  const resolvedPath = resolveUserPath(path);
+  if (!existsSync(resolvedPath)) {
+    return Effect.fail(new MarkdownNotFoundError({ path: resolvedPath }));
+  }
+
+  return Effect.try({
+    try: () => readFileSync(resolvedPath, "utf-8"),
+    catch: (error) =>
+      new MarkdownExtractionError({
+        path: resolvedPath,
+        reason: String(error),
+      }),
+  });
 }
 
 /**
@@ -434,11 +453,34 @@ function chunkText(
   });
 }
 
-/**
- * Resolve path with home directory expansion
- */
-function resolvePath(path: string): string {
-  return resolveUserPath(path);
+function processSections(
+  sections: readonly ExtractedSection[],
+  config: LibraryConfig,
+): ProcessedChunk[] {
+  const chunks: ProcessedChunk[] = [];
+
+  for (const { section, heading, headingPath, text } of sections) {
+    const contextHeading =
+      headingPath.length > 0 ? headingPath.join(" > ") : heading;
+    const sectionContent = contextHeading
+      ? `# ${contextHeading}\n\n${text}`
+      : text;
+    const sectionChunks = chunkText(
+      sectionContent,
+      config.chunkSize,
+      config.chunkOverlap,
+    );
+
+    for (const [chunkIndex, content] of sectionChunks.entries()) {
+      chunks.push({
+        page: section,
+        chunkIndex,
+        content,
+      });
+    }
+  }
+
+  return chunks;
 }
 
 // ============================================================================
@@ -446,117 +488,32 @@ function resolvePath(path: string): string {
 // ============================================================================
 
 export function makeMarkdownExtractor(config: LibraryConfig) {
-  return Layer.effect(
-    MarkdownExtractor,
-    Effect.gen(function* () {
-    return {
-      extract: (path: string) =>
-        Effect.gen(function* () {
-          const resolvedPath = resolvePath(path);
+  return Layer.succeed(MarkdownExtractor, {
+    extract: (path: string) =>
+      Effect.map(readMarkdownContent(path), (content) => {
+        const sections = parseMarkdownAST(content);
+        return {
+          frontmatter: extractFrontmatterData(content),
+          sections,
+          sectionCount: sections.length,
+        };
+      }),
 
-          if (!existsSync(resolvedPath)) {
-            return yield* new MarkdownNotFoundError({ path: resolvedPath });
-          }
+    process: (path: string) =>
+      Effect.map(readMarkdownContent(path), (content) => {
+        const sections = parseMarkdownAST(content);
+        return {
+          pageCount: sections.length,
+          chunks: processSections(sections, config),
+          frontmatter: extractFrontmatterData(content),
+        };
+      }),
 
-          const result = yield* Effect.try({
-            try: () => {
-              const content = readFileSync(resolvedPath, "utf-8");
-              const frontmatter = extractFrontmatterData(content);
-              const sections = parseMarkdownAST(content);
-
-              return {
-                frontmatter,
-                sections,
-                sectionCount: sections.length,
-              } as ExtractedMarkdown;
-            },
-            catch: (e) =>
-              new MarkdownExtractionError({
-                path: resolvedPath,
-                reason: String(e),
-              }),
-          });
-
-          return result;
-        }),
-
-      process: (path: string) =>
-        Effect.gen(function* () {
-          const resolvedPath = resolvePath(path);
-
-          if (!existsSync(resolvedPath)) {
-            return yield* new MarkdownNotFoundError({ path: resolvedPath });
-          }
-
-          const { frontmatter, sections } = yield* Effect.try({
-            try: () => {
-              const content = readFileSync(resolvedPath, "utf-8");
-              return {
-                frontmatter: extractFrontmatterData(content),
-                sections: parseMarkdownAST(content),
-              };
-            },
-            catch: (e) =>
-              new MarkdownExtractionError({
-                path: resolvedPath,
-                reason: String(e),
-              }),
-          });
-
-          const allChunks: ProcessedChunk[] = [];
-
-          for (const { section, heading, headingPath, text } of sections) {
-            const contextHeading =
-              headingPath.length > 0 ? headingPath.join(" > ") : heading;
-            const sectionContent = contextHeading
-              ? `# ${contextHeading}\n\n${text}`
-              : text;
-            const sectionChunks = chunkText(
-              sectionContent,
-              config.chunkSize,
-              config.chunkOverlap,
-            );
-            sectionChunks.forEach((content, chunkIndex) => {
-              allChunks.push({
-                page: section, // Use section number as "page"
-                chunkIndex,
-                content,
-              });
-            });
-          }
-
-          return {
-            pageCount: sections.length, // Section count as pseudo-pages
-            chunks: allChunks,
-            frontmatter,
-          };
-        }),
-
-      extractFrontmatter: (path: string) =>
-        Effect.gen(function* () {
-          const resolvedPath = resolvePath(path);
-
-          if (!existsSync(resolvedPath)) {
-            return yield* new MarkdownNotFoundError({ path: resolvedPath });
-          }
-
-          const result = yield* Effect.try({
-            try: () => {
-              const content = readFileSync(resolvedPath, "utf-8");
-              return extractFrontmatterData(content);
-            },
-            catch: (e) =>
-              new MarkdownExtractionError({
-                path: resolvedPath,
-                reason: String(e),
-              }),
-          });
-
-          return result;
-        }),
-    };
-    }),
-  );
+    extractFrontmatter: (path: string) =>
+      Effect.map(readMarkdownContent(path), (content) =>
+        extractFrontmatterData(content),
+      ),
+  });
 }
 
 export const MarkdownExtractorLive = Layer.unwrapEffect(

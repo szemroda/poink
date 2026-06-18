@@ -91,14 +91,18 @@ interface SuccessEnvelopeOptions extends EnvelopeOptions {
 }
 
 function verboseMeta(options: EnvelopeOptions): Pick<AgentEnvelope<never>, "meta"> {
-  if (!options.verbose || !options.meta) return {};
+  if (!options.verbose || !options.meta) {
+    return {};
+  }
   return { meta: options.meta };
 }
 
 function verboseNextActions(
   options: SuccessEnvelopeOptions,
 ): Pick<AgentEnvelope<never>, "nextActions"> {
-  if (!options.verbose || !options.nextActions) return {};
+  if (!options.verbose || !options.nextActions) {
+    return {};
+  }
   return { nextActions: options.nextActions };
 }
 
@@ -142,8 +146,8 @@ export function toJsonLine(
   value: unknown,
   opts?: { pretty?: boolean },
 ): string {
-  const pretty = opts?.pretty === true;
-  return JSON.stringify(value, null, pretty ? 2 : 0) + "\n";
+  const indentation = opts?.pretty === true ? 2 : 0;
+  return `${JSON.stringify(value, null, indentation)}\n`;
 }
 
 export function resolveServerConfig(
@@ -152,23 +156,18 @@ export function resolveServerConfig(
 ): ServerConfigShape {
   const configuredAuth = config?.auth;
   const authTokenOverride = overrides?.authToken;
-  const host = overrides?.host ?? config?.host ?? DEFAULT_SERVER_CONFIG.host;
-  const port = overrides?.port ?? config?.port ?? DEFAULT_SERVER_CONFIG.port;
-  const authEnabled =
-    typeof authTokenOverride === "string"
-      ? true
-      : configuredAuth?.enabled ?? DEFAULT_SERVER_CONFIG.auth.enabled;
-  const authToken = authTokenOverride ?? configuredAuth?.token;
-  const authTokenEnv =
-    configuredAuth?.tokenEnv ?? DEFAULT_SERVER_CONFIG.auth.tokenEnv;
 
   return {
-    host,
-    port,
+    host: overrides?.host ?? config?.host ?? DEFAULT_SERVER_CONFIG.host,
+    port: overrides?.port ?? config?.port ?? DEFAULT_SERVER_CONFIG.port,
     auth: {
-      enabled: authEnabled,
-      token: authToken,
-      tokenEnv: authTokenEnv,
+      enabled:
+        typeof authTokenOverride === "string"
+          ? true
+          : configuredAuth?.enabled ?? DEFAULT_SERVER_CONFIG.auth.enabled,
+      token: authTokenOverride ?? configuredAuth?.token,
+      tokenEnv:
+        configuredAuth?.tokenEnv ?? DEFAULT_SERVER_CONFIG.auth.tokenEnv,
     },
   };
 }
@@ -183,7 +182,9 @@ function normalizeBindHost(host: string): string {
 
 export function isLoopbackBindHost(host: string): boolean {
   const normalized = normalizeBindHost(host);
-  if (normalized === "localhost") return true;
+  if (normalized === "localhost") {
+    return true;
+  }
 
   const ipVersion = isIP(normalized);
   if (ipVersion === 4) {
@@ -204,8 +205,12 @@ export function resolveServerAuthToken(
   auth: ServerAuthConfig,
   env: Record<string, string | undefined> = process.env,
 ): string | undefined {
-  if (auth.token !== undefined) return auth.token;
-  if (!auth.tokenEnv) return undefined;
+  if (auth.token !== undefined) {
+    return auth.token;
+  }
+  if (!auth.tokenEnv) {
+    return undefined;
+  }
   return env[auth.tokenEnv];
 }
 
@@ -213,11 +218,17 @@ export function isBearerTokenAuthorized(
   headers: Headers,
   auth: ServerAuthConfig,
 ): boolean {
-  if (!auth.enabled) return true;
-  if (!auth.token) return false;
+  if (!auth.enabled) {
+    return true;
+  }
+  if (!auth.token) {
+    return false;
+  }
 
   const authorization = headers.get("authorization");
-  if (!authorization) return false;
+  if (!authorization) {
+    return false;
+  }
 
   return authorization === `Bearer ${auth.token}`;
 }

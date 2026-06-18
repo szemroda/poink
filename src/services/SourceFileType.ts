@@ -69,6 +69,14 @@ type SourceProbe = {
   prefix: Uint8Array;
 };
 
+const SOURCE_TYPES = {
+  pdf: { sourceFormat: "pdf", fileType: "pdf" },
+  markdown: { sourceFormat: "markdown-text", fileType: "markdown" },
+  docx: { sourceFormat: "docx-package", fileType: "docx" },
+  odtPackage: { sourceFormat: "odt-package", fileType: "odt" },
+  odtFlatXml: { sourceFormat: "odt-flat-xml", fileType: "odt" },
+} as const satisfies Readonly<Record<string, DetectedSourceType>>;
+
 const PDF_HEADER_LIMIT = 1024;
 const PDF_HEADER_MAX_BYTES = 10;
 const PDF_PROBE_BYTES = PDF_HEADER_LIMIT + PDF_HEADER_MAX_BYTES;
@@ -83,17 +91,17 @@ function supportedBinaryType(
   mime: string,
 ): DetectedSourceType | null {
   if (extension === "pdf" && mime === "application/pdf") {
-    return { sourceFormat: "pdf", fileType: "pdf" };
+    return { ...SOURCE_TYPES.pdf };
   }
   if (
     extension === "docx" &&
     mime ===
       "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
   ) {
-    return { sourceFormat: "docx-package", fileType: "docx" };
+    return { ...SOURCE_TYPES.docx };
   }
   if (extension === "odt" && mime === ODF_TEXT_MIME) {
-    return { sourceFormat: "odt-package", fileType: "odt" };
+    return { ...SOURCE_TYPES.odtPackage };
   }
   return null;
 }
@@ -231,7 +239,7 @@ async function detectLargeTextFallback(
   if (markdownExtension) {
     const utf8 = await inspectUtf8File(path);
     if (utf8.valid && utf8.firstSignificantCharacter !== "<") {
-      return { sourceFormat: "markdown-text", fileType: "markdown" };
+      return { ...SOURCE_TYPES.markdown };
     }
   }
   throw new SourceFileTypeUndeterminedError();
@@ -245,7 +253,7 @@ function detectBoundedTextFallback(
   if (text !== null && text.trimStart().startsWith("<")) {
     const flatOdt = inspectFlatOdtXml(text);
     if (flatOdt === "match") {
-      return { sourceFormat: "odt-flat-xml", fileType: "odt" };
+      return { ...SOURCE_TYPES.odtFlatXml };
     }
     if (flatOdt === "failure") {
       throw new SourceFileTypeUndeterminedError();
@@ -256,32 +264,32 @@ function detectBoundedTextFallback(
     throw new UnsupportedSourceFileTypeError();
   }
   if (markdownExtension && text !== null) {
-    return { sourceFormat: "markdown-text", fileType: "markdown" };
+    return { ...SOURCE_TYPES.markdown };
   }
   throw new SourceFileTypeUndeterminedError();
+}
+
+async function resolveOrUndetermined<T>(
+  operation: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await operation();
+  } catch {
+    throw new SourceFileTypeUndeterminedError();
+  }
 }
 
 async function detectSourceFileType(
   path: string,
   detectBinary: PrimaryBinaryDetector,
 ): Promise<DetectedSourceType> {
-  let detectedBinary: FileTypeResult | undefined;
-  try {
-    detectedBinary = await detectBinary(path);
-  } catch {
-    throw new SourceFileTypeUndeterminedError();
-  }
+  const detectedBinary = await resolveOrUndetermined(() => detectBinary(path));
   const binary = classifyBinaryDetection(detectedBinary);
   if (binary.kind === "supported") return binary.detected;
 
-  let probe: SourceProbe;
-  try {
-    probe = await probeSource(path);
-  } catch {
-    throw new SourceFileTypeUndeterminedError();
-  }
+  const probe = await resolveOrUndetermined(() => probeSource(path));
   if (hasCompatiblePdfHeader(probe.prefix)) {
-    return { sourceFormat: "pdf", fileType: "pdf" };
+    return { ...SOURCE_TYPES.pdf };
   }
 
   const extension = extname(path).toLowerCase();
@@ -291,17 +299,18 @@ async function detectSourceFileType(
     return detectLargeTextFallback(path, markdownExtension);
   }
 
-  let text: string | null;
-  try {
-    text = decodeUtf8(await readFile(path));
-  } catch {
-    throw new SourceFileTypeUndeterminedError();
-  }
+  const text = await resolveOrUndetermined(async () =>
+    decodeUtf8(await readFile(path)),
+  );
   return detectBoundedTextFallback(text, binary, markdownExtension);
 }
 
+function hasErrorTag(error: unknown): error is { _tag: unknown } {
+  return typeof error === "object" && error !== null && "_tag" in error;
+}
+
 function normalizeDetectionError(error: unknown): DetectionError {
-  if (typeof error !== "object" || error === null || !("_tag" in error)) {
+  if (!hasErrorTag(error)) {
     return new SourceFileTypeUndeterminedError();
   }
   if (error._tag === "UNSUPPORTED_SOURCE_FILE_TYPE") {

@@ -39,53 +39,58 @@ function fileLabel(file: FileStatus): string {
 
 function renderStatusLine(state: IngestState, file: FileStatus): string {
   const total = state.totalFiles || "?";
-  const index =
-    file.status === "done" || file.status === "error"
-      ? state.processedFiles
-      : Math.min(state.processedFiles + 1, state.totalFiles || state.processedFiles + 1);
+  const isProcessed = file.status === "done" || file.status === "error";
+  const nextFileIndex = state.processedFiles + 1;
+  const index = isProcessed
+    ? state.processedFiles
+    : Math.min(nextFileIndex, state.totalFiles || nextFileIndex);
   const chunks = typeof file.chunks === "number" ? ` (${file.chunks} chunks)` : "";
   const error = file.error ? `: ${file.error}` : "";
   return `[${index}/${total}] ${file.status} ${fileLabel(file)}${chunks}${error}`;
 }
 
 export function renderIngestProgress(initialState: IngestState) {
-  let currentState = { ...initialState };
+  let state = { ...initialState };
   let lastCurrentKey: string | undefined;
   let lastCheckpointAt: number | undefined;
 
-  const writeLine = (line: string) => {
-    process.stdout.write(`${line}\n`);
-  };
+  const writeLine = (line: string) => process.stdout.write(`${line}\n`);
 
-  if (currentState.totalFiles > 0) {
-    writeLine(`Processing ${currentState.totalFiles} file(s)...`);
+  if (state.totalFiles > 0) {
+    writeLine(`Processing ${state.totalFiles} file(s)...`);
   }
 
   return {
     update(newState: Partial<IngestState>) {
-      currentState = { ...currentState, ...newState };
+      state = { ...state, ...newState };
 
       if (newState.currentFile) {
         const file = newState.currentFile;
-        const key = `${file.path}:${file.status}:${file.chunks ?? ""}:${file.error ?? ""}:${currentState.processedFiles}`;
+        const key = [
+          file.path,
+          file.status,
+          file.chunks ?? "",
+          file.error ?? "",
+          state.processedFiles,
+        ].join(":");
         if (key !== lastCurrentKey) {
-          writeLine(renderStatusLine(currentState, file));
+          writeLine(renderStatusLine(state, file));
           lastCurrentKey = key;
         }
       }
 
       if (
-        currentState.checkpointInProgress &&
-        currentState.checkpointMessage &&
-        currentState.lastCheckpointAt !== lastCheckpointAt
+        state.checkpointInProgress &&
+        state.checkpointMessage &&
+        state.lastCheckpointAt !== lastCheckpointAt
       ) {
-        writeLine(currentState.checkpointMessage);
-        lastCheckpointAt = currentState.lastCheckpointAt;
+        writeLine(state.checkpointMessage);
+        lastCheckpointAt = state.lastCheckpointAt;
       }
 
       if (newState.phase === "done") {
-        const failed = currentState.errors.length;
-        const succeeded = currentState.processedFiles - failed;
+        const failed = state.errors.length;
+        const succeeded = state.processedFiles - failed;
         writeLine(`Done: ${succeeded} succeeded, ${failed} failed`);
       }
     },
@@ -99,7 +104,7 @@ export function renderIngestProgress(initialState: IngestState) {
     },
 
     getState() {
-      return currentState;
+      return state;
     },
   };
 }

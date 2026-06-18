@@ -18,7 +18,45 @@ import {
 import { withConfiguredLogging } from "./runtime.js";
 import { connectMcpServer } from "./mcp.js";
 
-export function resolveServeSecurityConfig(serverConfig: ServerConfigShape): ServerConfigShape {
+const JSON_HEADERS = { "content-type": "application/json" };
+
+function jsonResponse(body: unknown): Response {
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: JSON_HEADERS,
+  });
+}
+
+function createServeRequestHandler(
+  serverConfig: ServerConfigShape,
+  transport: WebStandardStreamableHTTPServerTransport,
+): (request: Request) => Promise<Response> {
+  return async (request) => {
+    const pathname = new URL(request.url).pathname;
+    if (pathname === "/health") {
+      return jsonResponse({
+        ok: true,
+        host: serverConfig.host,
+        port: serverConfig.port,
+        auth: { enabled: serverConfig.auth.enabled },
+      });
+    }
+    if (pathname !== "/mcp") {
+      return new Response("Not Found", { status: 404 });
+    }
+    if (!isBearerTokenAuthorized(request.headers, serverConfig.auth)) {
+      return new Response("Unauthorized", {
+        status: 401,
+        headers: { "WWW-Authenticate": "Bearer" },
+      });
+    }
+    return transport.handleRequest(request);
+  };
+}
+
+export function resolveServeSecurityConfig(
+  serverConfig: ServerConfigShape,
+): ServerConfigShape {
   const token = resolveServerAuthToken(serverConfig.auth);
   const tokenEnv = serverConfig.auth.tokenEnv ?? DEFAULT_SERVER_AUTH_TOKEN_ENV;
   const requiresAuth = requiresServerAuthForHost(serverConfig.host);
@@ -75,37 +113,7 @@ export async function runServeCommand<E>(
   const listener = await serveFetch({
     hostname: serverConfig.host,
     port: serverConfig.port,
-    fetch: async (request: Request): Promise<Response> => {
-      const url = new URL(request.url);
-
-      if (url.pathname === "/health") {
-        return new Response(
-          JSON.stringify({
-            ok: true,
-            host: serverConfig.host,
-            port: serverConfig.port,
-            auth: { enabled: serverConfig.auth.enabled },
-          }),
-          {
-            status: 200,
-            headers: { "content-type": "application/json" },
-          },
-        );
-      }
-
-      if (url.pathname !== "/mcp") {
-        return new Response("Not Found", { status: 404 });
-      }
-
-      if (!isBearerTokenAuthorized(request.headers, serverConfig.auth)) {
-        return new Response("Unauthorized", {
-          status: 401,
-          headers: { "WWW-Authenticate": "Bearer" },
-        });
-      }
-
-      return transport.handleRequest(request);
-    },
+    fetch: createServeRequestHandler(serverConfig, transport),
   });
 
   await Effect.runPromise(

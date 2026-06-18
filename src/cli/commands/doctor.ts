@@ -56,9 +56,22 @@ type ChunkerHealth = {
 type SourceIntegritySample = {
   id: string;
   title: string;
-  codes: string[];
+  codes: SourceIntegrityIssueCode[];
   reason: string;
 };
+
+type SourceIntegrityIssueCode =
+  | "missing_identity"
+  | "invalid_identity"
+  | "source_unavailable"
+  | "source_unreadable"
+  | "source_changed"
+  | "size_mismatch";
+
+type SourceIntegrityCounter = Exclude<
+  keyof SourceIntegrityHealth,
+  "checked" | "verified" | "sample"
+>;
 
 type SourceIntegrityHealth = {
   checked: number;
@@ -70,6 +83,55 @@ type SourceIntegrityHealth = {
   changed: number;
   sizeMismatch: number;
   sample: SourceIntegritySample[];
+};
+
+const SOURCE_INTEGRITY_ISSUES: Readonly<
+  Record<
+    SourceIntegrityIssueCode,
+    {
+      counter: SourceIntegrityCounter;
+      reason: string;
+      detail: string;
+      severity: "warning" | "error";
+    }
+  >
+> = {
+  missing_identity: {
+    counter: "missingIdentity",
+    reason: "missing source identity",
+    detail: "missing identity",
+    severity: "warning",
+  },
+  invalid_identity: {
+    counter: "invalidIdentity",
+    reason: "invalid source identity",
+    detail: "invalid identity",
+    severity: "error",
+  },
+  source_unavailable: {
+    counter: "unavailable",
+    reason: "source unavailable on this host",
+    detail: "unavailable",
+    severity: "warning",
+  },
+  source_unreadable: {
+    counter: "unreadable",
+    reason: "source unreadable",
+    detail: "unreadable",
+    severity: "error",
+  },
+  source_changed: {
+    counter: "changed",
+    reason: "source content changed",
+    detail: "changed",
+    severity: "error",
+  },
+  size_mismatch: {
+    counter: "sizeMismatch",
+    reason: "stored size is stale",
+    detail: "stale size",
+    severity: "warning",
+  },
 };
 
 type DoctorConsole = CommandExecutionContext["Console"];
@@ -219,32 +281,34 @@ function sourceIntegrityBase(
 
   for (const record of records) {
     if (record.sourceIdentity.status === "missing") {
-      result.missingIdentity++;
-      addSourceIntegritySample(result, record.document, "missing_identity");
+      recordSourceIntegrityIssue(
+        result,
+        record.document,
+        "missing_identity",
+      );
     } else if (record.sourceIdentity.status === "invalid") {
-      result.invalidIdentity++;
-      addSourceIntegritySample(result, record.document, "invalid_identity");
+      recordSourceIntegrityIssue(
+        result,
+        record.document,
+        "invalid_identity",
+      );
     }
   }
   return result;
 }
 
-function sourceIssueReason(codes: readonly string[]): string {
-  const labels: Record<string, string> = {
-    missing_identity: "missing source identity",
-    invalid_identity: "invalid source identity",
-    source_unavailable: "source unavailable on this host",
-    source_unreadable: "source unreadable",
-    source_changed: "source content changed",
-    size_mismatch: "stored size is stale",
-  };
-  return codes.map((code) => labels[code] ?? code).join("; ");
+function sourceIssueReason(
+  codes: readonly SourceIntegrityIssueCode[],
+): string {
+  return codes
+    .map((code) => SOURCE_INTEGRITY_ISSUES[code].reason)
+    .join("; ");
 }
 
 function addSourceIntegritySample(
   result: SourceIntegrityHealth,
   document: Document,
-  code: string,
+  code: SourceIntegrityIssueCode,
 ): void {
   const existing = result.sample.find((sample) => sample.id === document.id);
   if (existing) {
@@ -259,6 +323,16 @@ function addSourceIntegritySample(
     codes: [code],
     reason: sourceIssueReason([code]),
   });
+}
+
+function recordSourceIntegrityIssue(
+  result: SourceIntegrityHealth,
+  document: Document,
+  code: SourceIntegrityIssueCode,
+): void {
+  const { counter } = SOURCE_INTEGRITY_ISSUES[code];
+  result[counter]++;
+  addSourceIntegritySample(result, document, code);
 }
 
 function auditSources(
@@ -282,15 +356,13 @@ function auditSources(
       );
       if (fingerprint._tag === "Left") {
         if (fingerprint.left instanceof SourceFileUnavailableError) {
-          result.unavailable++;
-          addSourceIntegritySample(
+          recordSourceIntegrityIssue(
             result,
             record.document,
             "source_unavailable",
           );
         } else {
-          result.unreadable++;
-          addSourceIntegritySample(
+          recordSourceIntegrityIssue(
             result,
             record.document,
             "source_unreadable",
@@ -305,15 +377,21 @@ function auditSources(
         record.sourceIdentity.identity.hash !==
         fingerprint.right.identity.hash
       ) {
-        result.changed++;
-        addSourceIntegritySample(result, record.document, "source_changed");
+        recordSourceIntegrityIssue(
+          result,
+          record.document,
+          "source_changed",
+        );
         continue;
       }
 
       result.verified++;
       if (record.document.sizeBytes !== fingerprint.right.sizeBytes) {
-        result.sizeMismatch++;
-        addSourceIntegritySample(result, record.document, "size_mismatch");
+        recordSourceIntegrityIssue(
+          result,
+          record.document,
+          "size_mismatch",
+        );
       }
     }
     return result;
@@ -323,43 +401,25 @@ function auditSources(
 function sourceIntegrityHealthCheck(
   sourceIntegrity: SourceIntegrityHealth,
 ): HealthCheck {
-  const errors =
-    sourceIntegrity.invalidIdentity +
-    sourceIntegrity.unreadable +
-    sourceIntegrity.changed;
-  const warnings =
-    sourceIntegrity.missingIdentity +
-    sourceIntegrity.unavailable +
-    sourceIntegrity.sizeMismatch;
+  const issueCounts = Object.values(SOURCE_INTEGRITY_ISSUES).map((issue) => ({
+    ...issue,
+    count: sourceIntegrity[issue.counter],
+  }));
+  const errors = issueCounts
+    .filter((issue) => issue.severity === "error")
+    .reduce((total, issue) => total + issue.count, 0);
+  const warnings = issueCounts
+    .filter((issue) => issue.severity === "warning")
+    .reduce((total, issue) => total + issue.count, 0);
+  const details = issueCounts
+    .filter((issue) => issue.count > 0)
+    .map((issue) => `${issue.count} ${issue.detail}`);
+
   return {
     name: "Source Integrity",
     healthy: errors === 0,
     severity: errors > 0 ? "error" : warnings > 0 ? "warning" : "ok",
-    details:
-      errors + warnings > 0
-        ? [
-            sourceIntegrity.missingIdentity
-              ? `${sourceIntegrity.missingIdentity} missing identity`
-              : null,
-            sourceIntegrity.invalidIdentity
-              ? `${sourceIntegrity.invalidIdentity} invalid identity`
-              : null,
-            sourceIntegrity.unavailable
-              ? `${sourceIntegrity.unavailable} unavailable`
-              : null,
-            sourceIntegrity.unreadable
-              ? `${sourceIntegrity.unreadable} unreadable`
-              : null,
-            sourceIntegrity.changed
-              ? `${sourceIntegrity.changed} changed`
-              : null,
-            sourceIntegrity.sizeMismatch
-              ? `${sourceIntegrity.sizeMismatch} stale size`
-              : null,
-          ]
-            .filter((value): value is string => value !== null)
-            .join("; ")
-        : undefined,
+    details: details.length > 0 ? details.join("; ") : undefined,
   };
 }
 

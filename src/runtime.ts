@@ -29,9 +29,15 @@ export function fileExists(path: string): boolean {
 
 type FetchHandler = (request: Request) => Response | Promise<Response>;
 
-export type FetchServer = {
+export interface FetchServer {
   stop: (force?: boolean) => void;
-};
+}
+
+export interface ServeFetchOptions {
+  hostname: string;
+  port: number;
+  fetch: FetchHandler;
+}
 
 function requestUrl(req: IncomingMessage): string {
   const host = req.headers.host ?? "127.0.0.1";
@@ -75,28 +81,27 @@ async function writeWebResponse(
   res.statusCode = response.status;
   res.statusMessage = response.statusText;
 
-  if (response.body) {
-    const reader = response.body.getReader();
-    try {
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        if (value) res.write(value);
-      }
-    } finally {
-      reader.releaseLock();
-    }
+  if (!response.body) {
     res.end();
-  } else {
-    res.end();
+    return;
   }
+
+  const reader = response.body.getReader();
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (value) res.write(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  res.end();
 }
 
-export async function serveFetch(options: {
-  hostname: string;
-  port: number;
-  fetch: FetchHandler;
-}): Promise<FetchServer> {
+export async function serveFetch(
+  options: ServeFetchOptions,
+): Promise<FetchServer> {
   const server = createServer((req, res) => {
     void (async () => {
       try {

@@ -21,12 +21,19 @@ type IngestionCommandHandler = (
   options: Record<string, unknown>,
 ) => Effect.Effect<unknown, unknown, unknown>;
 
-const COMMAND_HANDLERS: Readonly<Record<string, IngestionCommandHandler>> = {
-  add: runAddCommand,
-  ingest: runIngestCommand,
-  rechunk: runRechunkCommand,
-  reindex: runReindexCommand,
-};
+const COMMAND_HANDLERS: ReadonlyMap<string, IngestionCommandHandler> = new Map([
+  ["add", runAddCommand],
+  ["ingest", runIngestCommand],
+  ["rechunk", runRechunkCommand],
+  ["reindex", runReindexCommand],
+]);
+
+function unknownCommand(command: string | undefined): CLIError {
+  return new CLIError(
+    "UNKNOWN_COMMAND",
+    `Unknown ingestion command: ${command}`,
+  );
+}
 
 export const runFamily: FamilyRunner = async ({
   parsed,
@@ -50,23 +57,13 @@ export const runFamily: FamilyRunner = async ({
       },
     };
     const command = parsed.args[0];
-    const handler = command ? COMMAND_HANDLERS[command] : undefined;
-    if (!handler) {
-      return yield* Effect.fail(
-        new CLIError(
-          "UNKNOWN_COMMAND",
-          `Unknown ingestion command: ${command}`,
-        ),
-      );
-    }
+    const handler = command ? COMMAND_HANDLERS.get(command) : undefined;
+    if (!handler) return yield* Effect.fail(unknownCommand(command));
 
     return yield* handler(parsed.args, commandGlobals, parsed.options);
   });
 
-  const providedProgram = program.pipe(
-    Effect.provide(layer),
-    Effect.scoped,
-  );
+  const providedProgram = program.pipe(Effect.provide(layer), Effect.scoped);
 
   return runFamilyEffect(providedProgram, globals);
 };
