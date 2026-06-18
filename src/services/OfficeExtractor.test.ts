@@ -4,12 +4,22 @@
 
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { Effect } from "effect";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  rmSync,
+  truncateSync,
+  writeFileSync,
+} from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import JSZip from "jszip";
-import { OfficeExtractor, OfficeExtractorLive } from "./OfficeExtractor.js";
+import {
+  OfficeExtractor,
+  OfficeExtractorLive,
+} from "./OfficeExtractor.js";
+import type { OfficeSourceFormat } from "./SourceFileType.js";
+import { MAX_ODT_XML_BYTES } from "./SourceFileLimits.js";
 
 const ZIP_DEFLATE_OPTIONS = {
   type: "uint8array",
@@ -26,11 +36,17 @@ afterAll(() => {
   rmSync(tempDir, { recursive: true, force: true });
 });
 
+function sourceFormatForTestPath(path: string): OfficeSourceFormat {
+  if (path.endsWith(".docx")) return "docx-package";
+  if (path.endsWith(".fodt")) return "odt-flat-xml";
+  return "odt-package";
+}
+
 function runExtract(path: string) {
   return Effect.runPromise(
     Effect.gen(function* () {
       const extractor = yield* OfficeExtractor;
-      return yield* extractor.extract(path);
+      return yield* extractor.extract(path, sourceFormatForTestPath(path));
     }).pipe(Effect.provide(OfficeExtractorLive)),
   );
 }
@@ -39,7 +55,7 @@ function runProcess(path: string) {
   return Effect.runPromise(
     Effect.gen(function* () {
       const extractor = yield* OfficeExtractor;
-      return yield* extractor.process(path);
+      return yield* extractor.process(path, sourceFormatForTestPath(path));
     }).pipe(Effect.provide(OfficeExtractorLive)),
   );
 }
@@ -229,6 +245,15 @@ describe("OfficeExtractor", () => {
     expect(result.sections[0].heading).toBe("Research Notes");
     expect(result.sections[0].text).toContain("OpenDocument paragraph");
     expect(result.sections[0].text).toContain("spaces and");
+  });
+
+  test("rejects flat OpenDocument XML that exceeds the extraction limit", async () => {
+    const path = writeTempFile("oversized.fodt", sampleFodtXml());
+    truncateSync(path, MAX_ODT_XML_BYTES + 1);
+
+    await expect(runExtract(path)).rejects.toThrow(
+      "Flat ODF XML size exceeds limit",
+    );
   });
 
   test("extracts sections from zipped ODT content.xml", async () => {

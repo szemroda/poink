@@ -5,7 +5,6 @@ import type {
   DocumentWithSourceIdentity,
 } from "../../services/StorageRepositories.js";
 import {
-  attachSourceFingerprint,
   fingerprintSource,
   type SourceFingerprint,
 } from "../../services/SourceIntegrity.js";
@@ -524,13 +523,11 @@ export function runRechunkCommand(
               visuals: visualsEnabled ? true : undefined,
               visualsMode,
               addedAt: doc.addedAt,
+              sourceContext:
+                singleDocId === item.id && explicitFingerprint
+                  ? { initialFingerprint: explicitFingerprint }
+                  : undefined,
             });
-            if (singleDocId === item.id && explicitFingerprint) {
-              attachSourceFingerprint(
-                replaceOptions,
-                explicitFingerprint,
-              );
-            }
             const replaceResult = yield* Effect.either(
               library.replace(doc.path, replaceOptions),
             );

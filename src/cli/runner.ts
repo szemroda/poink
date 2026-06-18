@@ -1,6 +1,6 @@
 import { Effect, Console as EffectConsole } from "effect";
 import { readFileSync } from "node:fs";
-import { dirname, extname, join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { formatHintBlock } from "../agent/format.js";
 import { generateHints, generateNextActions } from "../agent/hints.js";
@@ -18,6 +18,11 @@ import type { SemanticLibraryService } from "../services/SemanticLibrary.js";
 import type {
   DocumentWithSourceIdentity,
 } from "../services/StorageRepositories.js";
+import {
+  isOfficeDetectedSourceType,
+  type DetectedSourceType,
+  type OfficeSourceFormat,
+} from "../services/SourceFileType.js";
 import type { Concept, TaxonomyService } from "../services/TaxonomyService.js";
 import type { Config } from "../types.js";
 import { parseArgs } from "./args.js";
@@ -230,6 +235,7 @@ type PreviewPDFExtractor = {
 type PreviewOfficeExtractor = {
   extract: (
     path: string,
+    sourceFormat: OfficeSourceFormat,
   ) => Effect.Effect<
     { sections: Array<{ heading: string; text: string }> },
     unknown
@@ -243,6 +249,7 @@ export function extractEnrichmentPreview(
   path: string,
   options: {
     enrich: boolean;
+    detected: DetectedSourceType;
     pdfExtractor: PreviewPDFExtractor;
     officeExtractor: PreviewOfficeExtractor;
   },
@@ -251,18 +258,8 @@ export function extractEnrichmentPreview(
     content.length > ENRICHMENT_PREVIEW_MAX_CHARS
       ? content.slice(0, ENRICHMENT_PREVIEW_MAX_CHARS)
       : content;
-  const extension = extname(path).toLowerCase();
-  const fileType =
-    extension === ".md" || extension === ".markdown"
-      ? "markdown"
-      : extension === ".pdf"
-        ? "pdf"
-        : extension === ".docx"
-          ? "docx"
-          : extension === ".odt" || extension === ".fodt"
-            ? "odt"
-            : "unknown";
-  if (fileType === "markdown") {
+  const { detected } = options;
+  if (detected.fileType === "markdown") {
     return Effect.either(Effect.promise(() => readFileText(path))).pipe(
       Effect.map((result) =>
         result._tag === "Right" ? trim(result.right) : undefined,
@@ -270,7 +267,7 @@ export function extractEnrichmentPreview(
     );
   }
   if (!options.enrich) return Effect.as(Effect.void, undefined);
-  if (fileType === "pdf") {
+  if (detected.fileType === "pdf") {
     return Effect.either(options.pdfExtractor.extract(path)).pipe(
       Effect.map((result) =>
         result._tag === "Right"
@@ -284,8 +281,10 @@ export function extractEnrichmentPreview(
       ),
     );
   }
-  if (fileType === "docx" || fileType === "odt") {
-    return Effect.either(options.officeExtractor.extract(path)).pipe(
+  if (isOfficeDetectedSourceType(detected)) {
+    return Effect.either(
+      options.officeExtractor.extract(path, detected.sourceFormat),
+    ).pipe(
       Effect.map((result) =>
         result._tag === "Right"
           ? trim(

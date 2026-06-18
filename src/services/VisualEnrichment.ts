@@ -1,7 +1,7 @@
 import { generateText } from "ai";
 import dedent from "dedent";
 import { Context, Effect, Layer } from "effect";
-import type { Config, DocumentFileType } from "../types.js";
+import type { Config } from "../types.js";
 import { resolveVisualsConfig } from "../types.js";
 import {
   describeLanguageModelError,
@@ -9,6 +9,7 @@ import {
 } from "./AIProvider.js";
 import { OfficeExtractor } from "./OfficeExtractor.js";
 import { PDFExtractor } from "./PDFExtractor.js";
+import type { DetectedSourceType } from "./SourceFileType.js";
 
 export type VisualSourceKind = "pdf" | "docx";
 export type VisualsMode = "disabled" | "config" | "explicit";
@@ -59,7 +60,7 @@ export class VisualEnrichment extends Context.Tag("VisualEnrichment")<
   {
     readonly enrichDocument: (
       path: string,
-      fileType: DocumentFileType,
+      detected: DetectedSourceType,
       options: VisualEnrichmentOptions,
     ) => Effect.Effect<VisualDescriptionChunk[], VisualEnrichmentError>;
   }
@@ -188,7 +189,7 @@ export function makeVisualEnrichment(config: Config) {
     return {
       enrichDocument: (
         path: string,
-        fileType: DocumentFileType,
+        detected: DetectedSourceType,
         options: VisualEnrichmentOptions,
       ) => {
         if (options.mode === "disabled") return Effect.succeed([]);
@@ -200,7 +201,7 @@ export function makeVisualEnrichment(config: Config) {
           }
 
           const extracted = yield* (() => {
-            if (fileType === "pdf") {
+            if (detected.fileType === "pdf") {
               return pdfExtractor
                 .extractImages(path)
                 .pipe(
@@ -212,9 +213,9 @@ export function makeVisualEnrichment(config: Config) {
                   ),
                 );
             }
-            if (fileType === "docx") {
+            if (detected.sourceFormat === "docx-package") {
               return officeExtractor
-                .extractImages(path)
+                .extractImages(path, detected.sourceFormat)
                 .pipe(
                   Effect.mapError((error) =>
                     visualError(

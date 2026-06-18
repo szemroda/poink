@@ -903,6 +903,38 @@ export class SearchOptions extends Schema.Class<SearchOptions>("SearchOptions")(
   }
 ) {}
 
+const SourceFingerprintSchema = Schema.Struct({
+  identity: Schema.Struct({
+    algorithm: Schema.Literal("sha256"),
+    hash: Schema.String,
+  }),
+  sizeBytes: Schema.Number,
+});
+
+const DetectedSourceTypeSchema = Schema.Union(
+  Schema.Struct({
+    sourceFormat: Schema.Literal("pdf"),
+    fileType: Schema.Literal("pdf"),
+  }),
+  Schema.Struct({
+    sourceFormat: Schema.Literal("markdown-text"),
+    fileType: Schema.Literal("markdown"),
+  }),
+  Schema.Struct({
+    sourceFormat: Schema.Literal("docx-package"),
+    fileType: Schema.Literal("docx"),
+  }),
+  Schema.Struct({
+    sourceFormat: Schema.Literal("odt-package", "odt-flat-xml"),
+    fileType: Schema.Literal("odt"),
+  }),
+);
+
+const SourceOperationContextSchema = Schema.Struct({
+  initialFingerprint: Schema.optional(SourceFingerprintSchema),
+  detectedType: Schema.optional(DetectedSourceTypeSchema),
+});
+
 export class AddOptions extends Schema.Class<AddOptions>("AddOptions")({
   title: Schema.optional(Schema.String),
   tags: Schema.optional(Schema.Array(Schema.String)),
@@ -916,6 +948,8 @@ export class AddOptions extends Schema.Class<AddOptions>("AddOptions")({
    * CLI does not expose this directly.
    */
   addedAt: Schema.optional(Schema.Date),
+  /** Internal: source facts captured before source-derived work. */
+  sourceContext: Schema.optional(SourceOperationContextSchema),
 }) {}
 
 // ============================================================================

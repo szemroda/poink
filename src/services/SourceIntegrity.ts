@@ -18,23 +18,6 @@ export type StoredSourceIdentity =
   | { status: "invalid" }
   | { status: "valid"; identity: SourceIdentity };
 
-const operationFingerprints = new WeakMap<object, SourceFingerprint>();
-
-export function attachSourceFingerprint(
-  operation: object,
-  fingerprint: SourceFingerprint,
-): void {
-  operationFingerprints.set(operation, fingerprint);
-}
-
-export function takeSourceFingerprint(
-  operation: object,
-): SourceFingerprint | undefined {
-  const fingerprint = operationFingerprints.get(operation);
-  operationFingerprints.delete(operation);
-  return fingerprint;
-}
-
 export class SourceFileUnavailableError extends Error {
   readonly _tag = "SOURCE_FILE_UNAVAILABLE";
 

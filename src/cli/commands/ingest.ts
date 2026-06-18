@@ -11,9 +11,13 @@ import {
 import { PDFExtractor } from "../../services/PDFExtractor.js";
 import { OfficeExtractor } from "../../services/OfficeExtractor.js";
 import {
-  attachSourceFingerprint,
   fingerprintSource,
+  type SourceFingerprint,
 } from "../../services/SourceIntegrity.js";
+import {
+  SourceFileTypeDetector,
+  type DetectedSourceType,
+} from "../../services/SourceFileType.js";
 import {
   createInitialState,
   renderIngestProgress,
@@ -52,6 +56,16 @@ type DocumentMetadata = {
   title: string | undefined;
   tags: string[];
   enrichment: EnrichmentResult | undefined;
+};
+
+type PreparedSourceContext = {
+  initialFingerprint: SourceFingerprint;
+  detectedType: DetectedSourceType;
+};
+
+type PreparedIngestDocument = {
+  source: PreparedSourceContext;
+  metadata: DocumentMetadata;
 };
 
 type IngestResultPayload = {
@@ -134,10 +148,10 @@ function discoverFiles(directory: string, recursive: boolean): string[] {
           files.push(...discoverFiles(fullPath, recursive));
           continue;
         }
-        if (
-          stat.isFile() &&
-          fileTypeFromExtension(extname(entry).toLowerCase())
-        ) {
+        const extension = extname(entry).toLowerCase();
+        const isDiscoveryCandidate =
+          extension === "" || fileTypeFromExtension(extension) !== null;
+        if (stat.isFile() && isDiscoveryCandidate) {
           files.push(fullPath);
         }
       } catch {
@@ -153,6 +167,7 @@ function discoverFiles(directory: string, recursive: boolean): string[] {
 
 function prepareDocumentMetadata(
   filePath: string,
+  detected: DetectedSourceType,
   settings: IngestSettings,
   onPreviewExtracted: (
     content: string | undefined,
@@ -173,6 +188,7 @@ function prepareDocumentMetadata(
     const officeExtractor = yield* OfficeExtractor;
     const content = yield* extractEnrichmentPreview(filePath, {
       enrich: settings.enrich,
+      detected,
       pdfExtractor,
       officeExtractor,
     });
@@ -198,6 +214,46 @@ function prepareDocumentMetadata(
       tags: [...tags, ...tagResult.allTags],
       enrichment: undefined,
     } satisfies DocumentMetadata;
+  });
+}
+
+function prepareIngestSource(
+  filePath: string,
+  settings: IngestSettings,
+  onPreviewExtracted?: (content: string | undefined) => Effect.Effect<void>,
+) {
+  return Effect.gen(function* () {
+    const fingerprint = yield* fingerprintSource(filePath);
+    const detector = yield* SourceFileTypeDetector;
+    const detected = yield* detector.detect(filePath);
+    const metadata = yield* prepareDocumentMetadata(
+      filePath,
+      detected,
+      settings,
+      onPreviewExtracted,
+    );
+    return {
+      source: {
+        initialFingerprint: fingerprint,
+        detectedType: detected,
+      },
+      metadata,
+    } satisfies PreparedIngestDocument;
+  });
+}
+
+function createAddOptions(
+  prepared: PreparedIngestDocument,
+  visualsEnabled: boolean,
+  visualsMode: "explicit" | "config" | undefined,
+): AddOptions {
+  const { metadata } = prepared;
+  return new AddOptions({
+    title: metadata.title,
+    tags: metadata.tags.length > 0 ? metadata.tags : undefined,
+    visuals: visualsEnabled ? true : undefined,
+    visualsMode,
+    sourceContext: prepared.source,
   });
 }
 
@@ -452,9 +508,7 @@ export function runIngestCommand(
 
               const fileResult = yield* Effect.either(
                 Effect.gen(function* () {
-                  const initialFingerprint =
-                    yield* fingerprintSource(filePath);
-                  const metadata = yield* prepareDocumentMetadata(
+                  const prepared = yield* prepareIngestSource(
                     filePath,
                     settings,
                     () =>
@@ -463,16 +517,14 @@ export function runIngestCommand(
                         progress.update({ currentFile });
                       }),
                   );
+                  const { metadata } = prepared;
 
                   // Add the file
-                  const addOptions = new AddOptions({
-                    title: metadata.title,
-                    tags:
-                      metadata.tags.length > 0 ? metadata.tags : undefined,
-                    visuals: visualsEnabled ? true : undefined,
+                  const addOptions = createAddOptions(
+                    prepared,
+                    visualsEnabled,
                     visualsMode,
-                  });
-                  attachSourceFingerprint(addOptions, initialFingerprint);
+                  );
                   const doc = yield* library.add(
                     filePath,
                     addOptions,
@@ -586,9 +638,7 @@ export function runIngestCommand(
                   }`,
                 );
 
-                const initialFingerprint =
-                  yield* fingerprintSource(filePath);
-                const metadata = yield* prepareDocumentMetadata(
+                const prepared = yield* prepareIngestSource(
                   filePath,
                   settings,
                   (content) => {
@@ -600,15 +650,14 @@ export function runIngestCommand(
                     );
                   },
                 );
+                const { metadata } = prepared;
                 yield* logEnrichmentDetails(Console, metadata);
 
-                const addOptions = new AddOptions({
-                  title: metadata.title,
-                  tags: metadata.tags.length > 0 ? metadata.tags : undefined,
-                  visuals: visualsEnabled ? true : undefined,
+                const addOptions = createAddOptions(
+                  prepared,
+                  visualsEnabled,
                   visualsMode,
-                });
-                attachSourceFingerprint(addOptions, initialFingerprint);
+                );
                 const doc = yield* library.add(
                   filePath,
                   addOptions,

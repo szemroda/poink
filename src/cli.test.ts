@@ -501,7 +501,7 @@ describe("secure URL download options", () => {
     }
   });
 
-  test("closes unsupported URL download responses without draining them", async () => {
+  test("uses unsupported HTTP metadata only for a provisional filename", async () => {
     let markClosed!: () => void;
     const responseClosed = new Promise<void>((resolve) => {
       markClosed = resolve;
@@ -509,7 +509,7 @@ describe("secure URL download options", () => {
     const server = createServer((_req, res) => {
       res.on("close", markClosed);
       res.writeHead(200, { "content-type": "text/html" });
-      res.write("<!doctype html>");
+      res.end("<!doctype html>");
     });
 
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -521,19 +521,18 @@ describe("secure URL download options", () => {
         "download-timeout": "5s",
       });
 
-      await expect(
-        eventually(
-          Effect.runPromise(
-            downloadFile(
-              `http://127.0.0.1:${port}/index.html`,
-              downloadsDir,
-              options,
-              "poink-test",
-            ),
+      const path = await eventually(
+        Effect.runPromise(
+          downloadFile(
+            `http://127.0.0.1:${port}/index.html`,
+            downloadsDir,
+            options,
+            "poink-test",
           ),
-          1_000,
         ),
-      ).rejects.toThrow(/Unsupported content type: text\/html/);
+        1_000,
+      );
+      expect(path).toMatch(/index\.html\.pdf$/);
       await expect(eventually(responseClosed, 1_000)).resolves.toBeUndefined();
     } finally {
       rmSync(downloadsDir, { recursive: true, force: true });

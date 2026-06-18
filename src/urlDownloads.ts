@@ -605,7 +605,7 @@ export async function readResponseBufferWithLimit(
   return readStreamWithLimit(stream, maxBytes);
 }
 
-function detectDocumentTypeFromHeaders(
+function provisionalDocumentTypeFromHeaders(
   url: string,
   contentType: string,
 ): {
@@ -659,6 +659,21 @@ function detectTextPlainDocumentType(
   return looksLikeMarkdown(preview) ? "markdown" : null;
 }
 
+function resolveProvisionalDownloadType(
+  url: string,
+  contentType: string,
+  buffer: ArrayBuffer,
+): DocumentFileType {
+  const headerResult = provisionalDocumentTypeFromHeaders(url, contentType);
+  if (headerResult.detectedFileType) {
+    return headerResult.detectedFileType;
+  }
+  if (headerResult.hasTextPlainMime) {
+    return detectTextPlainDocumentType(buffer) ?? "pdf";
+  }
+  return "pdf";
+}
+
 export function downloadFile(
   url: string,
   downloadsDir: string,
@@ -686,41 +701,19 @@ export function downloadFile(
         }
 
         const contentType = headerValue(response.headers["content-type"]);
-        const initialDetection = detectDocumentTypeFromHeaders(url, contentType);
-
-        if (
-          !initialDetection.detectedFileType &&
-          initialDetection.hasTextPlainMime
-        ) {
-          const buffer = await readIncomingMessageWithLimit(
-            response,
-            options.maxFileSizeBytes,
-          );
-          const textPlainType = detectTextPlainDocumentType(buffer);
-          if (!textPlainType) {
-            throw new Error(`Unsupported content type: ${contentType}`);
-          }
-          const finalPath = getDownloadTargetPath(url, downloadsDir, textPlainType);
-          await writeFileData(finalPath, buffer);
-          return finalPath;
-        }
-
-        const detectedFileType = initialDetection.detectedFileType;
-        if (!detectedFileType) {
-          throwAfterClosingResponse(
-            response,
-            new Error(`Unsupported content type: ${contentType}`),
-          );
-        }
-
-        const finalPath = getDownloadTargetPath(
-          url,
-          downloadsDir,
-          detectedFileType,
-        );
         const buffer = await readIncomingMessageWithLimit(
           response,
           options.maxFileSizeBytes,
+        );
+        const provisionalFileType = resolveProvisionalDownloadType(
+          url,
+          contentType,
+          buffer,
+        );
+        const finalPath = getDownloadTargetPath(
+          url,
+          downloadsDir,
+          provisionalFileType,
         );
         await writeFileData(finalPath, buffer);
         return finalPath;

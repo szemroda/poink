@@ -6,6 +6,7 @@ import { Effect, Layer } from "effect";
 import { Config } from "../types.js";
 import { OfficeExtractor } from "./OfficeExtractor.js";
 import { PDFExtractor } from "./PDFExtractor.js";
+import type { DetectedSourceType } from "./SourceFileType.js";
 import {
   buildVisualChunkContent,
   filterVisualImages,
@@ -23,6 +24,10 @@ const { generateText } = await import("ai");
 const mockedGenerateText = vi.mocked(generateText);
 
 const ORIGINAL_POINK_CONFIG = process.env.POINK_CONFIG;
+const DETECTED_PDF = {
+  sourceFormat: "pdf",
+  fileType: "pdf",
+} satisfies DetectedSourceType;
 
 afterEach(() => {
   vi.clearAllMocks();
@@ -114,7 +119,7 @@ describe("VisualEnrichment", () => {
 
       const program = Effect.gen(function* () {
         const visuals = yield* VisualEnrichment;
-        return yield* visuals.enrichDocument("doc.pdf", "pdf", {
+        return yield* visuals.enrichDocument("doc.pdf", DETECTED_PDF, {
           mode: "explicit",
           title: "Doc",
         });
@@ -159,7 +164,7 @@ describe("VisualEnrichment", () => {
 
       const program = Effect.gen(function* () {
         const visuals = yield* VisualEnrichment;
-        return yield* visuals.enrichDocument("doc.pdf", "pdf", {
+        return yield* visuals.enrichDocument("doc.pdf", DETECTED_PDF, {
           mode: "config",
         });
       });
@@ -198,7 +203,7 @@ describe("VisualEnrichment", () => {
 
       const program = Effect.gen(function* () {
         const visuals = yield* VisualEnrichment;
-        return yield* visuals.enrichDocument("doc.pdf", "pdf", {
+        return yield* visuals.enrichDocument("doc.pdf", DETECTED_PDF, {
           mode: "explicit",
         });
       });

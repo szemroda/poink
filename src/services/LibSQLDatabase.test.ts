@@ -147,6 +147,7 @@ describe("libSQL storage", () => {
             chunker: { id: "new", version: 2 },
             visuals: { enabled: true, version: 1 },
           },
+          fileType: "docx",
         });
         yield* integrity.replaceDocument(
           updated,
@@ -167,6 +168,7 @@ describe("libSQL storage", () => {
         const stored = yield* documents.getDocument(doc.id);
         expect(stored?.title).toBe("Document");
         expect(stored?.tags).toEqual(["test"]);
+        expect(stored?.fileType).toBe("docx");
         expect(stored?.metadata).toEqual({
           source: "test",
           chunker: { id: "new", version: 2 },
@@ -221,6 +223,84 @@ describe("libSQL storage", () => {
         expect(result._tag).toBe("Left");
         expect(yield* documents.getDocument(doc.id)).toBeNull();
         expect(yield* documents.listChunksByDocument(doc.id)).toEqual([]);
+      }),
+    );
+  });
+
+  test("preserves all stored source-derived state when refresh fails", async () => {
+    await runStorage(
+      makeConfig(),
+      Effect.gen(function* () {
+        const documents = yield* DocumentRepository;
+        const integrity = yield* DocumentIntegrityRepository;
+        const doc = makeDocument();
+        yield* integrity.replaceDocument(
+          doc,
+          [
+            {
+              id: "old-chunk",
+              docId: doc.id,
+              page: 2,
+              chunkIndex: 0,
+              content: "old content",
+              embeddingContent: "old embedding content",
+            },
+          ],
+          [{ chunkId: "old-chunk", embedding: [1, 0, 0] }],
+          TEST_SOURCE_IDENTITY,
+          "add",
+        );
+
+        const attempted = new Document({
+          ...doc,
+          pageCount: 7,
+          sizeBytes: 999,
+          fileType: "docx",
+          metadata: {
+            ...doc.metadata,
+            chunker: { id: "new", version: 99 },
+            visuals: { enabled: true, version: 1 },
+          },
+        });
+        const attemptedIdentity = {
+          algorithm: "sha256" as const,
+          hash: "b".repeat(64),
+        };
+        const result = yield* Effect.either(
+          integrity.replaceDocument(
+            attempted,
+            [
+              {
+                id: "new-chunk",
+                docId: doc.id,
+                page: 1,
+                chunkIndex: 0,
+                content: "new content",
+              },
+            ],
+            [{ chunkId: "missing-new-chunk", embedding: [0, 1, 0] }],
+            attemptedIdentity,
+            "refresh",
+          ),
+        );
+
+        expect(result._tag).toBe("Left");
+        expect(yield* documents.getDocument(doc.id)).toEqual(doc);
+        expect(yield* documents.listChunksByDocument(doc.id)).toEqual([
+          expect.objectContaining({
+            id: "old-chunk",
+            page: 2,
+            content: "old content",
+            embeddingContent: "old embedding content",
+          }),
+        ]);
+        expect(
+          (yield* integrity.getDocumentWithSourceIdentity(doc.id))
+            ?.sourceIdentity,
+        ).toEqual({
+          status: "valid",
+          identity: TEST_SOURCE_IDENTITY,
+        });
       }),
     );
   });

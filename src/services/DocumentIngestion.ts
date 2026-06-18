@@ -13,7 +13,6 @@ import {
   Config,
   Document,
   DocumentExistsError,
-  type DocumentFileType,
   DocumentNotFoundError,
   expandHomePath,
   LibraryConfig,
@@ -36,12 +35,16 @@ import {
   type ChunkInput,
   type EmbeddingInput,
 } from "./StorageRepositories.js";
-import { buildChunkerMetadata, inferFileTypeFromPath } from "../chunking.js";
+import { buildChunkerMetadata } from "../chunking.js";
 import {
   assertStableSource,
   fingerprintSource,
-  takeSourceFingerprint,
 } from "./SourceIntegrity.js";
+import {
+  isOfficeDetectedSourceType,
+  SourceFileTypeDetector,
+  type DetectedSourceType,
+} from "./SourceFileType.js";
 
 // ============================================================================
 // Helper Functions
@@ -67,6 +70,7 @@ const makeDocumentIngestionService = (appConfig: Config) =>
     const markdownExtractor = yield* MarkdownExtractor;
     const officeExtractor = yield* OfficeExtractor;
     const visualEnrichment = yield* VisualEnrichment;
+    const sourceFileTypeDetector = yield* SourceFileTypeDetector;
     const documents = yield* DocumentRepository;
     const documentIntegrity = yield* DocumentIntegrityRepository;
     const maintenance = yield* LibraryMaintenance;
@@ -76,14 +80,32 @@ const makeDocumentIngestionService = (appConfig: Config) =>
     const fallbackTitle = (path: string) =>
       basename(path).replace(DOCUMENT_TITLE_EXTENSION_RE, "");
 
+    const resolveDetectedSourceType = (
+      resolvedPath: string,
+      options: AddOptions,
+    ) =>
+      options.sourceContext?.detectedType
+        ? Effect.succeed(options.sourceContext.detectedType)
+        : sourceFileTypeDetector.detect(resolvedPath);
+
+    const resolveInitialFingerprint = (
+      resolvedPath: string,
+      options: AddOptions,
+    ) =>
+      options.sourceContext?.initialFingerprint
+        ? Effect.succeed(options.sourceContext.initialFingerprint)
+        : fingerprintSource(resolvedPath);
+
     const resolveTitle = (
       resolvedPath: string,
-      fileType: DocumentFileType,
+      detected: DetectedSourceType,
       explicitTitle?: string,
     ) =>
       Effect.gen(function* () {
         if (explicitTitle) return explicitTitle;
-        if (fileType !== "markdown") return fallbackTitle(resolvedPath);
+        if (detected.fileType !== "markdown") {
+          return fallbackTitle(resolvedPath);
+        }
 
         const frontmatterResult = yield* Effect.either(
           markdownExtractor.extractFrontmatter(resolvedPath),
@@ -172,9 +194,22 @@ const makeDocumentIngestionService = (appConfig: Config) =>
       return { pageCount: textResult.pageCount, chunks: merged };
     };
 
+    const extractDocumentText = (
+      resolvedPath: string,
+      detected: DetectedSourceType,
+    ) => {
+      if (detected.fileType === "markdown") {
+        return markdownExtractor.process(resolvedPath);
+      }
+      if (isOfficeDetectedSourceType(detected)) {
+        return officeExtractor.process(resolvedPath, detected.sourceFormat);
+      }
+      return pdfExtractor.process(resolvedPath);
+    };
+
     const processDocument = (
       resolvedPath: string,
-      fileType: DocumentFileType,
+      detected: DetectedSourceType,
       options: {
         visualsMode: VisualsMode;
         title?: string;
@@ -184,20 +219,13 @@ const makeDocumentIngestionService = (appConfig: Config) =>
       unknown
     > =>
       Effect.gen(function* () {
-        const textResult = yield* (() => {
-          if (fileType === "markdown")
-            return markdownExtractor.process(resolvedPath);
-          if (fileType === "docx" || fileType === "odt") {
-            return officeExtractor.process(resolvedPath);
-          }
-          return pdfExtractor.process(resolvedPath);
-        })();
+        const textResult = yield* extractDocumentText(resolvedPath, detected);
 
         if (options.visualsMode === "disabled") return textResult;
 
         const visualChunks = yield* visualEnrichment.enrichDocument(
           resolvedPath,
-          fileType,
+          detected,
           {
             mode: options.visualsMode,
             title: options.title,
@@ -352,9 +380,10 @@ const makeDocumentIngestionService = (appConfig: Config) =>
             });
           }
 
-          const initialFingerprint =
-            takeSourceFingerprint(options) ??
-            (yield* fingerprintSource(resolvedPath));
+          const initialFingerprint = yield* resolveInitialFingerprint(
+            resolvedPath,
+            options,
+          );
 
           // Check embedding provider
           yield* embedProvider.checkHealth();
@@ -364,17 +393,20 @@ const makeDocumentIngestionService = (appConfig: Config) =>
             .digest("hex")
             .slice(0, 12);
 
-          // Detect file type and route to appropriate extractor
-          const fileType = inferFileTypeFromPath(resolvedPath);
+          const detected = yield* resolveDetectedSourceType(
+            resolvedPath,
+            options,
+          );
+          const { fileType } = detected;
 
           const title = yield* resolveTitle(
             resolvedPath,
-            fileType,
+            detected,
             options.title,
           );
           const visualsMode = configuredVisualsMode(appConfig, options);
           const processResult = yield* Effect.either(
-            processDocument(resolvedPath, fileType, { visualsMode, title }),
+            processDocument(resolvedPath, detected, { visualsMode, title }),
           );
           if (processResult._tag === "Left") {
             yield* Effect.logDebug(
@@ -473,17 +505,21 @@ const makeDocumentIngestionService = (appConfig: Config) =>
             return yield* new DocumentNotFoundError({ query: resolvedPath });
           }
 
-          const initialFingerprint =
-            takeSourceFingerprint(options) ??
-            (yield* fingerprintSource(resolvedPath));
+          const initialFingerprint = yield* resolveInitialFingerprint(
+            resolvedPath,
+            options,
+          );
 
           // Check embedding provider before doing any work
           yield* embedProvider.checkHealth();
 
           const id = existing.id;
 
-          // Detect file type and route to appropriate extractor
-          const fileType = existing.fileType;
+          const detected = yield* resolveDetectedSourceType(
+            resolvedPath,
+            options,
+          );
+          const { fileType } = detected;
 
           // Preserve existing title/tags/metadata by default
           const title = options.title ?? existing.title;
@@ -493,7 +529,7 @@ const makeDocumentIngestionService = (appConfig: Config) =>
 
           const visualsMode = configuredVisualsMode(appConfig, options);
           const processResult = yield* Effect.either(
-            processDocument(resolvedPath, fileType, { visualsMode, title }),
+            processDocument(resolvedPath, detected, { visualsMode, title }),
           );
           if (processResult._tag === "Left") {
             return yield* Effect.fail(processResult.left);

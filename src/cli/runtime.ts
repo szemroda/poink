@@ -55,6 +55,7 @@ export async function buildIngestionLayer(config: Config) {
     { makePDFExtractor },
     { makeMarkdownExtractor },
     { makeOfficeExtractor },
+    { SourceFileTypeDetectorLive },
     { makeVisualEnrichment },
     { makeAutoTagger },
     { LibraryConfig },
@@ -67,6 +68,7 @@ export async function buildIngestionLayer(config: Config) {
     import("../services/PDFExtractor.js"),
     import("../services/MarkdownExtractor.js"),
     import("../services/OfficeExtractor.js"),
+    import("../services/SourceFileType.js"),
     import("../services/VisualEnrichment.js"),
     import("../services/AutoTagger.js"),
     import("../types.js"),
@@ -91,6 +93,7 @@ export async function buildIngestionLayer(config: Config) {
     embedding,
     extractors,
     visuals,
+    SourceFileTypeDetectorLive,
   );
   const ingestion = makeDocumentIngestion(config).pipe(
     Layer.provide(ingestionDependencies),
@@ -109,6 +112,7 @@ export async function buildIngestionLayer(config: Config) {
     embedding,
     extractors,
     visuals,
+    SourceFileTypeDetectorLive,
     autoTagger,
   );
 }

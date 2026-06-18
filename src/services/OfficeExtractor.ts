@@ -6,9 +6,8 @@
 
 import { Context, Effect, Layer, Schema } from "effect";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { createReadStream, existsSync } from "node:fs";
 import { stat } from "node:fs/promises";
-import { extname } from "node:path";
 import type { Readable } from "node:stream";
 import mammoth from "mammoth";
 import JSZip from "jszip";
@@ -19,6 +18,8 @@ import { readFileBytes } from "../runtime.js";
 import { LibraryConfig, type DocumentFileType } from "../types.js";
 import { chunkText, sanitizeText } from "./PDFExtractor.js";
 import type { ExtractedDocumentImage } from "./VisualEnrichment.js";
+import type { OfficeSourceFormat } from "./SourceFileType.js";
+import { MAX_ODT_XML_BYTES } from "./SourceFileLimits.js";
 
 // ============================================================================
 // Custom Error Types
@@ -97,7 +98,6 @@ const MAX_OFFICE_ZIP_ENTRIES = 10_000;
 const MAX_OFFICE_TOTAL_UNCOMPRESSED_BYTES = 500 * 1024 * 1024;
 const MAX_OFFICE_ENTRY_UNCOMPRESSED_BYTES = 100 * 1024 * 1024;
 const MAX_OFFICE_XML_ENTRY_UNCOMPRESSED_BYTES = 50 * 1024 * 1024;
-const MAX_ODT_CONTENT_XML_BYTES = 20 * 1024 * 1024;
 const SAFE_ZIP_READ_OPTIONS = {
   lazyEntries: true,
   validateEntrySizes: true,
@@ -121,18 +121,21 @@ export class OfficeExtractor extends Context.Tag("OfficeExtractor")<
   {
     readonly extract: (
       path: string,
+      sourceFormat: OfficeSourceFormat,
     ) => Effect.Effect<
       ExtractedOfficeDocument,
       OfficeExtractionError | OfficeNotFoundError
     >;
     readonly extractImages: (
       path: string,
+      sourceFormat: OfficeSourceFormat,
     ) => Effect.Effect<
       ExtractedDocumentImage[],
       OfficeExtractionError | OfficeNotFoundError
     >;
     readonly process: (
       path: string,
+      sourceFormat: OfficeSourceFormat,
     ) => Effect.Effect<
       { pageCount: number; chunks: ProcessedChunk[] },
       OfficeExtractionError | OfficeNotFoundError
@@ -146,15 +149,6 @@ export class OfficeExtractor extends Context.Tag("OfficeExtractor")<
 
 function resolvePath(path: string): string {
   return resolveUserPath(path);
-}
-
-function officeFileTypeForPath(
-  path: string,
-): Extract<DocumentFileType, "docx" | "odt"> {
-  const ext = extname(path).toLowerCase();
-  if (ext === ".docx") return "docx";
-  if (ext === ".odt" || ext === ".fodt") return "odt";
-  throw new Error(`Unsupported office document extension: ${ext || "(none)"}`);
 }
 
 function sectionsFromPlainText(text: string): ExtractedOfficeSection[] {
@@ -219,7 +213,7 @@ function entryLimit(
 ): { limit: number; description: string } {
   if (options.contentXml && entry.name === "content.xml") {
     return {
-      limit: MAX_ODT_CONTENT_XML_BYTES,
+      limit: MAX_ODT_XML_BYTES,
       description: `ODF content.xml ${sizeKind} uncompressed size`,
     };
   }
@@ -606,9 +600,9 @@ async function extractDocxImages(path: string): Promise<ExtractedDocumentImage[]
 
 async function extractImagesFromResolvedPath(
   path: string,
+  sourceFormat: OfficeSourceFormat,
 ): Promise<ExtractedDocumentImage[]> {
-  const fileType = officeFileTypeForPath(path);
-  return fileType === "docx" ? extractDocxImages(path) : [];
+  return sourceFormat === "docx-package" ? extractDocxImages(path) : [];
 }
 
 function directElementsByLocalName(
@@ -640,11 +634,30 @@ function sectionsFromOdfXml(xml: string): ExtractedOfficeSection[] {
   return sectionsFromBlockElements(bodyElements, (name) => name === "h");
 }
 
-async function extractOdt(path: string): Promise<ExtractedOfficeDocument> {
-  const ext = extname(path).toLowerCase();
+function decodeUtf8(bytes: Uint8Array): string {
+  const decoded = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  return decoded.charCodeAt(0) === 0xfeff ? decoded.slice(1) : decoded;
+}
+
+async function readFlatOdtXml(path: string): Promise<string> {
+  const chunks: Buffer[] = [];
+  let totalBytes = 0;
+  for await (const chunk of createReadStream(path)) {
+    const bytes = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
+    totalBytes += bytes.length;
+    assertWithinLimit(totalBytes, MAX_ODT_XML_BYTES, "Flat ODF XML size");
+    chunks.push(bytes);
+  }
+  return decodeUtf8(Buffer.concat(chunks, totalBytes));
+}
+
+async function extractOdt(
+  path: string,
+  sourceFormat: Extract<OfficeSourceFormat, "odt-package" | "odt-flat-xml">,
+): Promise<ExtractedOfficeDocument> {
   const xml =
-    ext === ".fodt"
-      ? readFileSync(path, "utf-8")
+    sourceFormat === "odt-flat-xml"
+      ? await readFlatOdtXml(path)
       : await (async () => {
           await assertSafeOfficePackageFile(path);
           const buffer = Buffer.from(await readFileBytes(path));
@@ -667,65 +680,51 @@ async function extractOdt(path: string): Promise<ExtractedOfficeDocument> {
 
 async function extractFromResolvedPath(
   path: string,
+  sourceFormat: OfficeSourceFormat,
 ): Promise<ExtractedOfficeDocument> {
-  const fileType = officeFileTypeForPath(path);
-  return fileType === "docx" ? extractDocx(path) : extractOdt(path);
+  return sourceFormat === "docx-package"
+    ? extractDocx(path)
+    : extractOdt(path, sourceFormat);
+}
+
+function runOfficeOperation<A>(
+  path: string,
+  operation: (resolvedPath: string) => Promise<A>,
+): Effect.Effect<A, OfficeExtractionError | OfficeNotFoundError> {
+  const resolvedPath = resolvePath(path);
+  if (!existsSync(resolvedPath)) {
+    return Effect.fail(new OfficeNotFoundError({ path: resolvedPath }));
+  }
+
+  return Effect.tryPromise({
+    try: () => operation(resolvedPath),
+    catch: (error) =>
+      new OfficeExtractionError({
+        path: resolvedPath,
+        reason: String(error),
+      }),
+  });
 }
 
 export function makeOfficeExtractor(config: LibraryConfig) {
-  return Layer.effect(
+  return Layer.succeed(
     OfficeExtractor,
-    Effect.gen(function* () {
-    return {
-      extract: (path: string) =>
+    {
+      extract: (path: string, sourceFormat: OfficeSourceFormat) =>
+        runOfficeOperation(path, (resolvedPath) =>
+          extractFromResolvedPath(resolvedPath, sourceFormat),
+        ),
+
+      extractImages: (path: string, sourceFormat: OfficeSourceFormat) =>
+        runOfficeOperation(path, (resolvedPath) =>
+          extractImagesFromResolvedPath(resolvedPath, sourceFormat),
+        ),
+
+      process: (path: string, sourceFormat: OfficeSourceFormat) =>
         Effect.gen(function* () {
-          const resolvedPath = resolvePath(path);
-          if (!existsSync(resolvedPath)) {
-            return yield* new OfficeNotFoundError({ path: resolvedPath });
-          }
-
-          return yield* Effect.tryPromise({
-            try: async () => extractFromResolvedPath(resolvedPath),
-            catch: (e) =>
-              new OfficeExtractionError({
-                path: resolvedPath,
-                reason: String(e),
-              }),
-          });
-        }),
-
-      extractImages: (path: string) =>
-        Effect.gen(function* () {
-          const resolvedPath = resolvePath(path);
-          if (!existsSync(resolvedPath)) {
-            return yield* new OfficeNotFoundError({ path: resolvedPath });
-          }
-
-          return yield* Effect.tryPromise({
-            try: async () => extractImagesFromResolvedPath(resolvedPath),
-            catch: (e) =>
-              new OfficeExtractionError({
-                path: resolvedPath,
-                reason: String(e),
-              }),
-          });
-        }),
-
-      process: (path: string) =>
-        Effect.gen(function* () {
-          const resolvedPath = resolvePath(path);
-          if (!existsSync(resolvedPath)) {
-            return yield* new OfficeNotFoundError({ path: resolvedPath });
-          }
-
-          const extracted = yield* Effect.tryPromise({
-            try: async () => extractFromResolvedPath(resolvedPath),
-            catch: (e) =>
-              new OfficeExtractionError({
-                path: resolvedPath,
-                reason: String(e),
-              }),
-          });
+          const extracted = yield* runOfficeOperation(path, (resolvedPath) =>
+            extractFromResolvedPath(resolvedPath, sourceFormat),
+          );
 
           const allChunks: ProcessedChunk[] = [];
           for (const { section, heading, text } of extracted.sections) {
@@ -742,8 +741,7 @@ export function makeOfficeExtractor(config: LibraryConfig) {
 
           return { pageCount: extracted.sectionCount, chunks: allChunks };
         }),
-    };
-    }),
+    },
   );
 }
 

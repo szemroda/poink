@@ -55,6 +55,17 @@ export {
 export { OfficeExtractor, OfficeExtractorLive } from "./services/OfficeExtractor.js";
 export { PDFExtractor, PDFExtractorLive } from "./services/PDFExtractor.js";
 export {
+  SourceFileTypeDetector,
+  SourceFileTypeDetectorLive,
+  makeSourceFileTypeDetector,
+  SourceFileTypeUndeterminedError,
+  UnsupportedSourceFileTypeError,
+  type DetectedSourceType,
+  type OfficeDetectedSourceType,
+  type OfficeSourceFormat,
+  type SourceFormat,
+} from "./services/SourceFileType.js";
+export {
   VisualEnrichment,
   makeVisualEnrichment,
   type ExtractedDocumentImage,

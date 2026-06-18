@@ -1,6 +1,5 @@
 import type { InStatement, InValue } from "@libsql/client";
 import { Effect, Layer } from "effect";
-import { inferFileTypeFromPath } from "../chunking.js";
 import type { Config, Document } from "../types.js";
 import {
   DocumentIntegrityRepository,
@@ -48,7 +47,7 @@ function documentBaseArgs(doc: Document): InValue[] {
     doc.sizeBytes,
     JSON.stringify(doc.tags),
     JSON.stringify(doc.metadata ?? {}),
-    inferFileTypeFromPath(doc.path),
+    doc.fileType,
   ];
 }
 
@@ -83,6 +82,7 @@ function refreshDocumentStatement(
     sql: `UPDATE documents
           SET page_count = ?,
               size_bytes = ?,
+              file_type = ?,
               metadata = json_set(
                 COALESCE(metadata, '{}'),
                 '$.chunker', json(?),
@@ -94,6 +94,7 @@ function refreshDocumentStatement(
     args: [
       doc.pageCount,
       doc.sizeBytes,
+      doc.fileType,
       chunker,
       visuals,
       sourceIdentity.algorithm,

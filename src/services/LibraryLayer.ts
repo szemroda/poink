@@ -11,6 +11,7 @@ import { makePDFExtractor } from "./PDFExtractor.js";
 import { makeSemanticLibrary } from "./SemanticLibrary.js";
 import { makeStorageLayer } from "./StorageLayer.js";
 import { makeVisualEnrichment } from "./VisualEnrichment.js";
+import { SourceFileTypeDetectorLive } from "./SourceFileType.js";
 import { LibraryConfig } from "../types.js";
 
 export function makeLibraryLayer(config: Config) {
@@ -31,7 +32,13 @@ export function makeLibraryLayer(config: Config) {
   );
   const ingestion = makeDocumentIngestion(config).pipe(
     Layer.provide(
-      Layer.mergeAll(storage, embedding, extractors, visuals),
+      Layer.mergeAll(
+        storage,
+        embedding,
+        extractors,
+        visuals,
+        SourceFileTypeDetectorLive,
+      ),
     ),
   );
   const store = makeLibraryStore(config).pipe(Layer.provide(storage));
@@ -47,6 +54,7 @@ export function makeLibraryLayer(config: Config) {
     embedding,
     extractors,
     visuals,
+    SourceFileTypeDetectorLive,
     makeAutoTagger(config),
   );
 }

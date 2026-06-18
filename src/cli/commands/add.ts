@@ -12,10 +12,8 @@ import {
 } from "../../services/AutoTagger.js";
 import { PDFExtractor } from "../../services/PDFExtractor.js";
 import { OfficeExtractor } from "../../services/OfficeExtractor.js";
-import {
-  attachSourceFingerprint,
-  fingerprintSource,
-} from "../../services/SourceIntegrity.js";
+import { fingerprintSource } from "../../services/SourceIntegrity.js";
+import { SourceFileTypeDetector } from "../../services/SourceFileType.js";
 import {
   downloadFile,
   filenameFromURL,
@@ -130,6 +128,8 @@ export function runAddCommand(
       }
 
       const initialFingerprint = yield* fingerprintSource(localPath);
+      const sourceTypeDetector = yield* SourceFileTypeDetector;
+      const detected = yield* sourceTypeDetector.detect(localPath);
       yield* Console.log(`Adding: ${localPath}`);
 
       const autoTag = options["auto-tag"] === true;
@@ -154,6 +154,7 @@ export function runAddCommand(
         const officeExtractor = yield* OfficeExtractor;
         const content = yield* extractEnrichmentPreview(localPath, {
           enrich,
+          detected,
           pdfExtractor,
           officeExtractor,
         });
@@ -194,8 +195,11 @@ export function runAddCommand(
         tags: enrichedTags.length > 0 ? enrichedTags : undefined,
         visuals: visualsEnabled ? true : undefined,
         visualsMode,
+        sourceContext: {
+          initialFingerprint,
+          detectedType: detected,
+        },
       });
-      attachSourceFingerprint(addOptions, initialFingerprint);
       const doc = yield* library.add(
         localPath,
         addOptions,
