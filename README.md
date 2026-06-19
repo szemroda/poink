@@ -248,6 +248,38 @@ poink remove "document-title"
 poink tag "document-title" "new,tags,here"
 ```
 
+### Exporting PDF Pages
+
+Export selected pages from a stored PDF as a smaller PDF, individual PNG
+images, or both. Use the exact document ID shown by `poink list` or
+`poink read`.
+
+```bash
+# Export page 4 as a PDF
+poink page extract abc123 4
+
+# Export individual pages and inclusive ranges
+poink page extract abc123 2,5-7
+
+# Render one PNG per selected page
+poink page extract abc123 2-5 --output-format png
+
+# Export both formats into a chosen directory
+poink page extract abc123 2-5 \
+  --output-format pdf,png \
+  --output-dir ./exports \
+  --png-width 2000
+```
+
+Page selections are normalized into ascending order and may contain individual
+page numbers or inclusive ranges. Descending ranges are accepted, duplicates
+are removed, and page numbers refer to the original PDF.
+
+`--output-format` defaults to `pdf`. When `--output-dir` is omitted, artifacts
+are written to a managed temporary directory and their absolute paths are
+printed. `--png-width` defaults to `1600` and is valid only when PNG output is
+requested. Page extraction currently supports stored PDF documents only.
+
 ### Taxonomy Commands
 
 The taxonomy system uses SKOS (Simple Knowledge Organization System) for hierarchical concept organization.

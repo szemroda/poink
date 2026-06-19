@@ -23,7 +23,8 @@ export async function buildStoreLayer(config: Config) {
     import("../services/LibraryStore.js"),
   ]);
   const storage = makeStorageLayer(config);
-  return makeLibraryStore(config).pipe(Layer.provide(storage));
+  const store = makeLibraryStore(config).pipe(Layer.provide(storage));
+  return Layer.merge(storage, store);
 }
 
 export async function buildSearchLayer(config: Config) {

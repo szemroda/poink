@@ -8,6 +8,7 @@ import { join } from "path";
 import { Client } from "@modelcontextprotocol/sdk/client";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { createClient } from "@libsql/client";
+import { PDFDocument } from "pdf-lib";
 import { removeDirWithRetries } from "./testUtils.js";
 
 function nodeTsxArgs(args: string[]): string[] {
@@ -262,6 +263,101 @@ describe("Node Build Smoke", () => {
 });
 
 describe("CLI JSON Envelope Contract", () => {
+  test("page extract uses exact IDs and returns only published absolute paths", async () =>
+    withTempLibraryPathAsync(async (libraryRoot) => {
+      const libraryPath = join(libraryRoot, "library");
+      const outputPath = join(libraryRoot, "exports");
+      const sourcePath = join(libraryRoot, "source.pdf");
+      const configPath = join(libraryRoot, "config.json");
+      writeTestConfig(configPath, libraryPath);
+      const env = envForConfig(configPath);
+
+      const pdf = await PDFDocument.create();
+      pdf.addPage([200, 300]);
+      pdf.addPage([300, 200]);
+      const sourceBytes = await pdf.save();
+      writeFileSync(sourcePath, sourceBytes);
+
+      expect(runCli(["stats"], { env }).exitCode).toBe(0);
+      const client = createClient({
+        url: `file:${join(libraryPath, "library.db")}`,
+      });
+      await client.execute({
+        sql: `INSERT INTO documents
+                (id, title, path, added_at, page_count, size_bytes, tags,
+                 metadata, file_type, source_hash_algorithm, source_hash)
+              VALUES (?, ?, ?, ?, ?, ?, '[]', '{}', 'pdf', 'sha256', ?)`,
+        args: [
+          "abc123-extra",
+          "Stored PDF",
+          sourcePath,
+          "2026-01-01T00:00:00.000Z",
+          2,
+          sourceBytes.length,
+          createHash("sha256").update(sourceBytes).digest("hex"),
+        ],
+      });
+      client.close();
+
+      const prefix = runCli(
+        ["page", "extract", "abc123", "1", "--format", "json"],
+        { env },
+      );
+      expect(prefix.exitCode).toBe(1);
+      expect(JSON.parse(prefix.stdout).error.code).toBe("NOT_FOUND");
+
+      const result = runCli(
+        [
+          "page",
+          "extract",
+          "abc123-extra",
+          "2,1",
+          "--output-dir",
+          outputPath,
+          "--format",
+          "json",
+        ],
+        { env },
+      );
+      expect(result.exitCode).toBe(0);
+      const envelope = JSON.parse(result.stdout);
+      expect(envelope.ok).toBe(true);
+      expect(envelope.command).toBe("page");
+      expect(Object.keys(envelope.result).sort()).toEqual([
+        "docId",
+        "exportId",
+        "files",
+        "outputDirectory",
+        "pages",
+      ]);
+      expect(envelope.result.docId).toBe("abc123-extra");
+      expect(envelope.result.pages).toEqual([1, 2]);
+      expect(envelope.result.outputDirectory).toBe(outputPath);
+      expect(envelope.result.files).toHaveLength(1);
+      expect(envelope.result.files[0]).toMatch(
+        /^.*abc123-extra-[a-z0-9]{8}\.pdf$/,
+      );
+      expect(existsSync(envelope.result.files[0])).toBe(true);
+      expect(envelope.result.files[0]).not.toContain(".stage");
+
+      const text = runCli(
+        [
+          "page",
+          "extract",
+          "abc123-extra",
+          "2",
+          "--output-dir",
+          outputPath,
+        ],
+        { env },
+      );
+      expect(text.exitCode).toBe(0);
+      const lines = text.stdout.trim().split(/\r?\n/);
+      expect(lines[0]).toBe("Exported pages: 2");
+      expect(lines).toHaveLength(2);
+      expect(existsSync(lines[1]!)).toBe(true);
+    }));
+
   test("stats emits text output by default", () =>
     withTempLibraryPath((libraryPath) => {
       const configPath = join(libraryPath, "config.json");

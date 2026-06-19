@@ -372,7 +372,7 @@ describe("DocumentIngestion.add", () => {
     expect(result._tag).toBe("Left");
     if (result._tag === "Left") {
       expect(result.left).toMatchObject({
-        _tag: "SOURCE_CHANGED_DURING_INGESTION",
+        _tag: "SOURCE_FILE_CHANGED",
       });
     }
     expect(persisted).toBe(false);

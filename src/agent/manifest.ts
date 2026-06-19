@@ -36,6 +36,7 @@ const AGENT_HELP_TEXT = dedent`
     poink chunk get <chunkId>
     poink doc chunks <docId> [--page N]
     poink page get <docId> <page>
+    poink page extract <docId> <pages> [--output-format pdf|png|pdf,png] [--output-dir <path>] [--png-width N]
 
   ### Taxonomy
     poink taxonomy search "<q>"

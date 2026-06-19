@@ -34,11 +34,11 @@ export class SourceFileUnreadableError extends Error {
   }
 }
 
-export class SourceChangedDuringIngestionError extends Error {
-  readonly _tag = "SOURCE_CHANGED_DURING_INGESTION";
+export class SourceFileChangedError extends Error {
+  readonly _tag = "SOURCE_FILE_CHANGED";
 
-  constructor() {
-    super("Source file changed during ingestion");
+  constructor(message = "Source file changed") {
+    super(message);
   }
 }
 
@@ -117,14 +117,16 @@ export function fingerprintSource(
 export function assertStableSource(
   initial: SourceFingerprint,
   final: SourceFingerprint,
-): Effect.Effect<void, SourceChangedDuringIngestionError> {
+): Effect.Effect<void, SourceFileChangedError> {
   if (
     initial.identity.hash === final.identity.hash &&
     initial.sizeBytes === final.sizeBytes
   ) {
     return Effect.void;
   }
-  return Effect.fail(new SourceChangedDuringIngestionError());
+  return Effect.fail(
+    new SourceFileChangedError("Source file changed during ingestion"),
+  );
 }
 
 export function decodeStoredSourceIdentity(

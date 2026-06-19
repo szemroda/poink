@@ -1,6 +1,7 @@
 import { Effect } from "effect";
 import type { Layer } from "effect";
 import { LibraryStore } from "../../services/LibraryStore.js";
+import { DocumentIntegrityRepository } from "../../services/StorageRepositories.js";
 import { runLibraryCommand } from "../commands/library.js";
 import { runRepairCommand } from "../commands/repair.js";
 import {
@@ -39,9 +40,14 @@ export const runFamily: FamilyRunner = async ({
   const layer = await buildStoreLayer(config);
   const program = Effect.gen(function* () {
     const store = yield* LibraryStore;
+    const integrity = yield* DocumentIntegrityRepository;
     const commandGlobals = {
       ...globals,
-      library: store as CliLibrary,
+      library: {
+        ...store,
+        getWithSourceIdentity: integrity.getDocumentWithSourceIdentity,
+        listWithSourceIdentity: integrity.listDocumentsWithSourceIdentity,
+      } as CliLibrary,
     };
     const command = parsed.args[0];
     if (command === "repair") {

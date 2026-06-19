@@ -42,6 +42,7 @@ describe("CLI command family routing", () => {
     ["help", "lightweight"],
     ["config", "lightweight"],
     ["stats", "store"],
+    ["page", "store"],
     ["search", "search"],
     ["taxonomy", "search"],
     ["add", "ingestion"],
@@ -57,6 +58,31 @@ describe("CLI command family routing", () => {
           ? ["add", "document.pdf"]
           : [command];
     expect(getCommandFamily(parseCommandLine(args))).toBe(expected);
+  });
+
+  test("parses page extraction options without confusing export format and response format", () => {
+    const parsed = parseCommandLine([
+      "page",
+      "extract",
+      "abc123",
+      "2,5-7",
+      "--output-format",
+      "pdf,png",
+      "--png-width",
+      "2000",
+      "--format",
+      "json",
+    ]);
+
+    expect(parsed.args.slice(0, 4)).toEqual([
+      "page",
+      "extract",
+      "abc123",
+      "2,5-7",
+    ]);
+    expect(parsed.options.outputFormat).toBe("pdf,png");
+    expect(parsed.options.pngWidth).toBe("2000");
+    expect(parsed.globals.format).toBe("json");
   });
 
   test("command help always uses the lightweight family", () => {

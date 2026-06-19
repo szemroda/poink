@@ -243,6 +243,13 @@ function registerLibraryCommands(
   const page = program.command("page");
   register(page);
   register(page.command("get <docId> <page>"));
+  register(
+    page
+      .command("extract <docId> <pages>")
+      .option("--output-format <formats>")
+      .option("--output-dir <path>")
+      .option("--png-width <pixels>"),
+  );
 
   register(program.command("list").option("--tag <tag>"));
   register(program.command("read <idOrTitle>"));

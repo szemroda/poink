@@ -3,6 +3,7 @@ import type { OutputFormat } from "../../agent/protocol.js";
 import type { Document } from "../../types.js";
 import { CLIError, type CliLibrary } from "../runner.js";
 import type { CliCommandOutput, CliConsole } from "./types.js";
+import { runPageExtractCommand } from "./pageExtract.js";
 
 export type DocumentSummary = Pick<
   Document,
@@ -179,16 +180,26 @@ const runPageCommand: LibraryCommandHandler = ({
   format,
   library,
   Console,
+  options,
 }) =>
   Effect.gen(function* () {
     const subcommand = args[1];
+    if (subcommand === "extract") {
+      return yield* runPageExtractCommand(
+        args,
+        format,
+        library,
+        Console,
+        options,
+      );
+    }
     if (subcommand !== "get") {
       return yield* failWithMessage(
         Console,
-        "Usage: poink page get <docId> <page>",
+        "Usage: poink page get <docId> <page> | poink page extract <docId> <pages>",
         new CLIError("INVALID_ARGS", "Unknown page subcommand", {
           subcommand,
-          hint: "poink page get <docId> <page>",
+          hint: "poink page extract <docId> <pages>",
         }),
       );
     }
