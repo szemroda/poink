@@ -3,6 +3,7 @@
  */
 
 import { Schema } from "effect";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
 import { homedir } from "os";
 import { dirname, join, win32 } from "path";
@@ -789,14 +790,21 @@ export function getDefaultConfigPath(): string {
   return join(resolveHomeDir(), ".config", "poink", "config.json");
 }
 
+const configPathOverride = new AsyncLocalStorage<string>();
+
+export function withConfigPathOverride<T>(configPath: string, run: () => T): T {
+  return configPathOverride.run(configPath, run);
+}
+
 /**
  * Resolve the active config path.
  * Priority:
- * 1) $POINK_CONFIG
- * 2) ~/.config/poink/config.json
+ * 1) Invocation config path override
+ * 2) $POINK_CONFIG
+ * 3) ~/.config/poink/config.json
  */
 export function resolveConfigPath(): string {
-  return process.env.POINK_CONFIG || getDefaultConfigPath();
+  return configPathOverride.getStore() ?? process.env.POINK_CONFIG ?? getDefaultConfigPath();
 }
 
 /**

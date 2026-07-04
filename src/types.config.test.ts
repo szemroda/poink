@@ -7,8 +7,10 @@ import {
   LibraryConfig,
   loadConfig,
   normalizeConfig,
+  resolveConfigPath,
   resolveLibsqlAuthToken,
   resolveVisualsConfig,
+  withConfigPathOverride,
 } from "./types.js";
 
 const ORIGINAL_POINK_CONFIG = process.env.POINK_CONFIG;
@@ -101,6 +103,45 @@ describe("loadConfig path and database defaults", () => {
         "https://api.anthropic.com/v1",
       );
       expect(config.providers["openai-codex"]).toEqual({});
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  test("scopes invocation config overrides across concurrent async calls", async () => {
+    const tempDir = makeTempDir();
+
+    try {
+      const envConfigPath = join(tempDir, "env-config.json");
+      const firstConfigPath = join(tempDir, "first-config.json");
+      const secondConfigPath = join(tempDir, "second-config.json");
+      process.env.POINK_CONFIG = envConfigPath;
+
+      let releaseFirst: () => void = () => undefined;
+      const firstWait = new Promise<void>((resolve) => {
+        releaseFirst = resolve;
+      });
+
+      const first = withConfigPathOverride(firstConfigPath, async () => {
+        expect(resolveConfigPath()).toBe(firstConfigPath);
+        await firstWait;
+        expect(resolveConfigPath()).toBe(firstConfigPath);
+        return resolveConfigPath();
+      });
+
+      const second = withConfigPathOverride(secondConfigPath, async () => {
+        expect(resolveConfigPath()).toBe(secondConfigPath);
+        await Promise.resolve();
+        expect(resolveConfigPath()).toBe(secondConfigPath);
+        releaseFirst();
+        return resolveConfigPath();
+      });
+
+      await expect(Promise.all([first, second])).resolves.toEqual([
+        firstConfigPath,
+        secondConfigPath,
+      ]);
+      expect(resolveConfigPath()).toBe(envConfigPath);
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }

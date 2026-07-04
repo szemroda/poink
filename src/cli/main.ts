@@ -8,8 +8,13 @@ import {
   type OutputFormat,
 } from "../agent/protocol.js";
 import { setLogLevel } from "../logger.js";
-import { Config, loadConfig } from "../types.js";
+import { Config, loadConfig, withConfigPathOverride } from "../types.js";
 import { parseCommandLine, type ParsedCommandLine } from "./commander.js";
+import {
+  extractConfigFlag,
+  normalizeRawArgs,
+  type ConfigFlagSelection,
+} from "./configFlag.js";
 import { writeEnvelope } from "./envelope.js";
 import { coerceCliError } from "./errors.js";
 import {
@@ -235,18 +240,10 @@ function isEither(
   );
 }
 
-async function runCliWithTiming(
-  rawArgs: string[],
+async function runCliWithNormalizedArgs(
+  normalizedArgs: string[],
   timing: InvocationTiming,
 ): Promise<number> {
-  const normalizedArgs =
-    rawArgs.length === 0
-      ? ["--help"]
-      : rawArgs.length === 1 && rawArgs[0] === "-h"
-        ? ["--help"]
-        : rawArgs.length === 1 && rawArgs[0] === "-v"
-          ? ["--version"]
-          : rawArgs;
   const bootstrapCommand = normalizedArgs[0] ?? "--help";
   const malformedConfigIsNonFatal = isHelpOrVersionInvocation(normalizedArgs);
 
@@ -355,6 +352,39 @@ async function runCliWithTiming(
     );
     return 1;
   }
+}
+
+async function runCliWithTiming(
+  rawArgs: string[],
+  timing: InvocationTiming,
+): Promise<number> {
+  const inputArgs = normalizeRawArgs(rawArgs);
+  const inputCommand = inputArgs[0] ?? "--help";
+  let configSelection: ConfigFlagSelection;
+
+  try {
+    configSelection = extractConfigFlag(inputArgs);
+  } catch (error) {
+    const globals = {
+      ...configuredGlobals("text", inputArgs),
+      timing,
+    };
+    writeCliError(
+      globals,
+      inputCommand.startsWith("-") ? "cli" : inputCommand,
+      coerceCliError(error),
+      timing,
+    );
+    return 1;
+  }
+
+  if (configSelection.configPath === undefined) {
+    return runCliWithNormalizedArgs(configSelection.args, timing);
+  }
+
+  return withConfigPathOverride(configSelection.configPath, () =>
+    runCliWithNormalizedArgs(configSelection.args, timing),
+  );
 }
 
 export function runCli(rawArgs: string[]): Promise<number> {

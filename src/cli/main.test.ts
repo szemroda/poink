@@ -1,9 +1,9 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test, vi } from "vitest";
 import { removeDirWithRetries } from "../testUtils.js";
-import { Config } from "../types.js";
+import { Config, resolveConfigPath } from "../types.js";
 import { parseCommandLine } from "./commander.js";
 import { getCommandFamily, runCli } from "./main.js";
 
@@ -15,26 +15,107 @@ vi.mock("../services/OpenAICodexProvider.js", () => ({
   withOpenAICodexProviderScope,
 }));
 
+type CliDefaultFormat = Config["cli"]["globalFlags"]["format"];
+
 async function withConfigFile(
   contents: string,
   run: (directory: string) => Promise<void>,
 ): Promise<void> {
   const directory = mkdtempSync(join(tmpdir(), "poink-main-test-"));
   const configPath = join(directory, "config.json");
-  const previousConfigPath = process.env.POINK_CONFIG;
   writeFileSync(configPath, contents);
+
+  try {
+    await withPoinkConfigPath(configPath, () => run(directory));
+  } finally {
+    await removeDirWithRetries(directory);
+  }
+}
+
+async function withPoinkConfigPath(
+  configPath: string,
+  run: () => Promise<void>,
+): Promise<void> {
+  const previousConfigPath = process.env.POINK_CONFIG;
   process.env.POINK_CONFIG = configPath;
 
   try {
-    await run(directory);
+    await run();
   } finally {
     if (previousConfigPath === undefined) {
       delete process.env.POINK_CONFIG;
     } else {
       process.env.POINK_CONFIG = previousConfigPath;
     }
+  }
+}
+
+async function withTempDirectory(
+  run: (directory: string) => Promise<void>,
+): Promise<void> {
+  const directory = mkdtempSync(join(tmpdir(), "poink-main-test-"));
+  try {
+    await run(directory);
+  } finally {
     await removeDirWithRetries(directory);
   }
+}
+
+function makeMainTestConfig(
+  libraryPath: string,
+  format: CliDefaultFormat = "text",
+) {
+  return {
+    ...Config.Default,
+    library: { ...Config.Default.library, path: libraryPath },
+    storage: {
+      ...Config.Default.storage,
+      libsql: { ...Config.Default.storage.libsql, url: ":memory:" },
+    },
+    cli: {
+      ...Config.Default.cli,
+      globalFlags: { ...Config.Default.cli.globalFlags, format },
+    },
+  };
+}
+
+function writeMainTestConfig(
+  configPath: string,
+  libraryPath: string,
+  format: CliDefaultFormat = "text",
+): void {
+  writeFileSync(
+    configPath,
+    JSON.stringify(makeMainTestConfig(libraryPath, format)),
+    "utf-8",
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function readConfigFormat(
+  configPath: string,
+): CliDefaultFormat | undefined {
+  const parsed: unknown = JSON.parse(readFileSync(configPath, "utf-8"));
+  if (!isRecord(parsed)) return undefined;
+  const cli = parsed.cli;
+  if (!isRecord(cli)) return undefined;
+  const globalFlags = cli.globalFlags;
+  if (!isRecord(globalFlags)) return undefined;
+  const format = globalFlags.format;
+  if (format !== "text" && format !== "json" && format !== "ndjson") {
+    return undefined;
+  }
+  return format;
+}
+
+function expectConfigFormat(
+  configPath: string,
+  expectedFormat: CliDefaultFormat,
+): void {
+  expect(readConfigFormat(configPath)).toBe(expectedFormat);
 }
 
 describe("CLI command family routing", () => {
@@ -111,6 +192,74 @@ describe("CLI command family routing", () => {
       });
     },
   );
+
+  test("command-scoped --config overrides POINK_CONFIG for load and save", async () => {
+    await withTempDirectory(async (directory) => {
+      const envConfigPath = join(directory, "env-config.json");
+      const flagConfigPath = join(directory, "flag-config.json");
+      writeMainTestConfig(envConfigPath, join(directory, "env-library"), "text");
+      writeMainTestConfig(flagConfigPath, join(directory, "flag-library"), "text");
+
+      await withPoinkConfigPath(envConfigPath, async () => {
+        expect(
+          await runCli([
+            "config",
+            "set",
+            "cli.globalFlags.format",
+            "json",
+            "--config",
+            flagConfigPath,
+          ]),
+        ).toBe(0);
+
+        expectConfigFormat(flagConfigPath, "json");
+        expectConfigFormat(envConfigPath, "text");
+        expect(resolveConfigPath()).toBe(envConfigPath);
+
+        expect(
+          await runCli([
+            "config",
+            "set",
+            "cli.globalFlags.format",
+            "ndjson",
+          ]),
+        ).toBe(0);
+
+        expectConfigFormat(flagConfigPath, "json");
+        expectConfigFormat(envConfigPath, "ndjson");
+      });
+    });
+  });
+
+  test("--config=value selects the invocation config path", async () => {
+    await withTempDirectory(async (directory) => {
+      const configPath = join(directory, "config.json");
+      writeMainTestConfig(configPath, join(directory, "library"));
+
+      expect(
+        await runCli([
+          "config",
+          "show",
+          `--config=${configPath}`,
+          "--format",
+          "json",
+        ]),
+      ).toBe(0);
+    });
+  });
+
+  test("--config without a value fails before command parsing", async () => {
+    expect(await runCli(["config", "show", "--config"])).toBe(1);
+  });
+
+  test("root-level --config remains unsupported", async () => {
+    await withTempDirectory(async (directory) => {
+      const configPath = join(directory, "config.json");
+      writeMainTestConfig(configPath, join(directory, "library"));
+
+      expect(await runCli(["--config", configPath, "config", "show"])).toBe(1);
+    });
+  });
 
   test("configured Codex one-shot commands run inside a provider scope", async () => {
     await withConfigFile("", async (directory) => {
