@@ -1,9 +1,8 @@
 import { Effect } from "effect";
-import { basename, extname, join } from "path";
-import { existsSync, readdirSync, statSync } from "fs";
+import { basename } from "path";
+import { existsSync, statSync } from "fs";
 import { AddOptions, resolveVisualsConfig } from "../../types.js";
 import { resolveUserPath } from "../../pathUtils.js";
-import { fileTypeFromExtension } from "../../urlDownloads.js";
 import {
   AutoTagger,
   type EnrichmentResult,
@@ -31,6 +30,15 @@ import {
   type CommandExecutionContext,
   type GlobalCLIOptions,
 } from "../runner.js";
+import {
+  combineIngestDiscoveryResults,
+  discoverIngestFiles,
+  globPatternsFromOption,
+  withSampledSelection,
+  type IngestDiscoveryResult,
+  type IngestSelectionFilters,
+  type IngestSelectionSummary,
+} from "../fileDiscovery.js";
 
 interface IngestCommandOptions extends Record<string, unknown> {
   enrich?: boolean;
@@ -38,6 +46,8 @@ interface IngestCommandOptions extends Record<string, unknown> {
   "auto-tag"?: boolean;
   tags?: string;
   sample?: string | number;
+  include?: string | string[];
+  exclude?: string | string[];
   recursive?: boolean;
   "no-recursive"?: boolean;
   progress?: boolean;
@@ -79,6 +89,16 @@ type IngestResultPayload = {
   visuals: boolean;
   autoTag: boolean;
   manualTags: string[] | null;
+  selection: IngestSelectionSummary;
+};
+
+type IngestEarlyResultPayload = {
+  foundFiles: number;
+  skippedExisting: number;
+  processed: number;
+  succeeded: number;
+  failed: number;
+  selection: IngestSelectionSummary;
 };
 
 const CHECKPOINT_INTERVAL = 1;
@@ -103,6 +123,15 @@ function parseSampleSize(
 ): number | undefined {
   if (!sample) return undefined;
   return parseInt(String(sample), 10);
+}
+
+function selectionFiltersFromOptions(
+  options: IngestCommandOptions,
+): IngestSelectionFilters {
+  return {
+    include: globPatternsFromOption(options.include),
+    exclude: globPatternsFromOption(options.exclude),
+  };
 }
 
 function resolveTargetDirectories(directories: string[], Console: CliConsole) {
@@ -134,35 +163,6 @@ function resolveTargetDirectories(directories: string[], Console: CliConsole) {
 
     return targetDirectories;
   });
-}
-
-function discoverFiles(directory: string, recursive: boolean): string[] {
-  const files: string[] = [];
-
-  try {
-    for (const entry of readdirSync(directory)) {
-      const fullPath = join(directory, entry);
-      try {
-        const stat = statSync(fullPath);
-        if (stat.isDirectory() && recursive) {
-          files.push(...discoverFiles(fullPath, recursive));
-          continue;
-        }
-        const extension = extname(entry).toLowerCase();
-        const isDiscoveryCandidate =
-          extension === "" || fileTypeFromExtension(extension) !== null;
-        if (stat.isFile() && isDiscoveryCandidate) {
-          files.push(fullPath);
-        }
-      } catch {
-        // Skip entries we cannot access.
-      }
-    }
-  } catch {
-    // Skip directories we cannot read.
-  }
-
-  return files;
 }
 
 function prepareDocumentMetadata(
@@ -265,6 +265,7 @@ function createResultPayload(
   failed: number,
   settings: IngestSettings,
   visualsEnabled: boolean,
+  selection: IngestSelectionSummary,
 ): IngestResultPayload {
   return {
     mode,
@@ -277,7 +278,62 @@ function createResultPayload(
     visuals: visualsEnabled,
     autoTag: settings.autoTag,
     manualTags: settings.manualTags ?? null,
+    selection,
   };
+}
+
+function createEarlyResultPayload(
+  foundFiles: number,
+  skippedExisting: number,
+  processed: number,
+  failed: number,
+  selection: IngestSelectionSummary,
+): IngestEarlyResultPayload {
+  return {
+    foundFiles,
+    skippedExisting,
+    processed,
+    succeeded: processed - failed,
+    failed,
+    selection,
+  };
+}
+
+function renderSelectionSummary(selection: IngestSelectionSummary): string {
+  return `Selection: discovered ${selection.discovered}, included ${selection.included}, excluded ${selection.excluded}, selected ${selection.selected}`;
+}
+
+function discoverTargetFiles(
+  targetDirs: string[],
+  selectionFilters: IngestSelectionFilters,
+  recursive: boolean,
+  Console: CliConsole,
+) {
+  return Effect.gen(function* () {
+    yield* Console.log(
+      `Scanning ${targetDirs.length} director${
+        targetDirs.length > 1 ? "ies" : "y"
+      }...`,
+    );
+
+    const discoveryResults: IngestDiscoveryResult[] = [];
+    for (const dir of targetDirs) {
+      const found = discoverIngestFiles(dir, selectionFilters, recursive);
+      yield* Console.log(
+        `  ${basename(dir)}: ${found.selection.discovered} files`,
+      );
+      discoveryResults.push(found);
+    }
+
+    const discovery = combineIngestDiscoveryResults(
+      discoveryResults,
+      selectionFilters,
+    );
+    yield* Console.log(`Total: ${discovery.selection.discovered} files`);
+    yield* Console.log(renderSelectionSummary(discovery.selection));
+
+    return discovery;
+  });
 }
 
 function logEnrichmentDetails(Console: CliConsole, metadata: DocumentMetadata) {
@@ -366,6 +422,8 @@ export function runIngestCommand(
           );
           yield* Console.error("  --tags a,b,c   Manual tags for all files");
           yield* Console.error("  --sample N     Process only first N files");
+          yield* Console.error("  --include GLOB Include matching paths");
+          yield* Console.error("  --exclude GLOB Exclude matching paths");
           yield* Console.error("  --no-progress  Disable line progress output");
           return yield* Effect.fail(
             new CLIError("INVALID_ARGS", "At least one directory required", {
@@ -383,6 +441,7 @@ export function runIngestCommand(
           options["no-recursive"] === true
             ? false
             : options.recursive !== false;
+        const selectionFilters = selectionFiltersFromOptions(options);
         const manualTags = parseManualTags(options.tags);
         const sampleSize = parseSampleSize(options.sample);
         // Agent-only mode: progress writes to stdout and will break JSON parsing.
@@ -406,31 +465,25 @@ export function runIngestCommand(
           basePath: targetDirs[0],
         };
 
-        // Discover files from all directories
-        yield* Console.log(
-          `Scanning ${targetDirs.length} director${
-            targetDirs.length > 1 ? "ies" : "y"
-          }...`,
+        const discovery = yield* discoverTargetFiles(
+          targetDirs,
+          selectionFilters,
+          recursive,
+          Console,
         );
-
-        let files: string[] = [];
-        for (const dir of targetDirs) {
-          const found = discoverFiles(dir, recursive);
-          yield* Console.log(`  ${basename(dir)}: ${found.length} files`);
-          files.push(...found);
-        }
-        yield* Console.log(`Total: ${files.length} files`);
+        let files = discovery.files;
+        let selection = discovery.selection;
 
         if (files.length === 0) {
           yield* Console.log("No supported document files found");
           return {
-            resultPayload: {
-              foundFiles: 0,
-              skippedExisting: 0,
-              processed: 0,
-              succeeded: 0,
-              failed: 0,
-            },
+            resultPayload: createEarlyResultPayload(
+              0,
+              0,
+              0,
+              0,
+              selection,
+            ),
             agentResult,
           };
         }
@@ -438,6 +491,7 @@ export function runIngestCommand(
         // Apply sample limit if specified
         if (sampleSize && sampleSize < files.length) {
           files = files.slice(0, sampleSize);
+          selection = withSampledSelection(selection, files.length);
           yield* Console.log(`Processing sample of ${sampleSize} files`);
         }
 
@@ -456,13 +510,13 @@ export function runIngestCommand(
         if (newFiles.length === 0) {
           yield* Console.log("All files already ingested");
           return {
-            resultPayload: {
-              foundFiles: files.length,
+            resultPayload: createEarlyResultPayload(
+              files.length,
               skippedExisting,
-              processed: 0,
-              succeeded: 0,
-              failed: 0,
-            },
+              0,
+              0,
+              selection,
+            ),
             agentResult,
           };
         }
@@ -614,6 +668,7 @@ export function runIngestCommand(
               failed,
               settings,
               visualsEnabled,
+              selection,
             );
           }).pipe(Effect.ensuring(Effect.sync(() => progress.cleanup())));
         } else {
@@ -705,6 +760,7 @@ export function runIngestCommand(
             errors,
             settings,
             visualsEnabled,
+            selection,
           );
         }
         return { resultPayload, agentResult };

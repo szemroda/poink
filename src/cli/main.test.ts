@@ -166,6 +166,26 @@ describe("CLI command family routing", () => {
     expect(parsed.globals.format).toBe("json");
   });
 
+  test("parses repeatable ingest file selection options", () => {
+    const parsed = parseCommandLine([
+      "ingest",
+      "./docs",
+      "--include",
+      "**/*.md",
+      "--include",
+      "**/*.pdf",
+      "--exclude",
+      "**/archive/**",
+      "--format",
+      "json",
+    ]);
+
+    expect(parsed.args.slice(0, 2)).toEqual(["ingest", "./docs"]);
+    expect(parsed.options.include).toEqual(["**/*.md", "**/*.pdf"]);
+    expect(parsed.options.exclude).toEqual(["**/archive/**"]);
+    expect(parsed.globals.format).toBe("json");
+  });
+
   test("command help always uses the lightweight family", () => {
     expect(
       getCommandFamily(

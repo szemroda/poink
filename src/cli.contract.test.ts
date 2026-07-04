@@ -1881,9 +1881,18 @@ describe("CLI JSON Envelope Contract", () => {
       expect(obj.ok).toBe(true);
       expect(obj.command).toBe("ingest");
       expect(obj.result.foundFiles).toBe(0);
+      expect(obj.result.selection).toEqual({
+        include: [],
+        exclude: [],
+        discovered: 0,
+        included: 0,
+        excluded: 0,
+        selected: 0,
+        sampled: 0,
+      });
     }));
 
-  test("ingest --no-recursive does not scan nested directories", () =>
+  test("ingest --no-recursive with filters does not scan nested directories", () =>
     withTempLibraryPath((libraryRoot) => {
       const libraryPath = join(libraryRoot, "library");
       const docs = join(libraryRoot, "docs");
@@ -1893,15 +1902,95 @@ describe("CLI JSON Envelope Contract", () => {
       mkdirSync(nested, { recursive: true });
       writeFileSync(join(nested, "note.md"), "# Nested note\n\nNot discovered.", "utf-8");
 
-      const res = runCli(["ingest", docs, "--no-recursive", "--format", "json"], {
-        env: envForConfig(configPath),
-      });
+      const res = runCli(
+        [
+          "ingest",
+          docs,
+          "--include",
+          "**/*.md",
+          "--exclude",
+          "**/archive/**",
+          "--no-recursive",
+          "--format",
+          "json",
+        ],
+        {
+          env: envForConfig(configPath),
+        },
+      );
 
       expect(res.exitCode).toBe(0);
       const obj = JSON.parse(res.stdout);
       expect(obj.ok).toBe(true);
       expect(obj.command).toBe("ingest");
       expect(obj.result.foundFiles).toBe(0);
+      expect(obj.result.selection).toEqual({
+        include: ["**/*.md"],
+        exclude: ["**/archive/**"],
+        discovered: 0,
+        included: 0,
+        excluded: 0,
+        selected: 0,
+        sampled: 0,
+      });
+    }));
+
+  test("ingest include globs filter selected files in JSON output", () =>
+    withTempLibraryPath((libraryRoot) => {
+      const libraryPath = join(libraryRoot, "library");
+      const docs = join(libraryRoot, "docs");
+      const configPath = join(libraryRoot, "config.json");
+      writeTestConfig(configPath, libraryPath);
+      mkdirSync(docs);
+      writeFileSync(join(docs, "paper.pdf"), "%PDF-1.7", "utf-8");
+
+      const res = runCli(
+        ["ingest", docs, "--include", "**/*.md", "--format", "json"],
+        { env: envForConfig(configPath) },
+      );
+
+      expect(res.exitCode).toBe(0);
+      const obj = JSON.parse(res.stdout);
+      expect(obj.ok).toBe(true);
+      expect(obj.result.foundFiles).toBe(0);
+      expect(obj.result.selection).toEqual({
+        include: ["**/*.md"],
+        exclude: [],
+        discovered: 1,
+        included: 0,
+        excluded: 0,
+        selected: 0,
+        sampled: 0,
+      });
+    }));
+
+  test("ingest excludes win over includes and text prints selection counters", () =>
+    withTempLibraryPath((libraryRoot) => {
+      const libraryPath = join(libraryRoot, "library");
+      const docs = join(libraryRoot, "docs");
+      const configPath = join(libraryRoot, "config.json");
+      writeTestConfig(configPath, libraryPath);
+      mkdirSync(join(docs, "archive"), { recursive: true });
+      writeFileSync(join(docs, "archive", "note.md"), "# Archived", "utf-8");
+
+      const res = runCli(
+        [
+          "ingest",
+          docs,
+          "--include",
+          "**/*.md",
+          "--exclude",
+          "**/archive/**",
+        ],
+        { env: envForConfig(configPath) },
+      );
+
+      expect(res.exitCode).toBe(0);
+      expect(res.stdout).toContain(
+        "Selection: discovered 1, included 1, excluded 1, selected 0",
+      );
+      expect(res.stdout).not.toContain("**/*.md");
+      expect(res.stdout).not.toContain("**/archive/**");
     }));
 
   test("CLI package dependencies do not include Ink or React", () => {

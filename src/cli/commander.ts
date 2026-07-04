@@ -28,6 +28,10 @@ type RegisterExecutable = (
   mapArgs?: MapCommandArgs,
 ) => Command;
 
+function collectRepeatedOption(value: string, previous: string[]): string[] {
+  return [...previous, value];
+}
+
 function kebabCaseOptionName(name: string): string {
   return name.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`);
 }
@@ -308,6 +312,8 @@ function registerMaintenanceCommands(
       .option("--auto-tag")
       .option("--tags <tags>")
       .option("--sample <n>", "", parseIntegerOption("--sample", 1))
+      .option("--include <glob>", "", collectRepeatedOption, [])
+      .option("--exclude <glob>", "", collectRepeatedOption, [])
       .option("--no-progress")
       .option("--recursive")
       .option("--no-recursive"),
