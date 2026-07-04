@@ -73,6 +73,7 @@ function makeDatabase(
     listDocuments: () => Effect.succeed([]),
     deleteDocument: () => Effect.void,
     updateTags: () => Effect.void,
+    updateDocumentPath: () => Effect.void,
     addChunks: () => Effect.void,
     getChunk: () => Effect.succeed(null),
     listChunksByDocument: () => Effect.succeed([]),

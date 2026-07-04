@@ -73,6 +73,10 @@ export interface DocumentRepositoryService {
     id: string,
     tags: string[],
   ) => Effect.Effect<void, StorageError>;
+  readonly updateDocumentPath: (
+    id: string,
+    path: string,
+  ) => Effect.Effect<void, StorageError>;
   readonly addChunks: (
     chunks: ChunkInput[],
   ) => Effect.Effect<void, StorageError>;

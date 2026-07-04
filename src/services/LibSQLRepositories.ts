@@ -212,6 +212,14 @@ function makeDocumentRepository(
         });
       }),
 
+    updateDocumentPath: (id, path) =>
+      storageEffect("update document path", async () => {
+        await client.execute({
+          sql: "UPDATE documents SET path = ? WHERE id = ?",
+          args: [path, id],
+        });
+      }),
+
     addChunks: (chunks) =>
       storageEffect("add chunks", async () => {
         if (chunks.length === 0) return;

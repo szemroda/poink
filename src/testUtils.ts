@@ -6,7 +6,7 @@ function sleep(delayMs: number): Promise<void> {
 
 export async function removeDirWithRetries(
   path: string,
-  attempts = 100,
+  attempts = 300,
   delayMs = 100,
 ): Promise<void> {
   let lastError: Error | undefined;

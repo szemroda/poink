@@ -1,10 +1,18 @@
 ﻿import { describe, expect, test } from "vitest";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "fs";
 import { createServer } from "net";
 import { tmpdir } from "os";
-import { join } from "path";
+import { join, relative } from "path";
 import { Client } from "@modelcontextprotocol/sdk/client";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { createClient } from "@libsql/client";
@@ -121,6 +129,58 @@ function envForConfig(configPath: string): Record<string, string> {
     POINK_CONFIG: configPath,
     POINK_LOG_LEVEL: "silent",
   };
+}
+
+function insertStoredMarkdownDocumentInChild(
+  libraryPath: string,
+  options: {
+    id?: string;
+    title?: string;
+    path: string;
+    content: string;
+  },
+): void {
+  const payload = JSON.stringify({
+    dbPath: join(libraryPath, "library.db"),
+    id: options.id ?? "doc-1",
+    title: options.title ?? "Source",
+    path: options.path,
+    sizeBytes: Buffer.byteLength(options.content),
+  });
+  const script = `
+    import { createClient } from "@libsql/client";
+    const payload = ${payload};
+    const db = createClient({ url: "file:" + payload.dbPath });
+    try {
+      await db.execute({
+        sql: \`INSERT INTO documents
+                (id, title, path, added_at, page_count, size_bytes, tags,
+                 file_type, metadata)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)\`,
+        args: [
+          payload.id,
+          payload.title,
+          payload.path,
+          "2026-01-01T00:00:00.000Z",
+          1,
+          payload.sizeBytes,
+          "[]",
+          "markdown",
+          "{}",
+        ],
+      });
+    } finally {
+      db.close();
+    }
+  `;
+  const proc = spawnSync(process.execPath, ["--input-type=module", "--eval", script], {
+    encoding: "utf-8",
+  });
+  if (proc.status !== 0) {
+    throw new Error(
+      `Failed to seed markdown document: ${proc.stderr || proc.stdout}`,
+    );
+  }
 }
 
 function runCli(
@@ -830,6 +890,175 @@ describe("CLI JSON Envelope Contract", () => {
     60_000,
   );
 
+  test("doc relocate updates only the stored document path", async () =>
+    withTempLibraryPathAsync(async (libraryPath) => {
+      const configPath = join(libraryPath, "config.json");
+      const oldPath = join(libraryPath, "old.md");
+      const relocatedDir = join(libraryPath, "relocated");
+      const newPath = join(relocatedDir, "new.md");
+      writeTestConfig(configPath, libraryPath);
+      writeFileSync(oldPath, "# Source\n\noriginal\n");
+      mkdirSync(relocatedDir, { recursive: true });
+      renameSync(oldPath, newPath);
+      const env = envForConfig(configPath);
+
+      expect(runCli(["stats", "--format", "json"], { env }).exitCode).toBe(0);
+
+      insertStoredMarkdownDocumentInChild(libraryPath, {
+        path: oldPath,
+        content: "# Source\n\noriginal\n",
+      });
+
+      const res = runCli(
+        ["doc", "relocate", "doc-1", newPath, "--format", "json"],
+        { env },
+      );
+
+      expect(res.exitCode).toBe(0);
+      const obj = JSON.parse(res.stdout);
+      expect(Object.keys(obj).sort()).toEqual(["command", "ok", "result"]);
+      expect(obj).toMatchObject({
+        ok: true,
+        command: "doc relocate",
+        result: {
+          docId: "doc-1",
+          title: "Source",
+          oldPath,
+          newPath,
+          changed: true,
+        },
+      });
+      expect("protocolVersion" in obj).toBe(false);
+      expect("dryRun" in obj.result).toBe(false);
+
+      const readRes = runCli(["read", "doc-1", "--format", "json"], { env });
+      expect(readRes.exitCode).toBe(0);
+      expect(JSON.parse(readRes.stdout).result).toMatchObject({
+        title: "Source",
+        path: newPath,
+        pageCount: 1,
+        tags: [],
+        fileType: "markdown",
+      });
+    }));
+
+  test("doc relocate resolves relative target paths before storing", async () =>
+    withTempLibraryPathAsync(async (libraryPath) => {
+      const configPath = join(libraryPath, "config.json");
+      const oldPath = join(libraryPath, "old.md");
+      const relocatedDir = join(libraryPath, "relocated");
+      const newPath = join(relocatedDir, "new.md");
+      const relativeNewPath = relative(process.cwd(), newPath);
+      writeTestConfig(configPath, libraryPath);
+      writeFileSync(oldPath, "# Source\n\noriginal\n");
+      mkdirSync(relocatedDir, { recursive: true });
+      renameSync(oldPath, newPath);
+      const env = envForConfig(configPath);
+
+      expect(runCli(["stats", "--format", "json"], { env }).exitCode).toBe(0);
+
+      insertStoredMarkdownDocumentInChild(libraryPath, {
+        path: oldPath,
+        content: "# Source\n\noriginal\n",
+      });
+
+      const res = runCli(
+        ["doc", "relocate", "doc-1", relativeNewPath, "--format", "json"],
+        { env },
+      );
+
+      expect(res.exitCode).toBe(0);
+      const obj = JSON.parse(res.stdout);
+      expect(obj).toMatchObject({
+        ok: true,
+        command: "doc relocate",
+        result: {
+          docId: "doc-1",
+          oldPath,
+          newPath,
+          changed: true,
+        },
+      });
+
+      const readRes = runCli(["read", "doc-1", "--format", "json"], { env });
+      expect(readRes.exitCode).toBe(0);
+      expect(JSON.parse(readRes.stdout).result.path).toBe(newPath);
+    }));
+
+  test("doc relocate dry-run reports metadata without updating the database", async () =>
+    withTempLibraryPathAsync(async (libraryPath) => {
+      const configPath = join(libraryPath, "config.json");
+      const oldPath = join(libraryPath, "old.md");
+      const newPath = join(libraryPath, "new.md");
+      writeTestConfig(configPath, libraryPath);
+      writeFileSync(oldPath, "# Source\n\noriginal\n");
+      writeFileSync(newPath, "# Source\n\nmodified\n");
+      const env = envForConfig(configPath);
+
+      expect(runCli(["stats", "--format", "json"], { env }).exitCode).toBe(0);
+
+      insertStoredMarkdownDocumentInChild(libraryPath, {
+        path: oldPath,
+        content: "# Source\n\noriginal\n",
+      });
+
+      const res = runCli(
+        [
+          "doc",
+          "relocate",
+          "doc-1",
+          newPath,
+          "--dry-run",
+          "--format",
+          "json",
+        ],
+        { env },
+      );
+
+      expect(res.exitCode).toBe(0);
+      const obj = JSON.parse(res.stdout);
+      expect(obj).toMatchObject({
+        ok: true,
+        command: "doc relocate",
+        result: {
+          docId: "doc-1",
+          title: "Source",
+          oldPath,
+          newPath,
+          changed: false,
+          dryRun: true,
+        },
+      });
+
+      const readRes = runCli(["read", "doc-1", "--format", "json"], { env });
+      expect(readRes.exitCode).toBe(0);
+      expect(JSON.parse(readRes.stdout).result.path).toBe(oldPath);
+    }));
+
+  test("doc relocate rejects missing target paths", () =>
+    withTempLibraryPath((libraryPath) => {
+      const configPath = join(libraryPath, "config.json");
+      const missingPath = join(libraryPath, "missing.md");
+      writeTestConfig(configPath, libraryPath);
+
+      const res = runCli(
+        ["doc", "relocate", "doc-1", missingPath, "--format", "json"],
+        { env: envForConfig(configPath) },
+      );
+
+      expect(res.exitCode).not.toBe(0);
+      const obj = JSON.parse(res.stdout);
+      expect(obj).toMatchObject({
+        ok: false,
+        command: "doc",
+        error: {
+          code: "NEW_PATH_NOT_FOUND",
+        },
+      });
+      expect(String(obj.error.message)).toContain(missingPath);
+      expect("protocolVersion" in obj).toBe(false);
+    }));
+
   test("capabilities is self-describing without embedding JSON Schemas", () =>
     withTempLibraryPath((libraryPath) => {
       const configPath = join(libraryPath, "config.json");
@@ -863,6 +1092,7 @@ describe("CLI JSON Envelope Contract", () => {
       expect(commandNames.has("search-pack")).toBe(true);
       expect(commandNames.has("chunk")).toBe(true);
       expect(commandNames.has("doc")).toBe(true);
+      expect(commandNames.has("doc relocate")).toBe(true);
       expect(commandNames.has("page")).toBe(true);
       expect(commandNames.has("add")).toBe(true);
       expect(commandNames.has("stats")).toBe(true);
@@ -1692,6 +1922,7 @@ describe("CLI JSON Envelope Contract", () => {
       "src/cli/ingestProgress.ts",
       "src/cli/commands/capabilities.ts",
       "src/cli/commands/add.ts",
+      "src/cli/commands/docRelocate.ts",
       "src/cli/commands/search.ts",
       "src/cli/commands/taxonomy.ts",
       "src/cli/commands/doctor.ts",

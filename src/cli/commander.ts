@@ -239,6 +239,7 @@ function registerLibraryCommands(
   register(
     doc.command("chunks <docId>").option("--page <n>", "", parseIntegerOption("--page", 1)),
   );
+  register(doc.command("relocate <docId> <newPath>").option("--dry-run"));
 
   const page = program.command("page");
   register(page);

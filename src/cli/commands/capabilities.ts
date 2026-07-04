@@ -57,6 +57,11 @@ function buildCapabilitiesResult() {
         "List chunk IDs for a document (optionally by page)",
       ),
       commandCapability(
+        "doc relocate",
+        ["doc", "relocate", "<docId>", "<new-path>", "[--dry-run]"],
+        "Update a stored document path after moving the source file",
+      ),
+      commandCapability(
         "page",
         ["page", "get", "<docId>", "<page>"],
         "Reconstruct full page text by concatenating chunks",

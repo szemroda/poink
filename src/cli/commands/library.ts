@@ -4,6 +4,7 @@ import type { Document } from "../../types.js";
 import { CLIError, type CliLibrary } from "../runner.js";
 import type { CliCommandOutput, CliConsole } from "./types.js";
 import { runPageExtractCommand } from "./pageExtract.js";
+import { runDocRelocateCommand } from "./docRelocate.js";
 
 export type DocumentSummary = Pick<
   Document,
@@ -110,7 +111,7 @@ function pageOptionValue(
   return optionValue(args.slice(3), "--page");
 }
 
-const runDocumentCommand: LibraryCommandHandler = ({
+const runDocumentChunksCommand: LibraryCommandHandler = ({
   args,
   format,
   library,
@@ -173,6 +174,32 @@ const runDocumentCommand: LibraryCommandHandler = ({
       }
     }
     return { resultPayload, agentResult: null };
+  });
+
+const runDocumentCommand: LibraryCommandHandler = (context) =>
+  Effect.gen(function* () {
+    const subcommand = context.args[1];
+    if (subcommand === "chunks") {
+      return yield* runDocumentChunksCommand(context);
+    }
+    if (subcommand === "relocate") {
+      return yield* runDocRelocateCommand(
+        context.args,
+        context.format,
+        context.library,
+        context.Console,
+        context.options,
+      );
+    }
+
+    return yield* failWithMessage(
+      context.Console,
+      "Usage: poink doc chunks <docId> [--page N] | poink doc relocate <docId> <new-path> [--dry-run]",
+      new CLIError("INVALID_ARGS", "Unknown doc subcommand", {
+        subcommand,
+        hint: "poink doc relocate <docId> <new-path> [--dry-run]",
+      }),
+    );
   });
 
 const runPageCommand: LibraryCommandHandler = ({

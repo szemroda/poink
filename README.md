@@ -196,6 +196,14 @@ poink add document.pdf --visuals
 poink add document.pdf --enrich --visuals
 ```
 
+If a source file is moved after ingestion, update the stored document path
+without re-ingesting:
+
+```bash
+poink doc relocate <docId> /new/path/to/document.pdf
+poink doc relocate <docId> /new/path/to/document.pdf --dry-run
+```
+
 URL downloads are guarded by default. poink blocks private, loopback, link-local,
 and reserved network destinations, validates each redirect target, enforces
 `ingest.urlDownloads.maxFileSize`, and aborts downloads after

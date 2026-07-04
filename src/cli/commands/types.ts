@@ -11,6 +11,7 @@ export type CliConsole = {
 };
 
 export type CliCommandOutput<ResultPayload = unknown> = {
+  command?: string;
   resultPayload: ResultPayload;
   agentResult: CommandResult | null;
 };

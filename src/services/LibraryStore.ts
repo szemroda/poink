@@ -61,6 +61,32 @@ const makeLibraryStoreService = (appConfig: Config) =>
           yield* documents.updateTags(doc.id, tags);
           return doc;
         }),
+      relocate: (
+        docId: string,
+        newPath: string,
+        options: { dryRun?: boolean } = {},
+      ) =>
+        Effect.gen(function* () {
+          const doc = yield* documents.getDocument(docId);
+          if (!doc) {
+            return yield* new DocumentNotFoundError({ query: docId });
+          }
+
+          const oldPath = doc.path;
+          const changed = oldPath !== newPath;
+          if (changed && options.dryRun !== true) {
+            yield* documents.updateDocumentPath(doc.id, newPath);
+            yield* maintenance.checkpoint();
+          }
+
+          return {
+            docId: doc.id,
+            title: doc.title,
+            oldPath,
+            newPath,
+            changed: changed && options.dryRun !== true,
+          };
+        }),
       stats: () =>
         Effect.map(maintenance.getStats(), (stats) => ({
           ...stats,
