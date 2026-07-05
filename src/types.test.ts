@@ -16,6 +16,7 @@ import {
   Document,
   expandHomePath,
 } from "./types";
+import { withEnv } from "./testUtils.js";
 
 describe("Unified Search Types", () => {
   describe("EntityType", () => {
@@ -202,67 +203,33 @@ describe("Unified Search Types", () => {
 describe("LibraryConfig path resolution", () => {
   test("defaults to .poink when config omits a library path", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "poink-types-"));
-    const originalPoinkConfig = process.env.POINK_CONFIG;
-    const originalHome = process.env.HOME;
-    const originalUserProfile = process.env.USERPROFILE;
-
-    process.env.POINK_CONFIG = join(tempDir, "config.json");
-    delete process.env.HOME;
-    process.env.USERPROFILE = "C:\\Users\\tester";
 
     try {
-      const config = LibraryConfig.fromEnv();
+      withEnv(
+        {
+          POINK_CONFIG: join(tempDir, "config.json"),
+          HOME: undefined,
+          USERPROFILE: "C:\\Users\\tester",
+        },
+        () => {
+          const config = LibraryConfig.fromEnv();
 
-      expect(config.libraryPath).toBe("C:\\Users\\tester\\.poink");
-      expect(config.dbPath).toBe("C:\\Users\\tester\\.poink\\library.db");
+          expect(config.libraryPath).toBe("C:\\Users\\tester\\.poink");
+          expect(config.dbPath).toBe("C:\\Users\\tester\\.poink\\library.db");
+        },
+      );
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
-
-      if (originalPoinkConfig === undefined) {
-        delete process.env.POINK_CONFIG;
-      } else {
-        process.env.POINK_CONFIG = originalPoinkConfig;
-      }
-
-      if (originalHome === undefined) {
-        delete process.env.HOME;
-      } else {
-        process.env.HOME = originalHome;
-      }
-
-      if (originalUserProfile === undefined) {
-        delete process.env.USERPROFILE;
-      } else {
-        process.env.USERPROFILE = originalUserProfile;
-      }
     }
   });
 
   test("expands ~ using the resolved home directory", () => {
-    const originalHome = process.env.HOME;
-    const originalUserProfile = process.env.USERPROFILE;
-
-    delete process.env.HOME;
-    process.env.USERPROFILE = "C:\\Users\\tester";
-
-    try {
+    withEnv({ HOME: undefined, USERPROFILE: "C:\\Users\\tester" }, () => {
       expect(expandHomePath("~")).toBe("C:\\Users\\tester");
       expect(expandHomePath("~/docs/file.pdf")).toBe(
         "C:\\Users\\tester\\docs\\file.pdf"
       );
-    } finally {
-      if (originalHome === undefined) {
-        delete process.env.HOME;
-      } else {
-        process.env.HOME = originalHome;
-      }
-
-      if (originalUserProfile === undefined) {
-        delete process.env.USERPROFILE;
-      } else {
-        process.env.USERPROFILE = originalUserProfile;
-      }
-    }
+    });
   });
 });
 

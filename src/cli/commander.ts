@@ -5,6 +5,7 @@ import { CLIError } from "./runner.js";
 import { mapCommanderError } from "./errors.js";
 import {
   addOutputOptions,
+  outputOptionsFromRawArgs,
   parseIntegerOption,
   type CommandOutputOptions,
 } from "./options.js";
@@ -56,30 +57,6 @@ function commandGlobals(
     verbose: options.verbose === true,
     logLevel: options.logLevel ?? getLogLevel(),
   };
-}
-
-function outputOptionsFromRawArgs(rawArgs: string[]): CommandOutputOptions {
-  const options: CommandOutputOptions = {};
-  if (rawArgs[0]?.startsWith("--")) return options;
-
-  for (let i = 1; i < rawArgs.length; i++) {
-    const arg = rawArgs[i]!;
-    if (arg === "--pretty") options.pretty = true;
-    else if (arg === "--verbose") options.verbose = true;
-    else if (arg.startsWith("--format=")) {
-      options.format = arg.slice("--format=".length) as OutputFormat;
-    } else if (arg === "--format") {
-      options.format = rawArgs[i + 1] as OutputFormat;
-      i++;
-    } else if (arg.startsWith("--log-level=")) {
-      options.logLevel = arg.slice("--log-level=".length) as LogLevel;
-    } else if (arg === "--log-level") {
-      options.logLevel = rawArgs[i + 1] as LogLevel;
-      i++;
-    }
-  }
-
-  return options;
 }
 
 function stripOutputOptions(args: string[]): string[] {

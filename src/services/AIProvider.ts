@@ -39,7 +39,12 @@ export type ProviderError =
   | OpenRouterError;
 export type ConfiguredLanguageRole = "enrichment" | "judge";
 type ReasoningTargetProvider = Exclude<SupportedProvider, "gateway">;
-type ProviderOptions = NonNullable<LanguageModelV3CallOptions["providerOptions"]>;
+export type ProviderOptions = NonNullable<
+  LanguageModelV3CallOptions["providerOptions"]
+>;
+export type ProviderOptionsInput = {
+  readonly providerOptions?: ProviderOptions;
+};
 
 export interface ResolvedEmbeddingModel {
   readonly provider: SupportedProvider;
@@ -406,6 +411,13 @@ export function getReasoningProviderOptions(
   }
 
   return undefined;
+}
+
+export function providerOptionsInput(
+  resolved: Pick<ResolvedLanguageModel, "providerOptions">,
+): ProviderOptionsInput {
+  if (!resolved.providerOptions) return {};
+  return { providerOptions: resolved.providerOptions };
 }
 
 async function createEmbeddingModel(

@@ -18,6 +18,10 @@ function normalizeSegmentPath(path: string): string {
   return path.replace(PATH_SEPARATOR_RE, "/").replace(/\/+$/g, "");
 }
 
+function pathForComparison(path: string, caseInsensitive: boolean): string {
+  return caseInsensitive ? path.toLowerCase() : path;
+}
+
 function stripBasePath(filePath: string, basePath?: string): string {
   if (!basePath) return normalizeSegmentPath(filePath);
 
@@ -25,12 +29,8 @@ function stripBasePath(filePath: string, basePath?: string): string {
   const normalizedBase = normalizeSegmentPath(basePath);
   const caseInsensitive =
     isWindowsStylePath(filePath) || isWindowsStylePath(basePath);
-  const fileForCompare = caseInsensitive
-    ? normalizedFile.toLowerCase()
-    : normalizedFile;
-  const baseForCompare = caseInsensitive
-    ? normalizedBase.toLowerCase()
-    : normalizedBase;
+  const fileForCompare = pathForComparison(normalizedFile, caseInsensitive);
+  const baseForCompare = pathForComparison(normalizedBase, caseInsensitive);
 
   if (fileForCompare === baseForCompare) return "";
   if (fileForCompare.startsWith(`${baseForCompare}/`)) {

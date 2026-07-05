@@ -107,6 +107,94 @@ function validateEmbedding(
   });
 }
 
+function isNumberArray(value: unknown): value is number[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "number");
+}
+
+function isOllamaEmbeddingResponse(
+  value: unknown,
+): value is OllamaEmbeddingResponse {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "embedding" in value &&
+    isNumberArray(value.embedding)
+  );
+}
+
+function isOllamaTagsResponse(value: unknown): value is OllamaTagsResponse {
+  if (typeof value !== "object" || value === null || !("models" in value)) {
+    return false;
+  }
+  const { models } = value;
+  return (
+    Array.isArray(models) &&
+    models.every(
+      (model) =>
+        typeof model === "object" &&
+        model !== null &&
+        "name" in model &&
+        typeof model.name === "string",
+    )
+  );
+}
+
+function readResponseText(
+  response: Response,
+): Effect.Effect<string, OllamaError> {
+  return Effect.tryPromise({
+    try: () => response.text(),
+    catch: () => new OllamaError({ reason: "Failed to read error response" }),
+  });
+}
+
+function parseJsonResponse<T>(
+  response: Response,
+  isExpected: (value: unknown) => value is T,
+  invalidReason: string,
+): Effect.Effect<T, OllamaError> {
+  return Effect.tryPromise({
+    try: async () => {
+      const data: unknown = await response.json();
+      if (!isExpected(data)) {
+        throw new Error(invalidReason);
+      }
+      return data;
+    },
+    catch: () => new OllamaError({ reason: invalidReason }),
+  });
+}
+
+function postOllamaEmbedding(
+  ollamaHost: string,
+  model: string,
+  prompt: string,
+): Effect.Effect<OllamaEmbeddingResponse, OllamaError> {
+  return Effect.gen(function* () {
+    const response = yield* Effect.tryPromise({
+      try: () =>
+        fetch(`${ollamaHost}/api/embeddings`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ model, prompt }),
+        }),
+      catch: (error) =>
+        new OllamaError({ reason: `Connection failed: ${error}` }),
+    });
+
+    if (!response.ok) {
+      const error = yield* readResponseText(response);
+      return yield* new OllamaError({ reason: error });
+    }
+
+    return yield* parseJsonResponse(
+      response,
+      isOllamaEmbeddingResponse,
+      "Invalid JSON response",
+    );
+  });
+}
+
 /**
  * Auto-install a model using `ollama pull`
  * @param model - Model name to install
@@ -184,33 +272,11 @@ export function probeEmbeddingDimension(
 ): Effect.Effect<number, OllamaError> {
   return Effect.gen(function* () {
     const ollamaHost = normalizeOllamaHostUrl(host);
-    const response = yield* Effect.tryPromise({
-      try: () =>
-        fetch(`${ollamaHost}/api/embeddings`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            model,
-            prompt: "dimension probe",
-          }),
-        }),
-      catch: (e) => new OllamaError({ reason: `Connection failed: ${e}` }),
-    });
-
-    if (!response.ok) {
-      const error = yield* Effect.tryPromise({
-        try: () => response.text(),
-        catch: () =>
-          new OllamaError({ reason: "Failed to read error response" }),
-      });
-      return yield* new OllamaError({ reason: error });
-    }
-
-    const data = yield* Effect.tryPromise({
-      try: () => response.json() as Promise<OllamaEmbeddingResponse>,
-      catch: () => new OllamaError({ reason: "Invalid JSON response" }),
-    });
-
+    const data = yield* postOllamaEmbedding(
+      ollamaHost,
+      model,
+      "dimension probe",
+    );
     const dimension = data.embedding?.length ?? 0;
     if (dimension === 0) {
       return yield* new OllamaError({ reason: "Probe returned empty embedding" });
@@ -231,32 +297,11 @@ export const OllamaLive = Layer.effect(
 
     const embedSingle = (text: string): Effect.Effect<number[], OllamaError> =>
       Effect.gen(function* () {
-        const response = yield* Effect.tryPromise({
-          try: () =>
-            fetch(`${ollamaHost}/api/embeddings`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                model: config.models.embedding.model,
-                prompt: text,
-              }),
-            }),
-          catch: (e) => new OllamaError({ reason: `Connection failed: ${e}` }),
-        });
-
-        if (!response.ok) {
-          const error = yield* Effect.tryPromise({
-            try: () => response.text(),
-            catch: () =>
-              new OllamaError({ reason: "Failed to read error response" }),
-          });
-          return yield* new OllamaError({ reason: error });
-        }
-
-        const data = yield* Effect.tryPromise({
-          try: () => response.json() as Promise<OllamaEmbeddingResponse>,
-          catch: () => new OllamaError({ reason: "Invalid JSON response" }),
-        });
+        const data = yield* postOllamaEmbedding(
+          ollamaHost,
+          config.models.embedding.model,
+          text,
+        );
 
         // Validate embedding before returning to prevent database corruption
         return yield* validateEmbedding(data.embedding);
@@ -293,11 +338,11 @@ export const OllamaLive = Layer.effect(
             return yield* new OllamaError({ reason: "Ollama not responding" });
           }
 
-          const data = yield* Effect.tryPromise({
-            try: () => response.json() as Promise<OllamaTagsResponse>,
-            catch: () =>
-              new OllamaError({ reason: "Invalid response from Ollama" }),
-          });
+          const data = yield* parseJsonResponse(
+            response,
+            isOllamaTagsResponse,
+            "Invalid response from Ollama",
+          );
 
           const modelName = config.models.embedding.model;
           const hasModel = data.models.some(

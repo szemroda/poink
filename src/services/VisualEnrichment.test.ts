@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { Effect, Layer } from "effect";
+import { Context, Effect, Layer } from "effect";
 import { Config } from "../types.js";
 import { OfficeExtractor } from "./OfficeExtractor.js";
 import { PDFExtractor } from "./PDFExtractor.js";
@@ -28,6 +28,8 @@ const DETECTED_PDF = {
   sourceFormat: "pdf",
   fileType: "pdf",
 } satisfies DetectedSourceType;
+type PDFExtractorService = Context.Tag.Service<typeof PDFExtractor>;
+type OfficeExtractorService = Context.Tag.Service<typeof OfficeExtractor>;
 
 afterEach(() => {
   vi.clearAllMocks();
@@ -110,11 +112,15 @@ describe("VisualEnrichment", () => {
   test("describes retained PDF images with a multimodal model message", async () => {
     const dir = configureVisuals();
     try {
-      const pdfExtractor = {
+      const pdfExtractor: PDFExtractorService = {
+        extract: () => Effect.die("unused"),
         extractImages: () => Effect.succeed([image({ altText: "Diagram" })]),
+        process: () => Effect.die("unused"),
       };
-      const officeExtractor = {
+      const officeExtractor: OfficeExtractorService = {
+        extract: () => Effect.die("unused"),
         extractImages: () => Effect.succeed([]),
+        process: () => Effect.die("unused"),
       };
 
       const program = Effect.gen(function* () {
@@ -131,8 +137,8 @@ describe("VisualEnrichment", () => {
             makeVisualEnrichment(loadConfig()).pipe(
               Layer.provide(
                 Layer.mergeAll(
-                  Layer.succeed(PDFExtractor, pdfExtractor as any),
-                  Layer.succeed(OfficeExtractor, officeExtractor as any),
+                  Layer.succeed(PDFExtractor, pdfExtractor),
+                  Layer.succeed(OfficeExtractor, officeExtractor),
                 ),
               ),
             ),
@@ -142,10 +148,17 @@ describe("VisualEnrichment", () => {
 
       expect(chunks).toHaveLength(1);
       expect(chunks[0]?.content).toContain("A concise visual description.");
-      const call = mockedGenerateText.mock.calls[0]?.[0] as any;
-      expect(call.messages[0].content[0].type).toBe("text");
-      expect(call.messages[0].content[1].type).toBe("image");
-      expect(call.messages[0].content[1].mediaType).toBe("image/png");
+      const call = mockedGenerateText.mock.calls[0]?.[0];
+      expect(call).toBeDefined();
+      const message = call?.messages?.[0];
+      expect(message?.role).toBe("user");
+      expect(Array.isArray(message?.content)).toBe(true);
+      const content = Array.isArray(message?.content) ? message.content : [];
+      expect(content[0]?.type).toBe("text");
+      expect(content[1]?.type).toBe("image");
+      if (content[1]?.type === "image") {
+        expect(content[1].mediaType).toBe("image/png");
+      }
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -155,11 +168,15 @@ describe("VisualEnrichment", () => {
     const dir = configureVisuals();
     mockedGenerateText.mockRejectedValueOnce(new Error("text-only model"));
     try {
-      const pdfExtractor = {
+      const pdfExtractor: PDFExtractorService = {
+        extract: () => Effect.die("unused"),
         extractImages: () => Effect.succeed([image()]),
+        process: () => Effect.die("unused"),
       };
-      const officeExtractor = {
+      const officeExtractor: OfficeExtractorService = {
+        extract: () => Effect.die("unused"),
         extractImages: () => Effect.succeed([]),
+        process: () => Effect.die("unused"),
       };
 
       const program = Effect.gen(function* () {
@@ -175,8 +192,8 @@ describe("VisualEnrichment", () => {
             makeVisualEnrichment(loadConfig()).pipe(
               Layer.provide(
                 Layer.mergeAll(
-                  Layer.succeed(PDFExtractor, pdfExtractor as any),
-                  Layer.succeed(OfficeExtractor, officeExtractor as any),
+                  Layer.succeed(PDFExtractor, pdfExtractor),
+                  Layer.succeed(OfficeExtractor, officeExtractor),
                 ),
               ),
             ),
@@ -194,11 +211,15 @@ describe("VisualEnrichment", () => {
     const dir = configureVisuals();
     mockedGenerateText.mockRejectedValueOnce(new Error("text-only model"));
     try {
-      const pdfExtractor = {
+      const pdfExtractor: PDFExtractorService = {
+        extract: () => Effect.die("unused"),
         extractImages: () => Effect.succeed([image()]),
+        process: () => Effect.die("unused"),
       };
-      const officeExtractor = {
+      const officeExtractor: OfficeExtractorService = {
+        extract: () => Effect.die("unused"),
         extractImages: () => Effect.succeed([]),
+        process: () => Effect.die("unused"),
       };
 
       const program = Effect.gen(function* () {
@@ -214,8 +235,8 @@ describe("VisualEnrichment", () => {
             makeVisualEnrichment(loadConfig()).pipe(
               Layer.provide(
                 Layer.mergeAll(
-                  Layer.succeed(PDFExtractor, pdfExtractor as any),
-                  Layer.succeed(OfficeExtractor, officeExtractor as any),
+                  Layer.succeed(PDFExtractor, pdfExtractor),
+                  Layer.succeed(OfficeExtractor, officeExtractor),
                 ),
               ),
             ),

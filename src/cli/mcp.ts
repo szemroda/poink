@@ -1,11 +1,16 @@
 import { Effect, Layer, Logger, ManagedRuntime } from "effect";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import {
+  McpServer,
+  type ToolCallback,
+} from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
+import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import * as z from "zod/v4";
 import {
   makeErrorEnvelope,
   makeSuccessEnvelope,
+  type NextAction,
   type OutputFormat,
 } from "../agent/protocol.js";
 import { toEffectLogLevel } from "../logger.js";
@@ -39,6 +44,12 @@ type CommandInvocation = {
   options?: Record<string, unknown>;
 };
 
+type CommandOutput = {
+  command: string;
+  result: unknown;
+  nextActions?: NextAction[];
+};
+
 function forceJsonGlobals(globals: GlobalCLIOptions): GlobalCLIOptions {
   return {
     ...globals,
@@ -60,12 +71,12 @@ export async function connectMcpServer<E>(
   const EnvelopeSchema = z.object({
     ok: z.boolean(),
     command: z.string(),
-    result: z.any().optional(),
+    result: z.unknown().optional(),
     error: z
       .object({
         code: z.string(),
         message: z.string(),
-        details: z.any().optional(),
+        details: z.unknown().optional(),
       })
       .optional(),
     nextActions: z.array(NextActionSchema).optional(),
@@ -98,10 +109,21 @@ export async function connectMcpServer<E>(
     return new CLIError(tag, describeCliFailure(e), e);
   };
 
+  type Envelope = z.infer<typeof EnvelopeSchema>;
+
+  const isCommandOutput = (value: unknown): value is CommandOutput => {
+    return (
+      typeof value === "object" &&
+      value !== null &&
+      "command" in value &&
+      typeof value.command === "string"
+    );
+  };
+
   const runCommand = async (
     invocation: CommandInvocation,
     timing: InvocationTiming,
-  ): Promise<z.infer<typeof EnvelopeSchema>> => {
+  ): Promise<Envelope> => {
     const cmdGlobals = { ...forceJsonGlobals(globals), timing };
     const { argv, options = {} } = invocation;
 
@@ -124,8 +146,8 @@ export async function connectMcpServer<E>(
       ),
     );
 
-    if (outEither._tag === "Right") {
-      const out: any = outEither.right;
+    if (outEither._tag === "Right" && isCommandOutput(outEither.right)) {
+      const out = outEither.right;
       return makeSuccessEnvelope(out.command, out.result, {
         verbose: cmdGlobals.verbose,
         nextActions: out.nextActions,
@@ -133,7 +155,9 @@ export async function connectMcpServer<E>(
       });
     }
 
-    const err = coerceCliError(outEither.left);
+    const err = coerceCliError(
+      outEither._tag === "Right" ? outEither.right : outEither.left,
+    );
     return makeErrorEnvelope(
       argv[0] ?? "cli",
       { code: err.code, message: err.message, details: err.details },
@@ -154,22 +178,25 @@ export async function connectMcpServer<E>(
     },
     toCommand: (input: z.infer<TInput>) => CommandInvocation,
   ) => {
-    server.registerTool(
+    const runTool = (async (input: unknown): Promise<CallToolResult> => {
+      const timing = createInvocationTiming();
+      const parsed = config.inputSchema.parse(input);
+      const envelope = await runCommand(toCommand(parsed), timing);
+      return {
+        content: [{ type: "text", text: JSON.stringify(envelope) }],
+        structuredContent: envelope,
+        isError: !envelope.ok,
+      };
+    }) as unknown as ToolCallback<TInput>;
+
+    server.registerTool<typeof EnvelopeSchema, TInput>(
       name,
       {
         description: config.description,
-        inputSchema: config.inputSchema as any,
-        outputSchema: EnvelopeSchema as any,
+        inputSchema: config.inputSchema,
+        outputSchema: EnvelopeSchema,
       },
-      (async (input: any) => {
-        const timing = createInvocationTiming();
-        const envelope = await runCommand(toCommand(input), timing);
-        return {
-          content: [{ type: "text", text: JSON.stringify(envelope) }],
-          structuredContent: envelope,
-          isError: !envelope.ok,
-        };
-      }) as any,
+      runTool,
     );
   };
 

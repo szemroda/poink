@@ -3,33 +3,20 @@ import { LibraryStore } from "../../services/LibraryStore.js";
 import { SemanticLibrary } from "../../services/SemanticLibrary.js";
 import { runSearchCommand } from "../commands/search.js";
 import { runTaxonomyCommand } from "../commands/taxonomy.js";
-import {
-  CLIError,
-  type CliLibrary,
-  type GlobalCLIOptions,
-} from "../runner.js";
+import { type CliLibrary } from "../runner.js";
 import { buildSearchLayer } from "../runtime.js";
-import { runFamilyEffect } from "./shared.js";
+import {
+  commandHandlers,
+  runFamilyEffect,
+  runResolvedFamilyCommand,
+} from "./shared.js";
 import type { FamilyRunner } from "./types.js";
 
-type SearchCommandHandler = (
-  args: string[],
-  globals: GlobalCLIOptions,
-  options: Record<string, unknown>,
-) => Effect.Effect<unknown, unknown, unknown>;
-
-const SEARCH_FAMILY_NAME = "search";
-
-const COMMAND_HANDLERS: Readonly<Record<string, SearchCommandHandler>> = {
-  search: runSearchCommand,
-  "search-pack": runSearchCommand,
-  taxonomy: runTaxonomyCommand,
-};
-
-function resolveCommandHandler(command: string | undefined) {
-  if (!command) return undefined;
-  return COMMAND_HANDLERS[command];
-}
+const COMMAND_HANDLERS = commandHandlers([
+  ["search", runSearchCommand],
+  ["search-pack", runSearchCommand],
+  ["taxonomy", runTaxonomyCommand],
+]);
 
 export const runFamily: FamilyRunner = async ({
   parsed,
@@ -44,18 +31,13 @@ export const runFamily: FamilyRunner = async ({
       ...globals,
       library: { ...store, ...semantic } as CliLibrary,
     };
-    const command = parsed.args[0];
-    const handler = resolveCommandHandler(command);
-    if (!handler) {
-      return yield* Effect.fail(
-        new CLIError(
-          "UNKNOWN_COMMAND",
-          `Unknown ${SEARCH_FAMILY_NAME} command: ${command}`,
-        ),
-      );
-    }
-
-    return yield* handler(parsed.args, commandGlobals, parsed.options);
+    return yield* runResolvedFamilyCommand(
+      "search",
+      COMMAND_HANDLERS,
+      parsed.args,
+      commandGlobals,
+      parsed.options,
+    );
   });
 
   const providedProgram = program.pipe(

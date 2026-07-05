@@ -6,6 +6,7 @@ import { resolveVisualsConfig } from "../types.js";
 import {
   describeLanguageModelError,
   getConfiguredLanguageModel,
+  providerOptionsInput,
 } from "./AIProvider.js";
 import { OfficeExtractor } from "./OfficeExtractor.js";
 import { PDFExtractor } from "./PDFExtractor.js";
@@ -157,9 +158,7 @@ async function describeImage(
   const resolved = await getConfiguredLanguageModel(config, "enrichment");
   const result = await generateText({
     model: resolved.model,
-    ...(resolved.providerOptions
-      ? { providerOptions: resolved.providerOptions }
-      : {}),
+    ...providerOptionsInput(resolved),
     system: systemPrompt,
     messages: [
       {

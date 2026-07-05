@@ -156,6 +156,120 @@ export const DEFAULT_URL_DOWNLOAD_MAX_REDIRECTS = 5;
 export const DEFAULT_VISUALS_MAX_IMAGE_BYTES = "5mb";
 export const DEFAULT_VISUALS_MAX_IMAGES_PER_DOCUMENT = 100;
 
+function defaultLibraryConfig() {
+  return { path: DEFAULT_LIBRARY_PATH };
+}
+
+function defaultChunkingConfig() {
+  return {
+    strategy: "text" as const,
+    size: DEFAULT_CHUNK_SIZE,
+    overlap: DEFAULT_CHUNK_OVERLAP,
+  };
+}
+
+function defaultCliConfig() {
+  return {
+    globalFlags: {
+      format: DEFAULT_CLI_OUTPUT_FORMAT,
+    },
+  };
+}
+
+function defaultVisualsConfig() {
+  return {
+    enabled: false,
+    maxImageBytes: DEFAULT_VISUALS_MAX_IMAGE_BYTES,
+    maxImagesPerDocument: DEFAULT_VISUALS_MAX_IMAGES_PER_DOCUMENT,
+  };
+}
+
+function defaultUrlDownloadsConfig() {
+  return {
+    maxFileSize: DEFAULT_URL_DOWNLOAD_MAX_FILE_SIZE,
+    timeout: DEFAULT_URL_DOWNLOAD_TIMEOUT,
+    maxRedirects: DEFAULT_URL_DOWNLOAD_MAX_REDIRECTS,
+    allowPrivateNetwork: false,
+    allowedPrivateNetworkHosts: [],
+  };
+}
+
+function defaultIngestConfig() {
+  return {
+    visuals: defaultVisualsConfig(),
+    urlDownloads: defaultUrlDownloadsConfig(),
+  };
+}
+
+function defaultModelsConfig() {
+  return {
+    embedding: {
+      provider: "ollama" as const,
+      model: "mxbai-embed-large",
+    },
+    enrichment: {
+      provider: "ollama" as const,
+      model: "llama3.2:3b",
+    },
+    judge: {
+      provider: "ollama" as const,
+      model: "llama3.2:3b",
+    },
+  };
+}
+
+function defaultProvidersConfig() {
+  return {
+    ollama: {
+      baseUrl: DEFAULT_OLLAMA_BASE_URL,
+      autoPull: true,
+    },
+    gateway: {
+      apiKeyEnv: "AI_GATEWAY_API_KEY",
+    },
+    openai: {
+      apiKeyEnv: "OPENAI_API_KEY",
+      baseUrl: DEFAULT_OPENAI_BASE_URL,
+    },
+    "openai-codex": {},
+    openrouter: {
+      apiKeyEnv: "OPENROUTER_API_KEY",
+      baseUrl: DEFAULT_OPENROUTER_BASE_URL,
+    },
+    google: {
+      apiKeyEnv: "GOOGLE_GENERATIVE_AI_API_KEY",
+      baseUrl: DEFAULT_GOOGLE_BASE_URL,
+    },
+    anthropic: {
+      apiKeyEnv: "ANTHROPIC_API_KEY",
+      baseUrl: DEFAULT_ANTHROPIC_BASE_URL,
+    },
+  };
+}
+
+function defaultStorageConfig() {
+  return {
+    libsql: {
+      url: DEFAULT_LIBSQL_URL,
+    },
+  };
+}
+
+function defaultServerAuthConfig() {
+  return {
+    enabled: false,
+    tokenEnv: DEFAULT_SERVER_AUTH_TOKEN_ENV,
+  };
+}
+
+function defaultServerConfig() {
+  return {
+    host: "127.0.0.1",
+    port: 3838,
+    auth: defaultServerAuthConfig(),
+  };
+}
+
 const SizeStringSchema = Schema.String.pipe(
   Schema.filter((value) => /^\d+(?:\.\d+)?\s*(?:b|kb|mb|gb)$/i.test(value), {
     message: () => "Expected a size string with a unit suffix, such as 500kb, 100mb, or 1gb.",
@@ -278,7 +392,7 @@ export class Config extends Schema.Class<Config>("Config")({
       default: () => DEFAULT_LIBRARY_PATH,
     }),
   }), {
-    default: () => ({ path: DEFAULT_LIBRARY_PATH }),
+    default: defaultLibraryConfig,
   }),
   chunking: Schema.optionalWith(Schema.Struct({
     strategy: Schema.optionalWith(Schema.Literal("text"), {
@@ -291,11 +405,7 @@ export class Config extends Schema.Class<Config>("Config")({
       default: () => DEFAULT_CHUNK_OVERLAP,
     }),
   }), {
-    default: () => ({
-      strategy: "text" as const,
-      size: DEFAULT_CHUNK_SIZE,
-      overlap: DEFAULT_CHUNK_OVERLAP,
-    }),
+    default: defaultChunkingConfig,
   }),
   cli: Schema.optionalWith(Schema.Struct({
     globalFlags: Schema.optionalWith(Schema.Struct({
@@ -306,11 +416,7 @@ export class Config extends Schema.Class<Config>("Config")({
       default: () => ({ format: DEFAULT_CLI_OUTPUT_FORMAT }),
     }),
   }), {
-    default: () => ({
-      globalFlags: {
-        format: DEFAULT_CLI_OUTPUT_FORMAT,
-      },
-    }),
+    default: defaultCliConfig,
   }),
   ingest: Schema.optionalWith(Schema.Struct({
     visuals: Schema.optionalWith(Schema.Struct({
@@ -324,11 +430,7 @@ export class Config extends Schema.Class<Config>("Config")({
         default: () => DEFAULT_VISUALS_MAX_IMAGES_PER_DOCUMENT,
       }),
     }), {
-      default: () => ({
-        enabled: false,
-        maxImageBytes: DEFAULT_VISUALS_MAX_IMAGE_BYTES,
-        maxImagesPerDocument: DEFAULT_VISUALS_MAX_IMAGES_PER_DOCUMENT,
-      }),
+      default: defaultVisualsConfig,
     }),
     urlDownloads: Schema.optionalWith(Schema.Struct({
       maxFileSize: Schema.optionalWith(SizeStringSchema, {
@@ -347,29 +449,10 @@ export class Config extends Schema.Class<Config>("Config")({
         default: () => [],
       }),
     }), {
-      default: () => ({
-        maxFileSize: DEFAULT_URL_DOWNLOAD_MAX_FILE_SIZE,
-        timeout: DEFAULT_URL_DOWNLOAD_TIMEOUT,
-        maxRedirects: DEFAULT_URL_DOWNLOAD_MAX_REDIRECTS,
-        allowPrivateNetwork: false,
-        allowedPrivateNetworkHosts: [],
-      }),
+      default: defaultUrlDownloadsConfig,
     }),
   }), {
-    default: () => ({
-      visuals: {
-        enabled: false,
-        maxImageBytes: DEFAULT_VISUALS_MAX_IMAGE_BYTES,
-        maxImagesPerDocument: DEFAULT_VISUALS_MAX_IMAGES_PER_DOCUMENT,
-      },
-      urlDownloads: {
-        maxFileSize: DEFAULT_URL_DOWNLOAD_MAX_FILE_SIZE,
-        timeout: DEFAULT_URL_DOWNLOAD_TIMEOUT,
-        maxRedirects: DEFAULT_URL_DOWNLOAD_MAX_REDIRECTS,
-        allowPrivateNetwork: false,
-        allowedPrivateNetworkHosts: [],
-      },
-    }),
+    default: defaultIngestConfig,
   }),
   models: Schema.Struct({
     embedding: EmbeddingModelRefSchema,
@@ -385,10 +468,7 @@ export class Config extends Schema.Class<Config>("Config")({
         default: () => true,
       }),
     }), {
-      default: () => ({
-        baseUrl: DEFAULT_OLLAMA_BASE_URL,
-        autoPull: true,
-      }),
+      default: () => defaultProvidersConfig().ollama,
     }),
     gateway: Schema.optionalWith(SecretRefSchema, {
       default: () => ({ apiKeyEnv: "AI_GATEWAY_API_KEY" }),
@@ -458,27 +538,7 @@ export class Config extends Schema.Class<Config>("Config")({
       }),
     }),
   }), {
-    default: () => ({
-      ollama: { baseUrl: DEFAULT_OLLAMA_BASE_URL, autoPull: true },
-      gateway: { apiKeyEnv: "AI_GATEWAY_API_KEY" },
-      openai: {
-        apiKeyEnv: "OPENAI_API_KEY",
-        baseUrl: DEFAULT_OPENAI_BASE_URL,
-      },
-      "openai-codex": {},
-      openrouter: {
-        apiKeyEnv: "OPENROUTER_API_KEY",
-        baseUrl: DEFAULT_OPENROUTER_BASE_URL,
-      },
-      google: {
-        apiKeyEnv: "GOOGLE_GENERATIVE_AI_API_KEY",
-        baseUrl: DEFAULT_GOOGLE_BASE_URL,
-      },
-      anthropic: {
-        apiKeyEnv: "ANTHROPIC_API_KEY",
-        baseUrl: DEFAULT_ANTHROPIC_BASE_URL,
-      },
-    }),
+    default: defaultProvidersConfig,
   }),
   storage: Schema.optionalWith(
     Schema.Struct({
@@ -491,18 +551,12 @@ export class Config extends Schema.Class<Config>("Config")({
           authTokenEnv: Schema.optional(Schema.String),
         }),
         {
-          default: () => ({
-            url: DEFAULT_LIBSQL_URL,
-          }),
+          default: () => defaultStorageConfig().libsql,
         },
       ),
     }),
     {
-      default: () => ({
-        libsql: {
-          url: "file:~/.poink/library.db",
-        },
-      }),
+      default: defaultStorageConfig,
     }
   ),
   server: Schema.optionalWith(
@@ -524,22 +578,12 @@ export class Config extends Schema.Class<Config>("Config")({
           }),
         }),
         {
-          default: () => ({
-            enabled: false,
-            tokenEnv: DEFAULT_SERVER_AUTH_TOKEN_ENV,
-          }),
+          default: defaultServerAuthConfig,
         }
       ),
     }),
     {
-      default: () => ({
-        host: "127.0.0.1",
-        port: 3838,
-        auth: {
-          enabled: false,
-          tokenEnv: DEFAULT_SERVER_AUTH_TOKEN_ENV,
-        },
-      }),
+      default: defaultServerConfig,
     }
   ),
 }) {
@@ -548,86 +592,14 @@ export class Config extends Schema.Class<Config>("Config")({
    */
   static readonly Default = new Config({
     version: 1,
-    library: {
-      path: DEFAULT_LIBRARY_PATH,
-    },
-    chunking: {
-      strategy: "text",
-      size: DEFAULT_CHUNK_SIZE,
-      overlap: DEFAULT_CHUNK_OVERLAP,
-    },
-    cli: {
-      globalFlags: {
-        format: DEFAULT_CLI_OUTPUT_FORMAT,
-      },
-    },
-    ingest: {
-      visuals: {
-        enabled: false,
-        maxImageBytes: DEFAULT_VISUALS_MAX_IMAGE_BYTES,
-        maxImagesPerDocument: DEFAULT_VISUALS_MAX_IMAGES_PER_DOCUMENT,
-      },
-      urlDownloads: {
-        maxFileSize: DEFAULT_URL_DOWNLOAD_MAX_FILE_SIZE,
-        timeout: DEFAULT_URL_DOWNLOAD_TIMEOUT,
-        maxRedirects: DEFAULT_URL_DOWNLOAD_MAX_REDIRECTS,
-        allowPrivateNetwork: false,
-        allowedPrivateNetworkHosts: [],
-      },
-    },
-    models: {
-      embedding: {
-        provider: "ollama" as const,
-        model: "mxbai-embed-large",
-      },
-      enrichment: {
-        provider: "ollama" as const,
-        model: "llama3.2:3b",
-      },
-      judge: {
-        provider: "ollama" as const,
-        model: "llama3.2:3b",
-      },
-    },
-    providers: {
-      ollama: {
-        baseUrl: DEFAULT_OLLAMA_BASE_URL,
-        autoPull: true,
-      },
-      gateway: {
-        apiKeyEnv: "AI_GATEWAY_API_KEY",
-      },
-      openai: {
-        apiKeyEnv: "OPENAI_API_KEY",
-        baseUrl: DEFAULT_OPENAI_BASE_URL,
-      },
-      "openai-codex": {},
-      openrouter: {
-        apiKeyEnv: "OPENROUTER_API_KEY",
-        baseUrl: DEFAULT_OPENROUTER_BASE_URL,
-      },
-      google: {
-        apiKeyEnv: "GOOGLE_GENERATIVE_AI_API_KEY",
-        baseUrl: DEFAULT_GOOGLE_BASE_URL,
-      },
-      anthropic: {
-        apiKeyEnv: "ANTHROPIC_API_KEY",
-        baseUrl: DEFAULT_ANTHROPIC_BASE_URL,
-      },
-    },
-    storage: {
-      libsql: {
-        url: DEFAULT_LIBSQL_URL,
-      },
-    },
-    server: {
-      host: "127.0.0.1",
-      port: 3838,
-      auth: {
-        enabled: false,
-        tokenEnv: DEFAULT_SERVER_AUTH_TOKEN_ENV,
-      },
-    },
+    library: defaultLibraryConfig(),
+    chunking: defaultChunkingConfig(),
+    cli: defaultCliConfig(),
+    ingest: defaultIngestConfig(),
+    models: defaultModelsConfig(),
+    providers: defaultProvidersConfig(),
+    storage: defaultStorageConfig(),
+    server: defaultServerConfig(),
   });
 
   /**

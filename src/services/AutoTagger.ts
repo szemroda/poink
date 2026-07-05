@@ -22,6 +22,7 @@ import type { Config } from "../types.js";
 import {
   describeLanguageModelError,
   getConfiguredLanguageModel,
+  providerOptionsInput,
   resolveLanguageModel,
   type SupportedProvider,
 } from "./AIProvider.js";
@@ -329,6 +330,30 @@ const TagSchema = z.object({
   author: z.string().nullable().describe("Author if identifiable, otherwise null"),
 });
 
+const OllamaProposedConceptSchema = z.object({
+  id: z.string().optional(),
+  prefLabel: z.string().optional(),
+  altLabels: z.array(z.string()).nullable().optional(),
+  definition: z.string().nullable().optional(),
+});
+
+const OllamaEnrichmentSchema = z.object({
+  title: z.string().optional(),
+  author: z.string().nullable().optional(),
+  summary: z.string().optional(),
+  documentType: z.string().optional(),
+  category: z.string().optional(),
+  tags: z.array(z.string()).optional(),
+  concepts: z.array(z.string()).optional(),
+  proposedConcepts: z.array(OllamaProposedConceptSchema).optional(),
+});
+
+const OllamaTagSchema = z.object({
+  tags: z.array(z.string()).optional(),
+  category: z.string().nullable().optional(),
+  author: z.string().nullable().optional(),
+});
+
 // ============================================================================
 // Heuristic Extraction (No LLM)
 // ============================================================================
@@ -526,6 +551,16 @@ function parseJSONFromText(text: string): unknown {
   }
 }
 
+function parseObjectFromText<T>(text: string, schema: z.ZodType<T>): T {
+  return schema.parse(parseJSONFromText(text));
+}
+
+function toDocumentType(value: string | undefined): DocumentType {
+  const parsed = z.enum(DOCUMENT_TYPES).safeParse(value);
+  if (!parsed.success) return "other";
+  return parsed.data;
+}
+
 /**
  * Format concepts for LLM prompt
  */
@@ -604,7 +639,7 @@ async function llmJudgeDuplicate(
 
   const result = await generateText({
     model: resolved.model,
-    ...(resolved.providerOptions ? { providerOptions: resolved.providerOptions } : {}),
+    ...providerOptionsInput(resolved),
     prompt,
   });
   const answer = result.text.trim().toUpperCase();
@@ -761,9 +796,7 @@ async function enrichWithLLM(
   if (provider !== "ollama") {
     const { output } = await generateText({
       model: resolvedModel.model,
-      ...(resolvedModel.providerOptions
-        ? { providerOptions: resolvedModel.providerOptions }
-        : {}),
+      ...providerOptionsInput(resolvedModel),
       output: Output.object({ schema: EnrichmentSchema }),
       prompt: dedent`
         Analyze this document and extract metadata for a personal knowledge library.
@@ -809,9 +842,7 @@ async function enrichWithLLM(
   // Ollama remains on prompted JSON because local structured output is less reliable.
   const { text } = await generateText({
     model: resolvedModel.model,
-    ...(resolvedModel.providerOptions
-      ? { providerOptions: resolvedModel.providerOptions }
-      : {}),
+    ...providerOptionsInput(resolvedModel),
     prompt: dedent`
       <role>You are a librarian cataloging documents for a personal knowledge library.</role>
 
@@ -888,24 +919,14 @@ async function enrichWithLLM(
     `,
   });
 
-  const parsed = parseJSONFromText(text) as {
-    title?: string;
-    author?: string | null;
-    summary?: string;
-    documentType?: string;
-    category?: string;
-    tags?: string[];
-    concepts?: string[];
-    proposedConcepts?: ProposedConcept[];
-  };
-
+  const parsed = parseObjectFromText(text, OllamaEnrichmentSchema);
   const validatedConcepts = validateProposedConcepts(parsed.proposedConcepts);
 
   return {
     title: parsed.title || cleanTitle(filename),
     author: parsed.author || undefined,
     summary: parsed.summary || "",
-    documentType: (parsed.documentType as DocumentType) || "other",
+    documentType: toDocumentType(parsed.documentType),
     category: normalizeTag(parsed.category || "uncategorized"),
     tags: normalizeTags(parsed.tags || []),
     concepts: parsed.concepts || [],
@@ -947,12 +968,18 @@ function isValidConceptId(id: string): boolean {
  * EXPORTED for testing
  */
 export function validateProposedConcepts(
-  concepts: ProposedConceptOutput[] | undefined
+  concepts: Array<Partial<ProposedConceptOutput>> | undefined
 ): ProposedConcept[] {
   if (!concepts || !Array.isArray(concepts)) return [];
 
   return concepts
-    .filter((concept) => {
+    .filter(
+      (
+        concept,
+      ): concept is ProposedConceptOutput & {
+        id: string;
+        prefLabel: string;
+      } => {
       if (!concept.id || !concept.prefLabel) return false;
       if (!isValidConceptId(concept.id)) return false;
 
@@ -988,9 +1015,7 @@ async function tagWithLLM(
   if (provider !== "ollama") {
     const { output } = await generateText({
       model: resolvedModel.model,
-      ...(resolvedModel.providerOptions
-        ? { providerOptions: resolvedModel.providerOptions }
-        : {}),
+      ...providerOptionsInput(resolvedModel),
       output: Output.object({ schema: TagSchema }),
       prompt: dedent`
         Generate tags for this document.
@@ -1012,9 +1037,7 @@ async function tagWithLLM(
   // Ollama remains on prompted JSON because local structured output is less reliable.
   const { text } = await generateText({
     model: resolvedModel.model,
-    ...(resolvedModel.providerOptions
-      ? { providerOptions: resolvedModel.providerOptions }
-      : {}),
+    ...providerOptionsInput(resolvedModel),
     prompt: dedent`
       Generate tags for this document. Return ONLY a JSON object.
 
@@ -1037,11 +1060,7 @@ async function tagWithLLM(
     `,
   });
 
-  const parsed = parseJSONFromText(text) as {
-    tags?: string[];
-    category?: string;
-    author?: string | null;
-  };
+  const parsed = parseObjectFromText(text, OllamaTagSchema);
 
   return {
     tags: normalizeTags(parsed.tags || []),

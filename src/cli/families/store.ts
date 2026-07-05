@@ -1,19 +1,23 @@
 import { Effect } from "effect";
-import type { Layer } from "effect";
 import { LibraryStore } from "../../services/LibraryStore.js";
 import { DocumentIntegrityRepository } from "../../services/StorageRepositories.js";
 import { runLibraryCommand } from "../commands/library.js";
 import { runRepairCommand } from "../commands/repair.js";
 import {
-  CLIError,
   runCommandWithContext,
   type CliLibrary,
+  type GlobalCLIOptions,
 } from "../runner.js";
 import { buildStoreLayer } from "../runtime.js";
-import { runFamilyEffect } from "./shared.js";
+import {
+  commandHandlers,
+  runFamilyEffect,
+  runResolvedFamilyCommand,
+  toFamilyLayer,
+} from "./shared.js";
 import type { FamilyRunner } from "./types.js";
 
-const LIBRARY_COMMANDS = new Set([
+const LIBRARY_COMMANDS = [
   "chunk",
   "doc",
   "page",
@@ -23,14 +27,35 @@ const LIBRARY_COMMANDS = new Set([
   "remove",
   "tag",
   "stats",
-]);
+] as const;
 
-function unknownStoreCommand(command: string | undefined): CLIError {
-  return new CLIError(
-    "UNKNOWN_COMMAND",
-    `Unknown store command: ${command}`,
+function runStoreLibraryCommand(
+  args: string[],
+  globals: GlobalCLIOptions,
+  options: Record<string, unknown>,
+) {
+  return runCommandWithContext(
+    args,
+    globals,
+    ({ Console, format, library, globals: contextGlobals }) =>
+      runLibraryCommand(
+        args,
+        format,
+        library,
+        Console,
+        contextGlobals.verbose,
+        options,
+      ),
+    options,
   );
 }
+
+const COMMAND_HANDLERS = commandHandlers([
+  ["repair", runRepairCommand],
+  ...LIBRARY_COMMANDS.map(
+    (command) => [command, runStoreLibraryCommand] as const,
+  ),
+]);
 
 export const runFamily: FamilyRunner = async ({
   parsed,
@@ -49,36 +74,13 @@ export const runFamily: FamilyRunner = async ({
         listWithSourceIdentity: integrity.listDocumentsWithSourceIdentity,
       } as CliLibrary,
     };
-    const command = parsed.args[0];
-    if (command === "repair") {
-      return yield* runRepairCommand(
-        parsed.args,
-        commandGlobals,
-        parsed.options,
-      );
-    }
-    if (!command || !LIBRARY_COMMANDS.has(command)) {
-      return yield* Effect.fail(unknownStoreCommand(command));
-    }
-
-    return yield* runCommandWithContext(
+    return yield* runResolvedFamilyCommand(
+      "store",
+      COMMAND_HANDLERS,
       parsed.args,
       commandGlobals,
-      ({ Console, format, library, globals: contextGlobals }) =>
-        runLibraryCommand(
-          parsed.args,
-          format,
-          library,
-          Console,
-          contextGlobals.verbose,
-          parsed.options,
-        ),
       parsed.options,
     );
   });
-  return runFamilyEffect(
-    program,
-    globals,
-    layer as unknown as Layer.Layer<unknown, unknown, never>,
-  );
+  return runFamilyEffect(program, globals, toFamilyLayer(layer));
 };

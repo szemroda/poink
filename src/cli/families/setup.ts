@@ -1,37 +1,50 @@
-import { Effect } from "effect";
 import { runProvidersCommand } from "../commands/providers.js";
 import { runSetupCommand } from "../commands/setup.js";
-import { CLIError, runCommandWithContext } from "../runner.js";
-import { runFamilyEffect } from "./shared.js";
+import {
+  runCommandWithContext,
+  type GlobalCLIOptions,
+} from "../runner.js";
+import {
+  commandHandlers,
+  runFamilyEffect,
+  runResolvedFamilyCommand,
+} from "./shared.js";
 import type { FamilyRunner } from "./types.js";
+
+function runProvidersWithContext(
+  args: string[],
+  globals: GlobalCLIOptions,
+  options: Record<string, unknown>,
+) {
+  return runCommandWithContext(
+    args,
+    globals,
+    ({ Console, format }) =>
+      runProvidersCommand(
+        args,
+        format,
+        Console,
+        options,
+      ),
+    options,
+  );
+}
+
+const COMMAND_HANDLERS = commandHandlers([
+  ["providers", runProvidersWithContext],
+  ["setup", runSetupCommand],
+]);
 
 export const runFamily: FamilyRunner = async ({
   parsed,
   globals,
 }) => {
-  let program;
-  if (parsed.args[0] === "providers") {
-    program = runCommandWithContext(
-      parsed.args,
-      globals,
-      ({ Console, format }) =>
-        runProvidersCommand(
-          parsed.args,
-          format,
-          Console,
-          parsed.options,
-        ),
-      parsed.options,
-    );
-  } else if (parsed.args[0] === "setup") {
-    program = runSetupCommand(parsed.args, globals, parsed.options);
-  } else {
-    program = Effect.fail(
-      new CLIError(
-        "UNKNOWN_COMMAND",
-        `Unknown setup command: ${parsed.args[0]}`,
-      ),
-    );
-  }
+  const program = runResolvedFamilyCommand(
+    "setup",
+    COMMAND_HANDLERS,
+    parsed.args,
+    globals,
+    parsed.options,
+  );
   return runFamilyEffect(program, globals);
 };

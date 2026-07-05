@@ -586,6 +586,15 @@ function softCluster(
   return { centroids, softAssignments };
 }
 
+function clusteringEffect<A>(
+  operation: () => A,
+): Effect.Effect<A, ClusteringError> {
+  return Effect.try({
+    try: operation,
+    catch: (error) => new ClusteringError(String(error)),
+  });
+}
+
 function buildClusterResult(
   embeddings: Embedding[],
   computation: ClusteringComputation,
@@ -610,6 +619,72 @@ function buildClusterResult(
         distance: euclideanDistance(embedding.vector, centroids[clusterId]),
       };
     }),
+  };
+}
+
+function buildSoftClusterResult(
+  embeddings: Embedding[],
+  options: SoftClusterOptions,
+): SoftClusterResult {
+  if (embeddings.length === 0) {
+    return {
+      numClusters: 0,
+      softAssignments: [],
+      centroids: [],
+      metadata: {},
+    };
+  }
+
+  if (embeddings.length === 1) {
+    return {
+      numClusters: 1,
+      softAssignments: [
+        { chunkId: embeddings[0].id, clusterId: 0, probability: 1 },
+      ],
+      centroids: [{ clusterId: 0, vector: embeddings[0].vector }],
+      metadata: {},
+    };
+  }
+
+  const vectors = embeddings.map((embedding) => embedding.vector);
+  validateVectorDimensions(vectors);
+
+  const {
+    maxClusters = 10,
+    minProbability = 0.01,
+    useBIC = true,
+    maxIterations = 100,
+  } = options;
+
+  const { selectedK, bicScores } = selectClusterCount(
+    vectors,
+    maxClusters,
+    maxIterations,
+    useBIC,
+  );
+
+  const { centroids, softAssignments: rawAssignments } = softCluster(
+    vectors,
+    selectedK,
+    maxIterations,
+  );
+
+  const softAssignments: SoftClusterAssignment[] = rawAssignments
+    .filter((assignment) => assignment.probability >= minProbability)
+    .map((assignment) => ({
+      chunkId: embeddings[assignment.vectorIdx].id,
+      clusterId: assignment.clusterId,
+      probability: assignment.probability,
+    }));
+
+  return {
+    numClusters: selectedK,
+    softAssignments,
+    centroids: centroids.map((vector, clusterId) => ({
+      clusterId,
+      vector,
+    })),
+    metadata: useBIC ? { bicScores, selectedK } : undefined,
   };
 }
 
@@ -670,114 +745,36 @@ export const ClusteringServiceImpl = {
     ClusteringService.of({
       // Hard clustering (k-means)
       cluster: (embeddings, options) =>
-        Effect.try({
-          try: () => {
-            const vectors = embeddings.map((e) => e.vector);
-            const rng = getRng(options.seed);
-            return buildClusterResult(
-              embeddings,
-              kMeans(vectors, options.k, options.maxIterations, rng),
-            );
-          },
-          catch: (e) => new ClusteringError(String(e)),
+        clusteringEffect(() => {
+          const vectors = embeddings.map((embedding) => embedding.vector);
+          const rng = getRng(options.seed);
+          return buildClusterResult(
+            embeddings,
+            kMeans(vectors, options.k, options.maxIterations, rng),
+          );
         }),
 
       // Soft clustering (GMM-like)
       clusterSoft: (embeddings, options) =>
-        Effect.try({
-          try: () => {
-            // Handle edge cases
-            if (embeddings.length === 0) {
-              return {
-                numClusters: 0,
-                softAssignments: [],
-                centroids: [],
-                metadata: {},
-              };
-            }
-
-            if (embeddings.length === 1) {
-              return {
-                numClusters: 1,
-                softAssignments: [
-                  { chunkId: embeddings[0].id, clusterId: 0, probability: 1 },
-                ],
-                centroids: [{ clusterId: 0, vector: embeddings[0].vector }],
-                metadata: {},
-              };
-            }
-
-            const vectors = embeddings.map((e) => e.vector);
-            validateVectorDimensions(vectors);
-
-            const {
-              maxClusters = 10,
-              minProbability = 0.01,
-              useBIC = true,
-              maxIterations = 100,
-            } = options;
-
-            const { selectedK, bicScores } = selectClusterCount(
-              vectors,
-              maxClusters,
-              maxIterations,
-              useBIC,
-            );
-
-            // Run soft clustering with best k
-            const { centroids, softAssignments: rawAssignments } = softCluster(
-              vectors,
-              selectedK,
-              maxIterations
-            );
-
-            // Filter by minProbability and map to chunk IDs
-            const softAssignments: SoftClusterAssignment[] = rawAssignments
-              .filter((a) => a.probability >= minProbability)
-              .map((a) => ({
-                chunkId: embeddings[a.vectorIdx].id,
-                clusterId: a.clusterId,
-                probability: a.probability,
-              }));
-
-            // Build centroids
-            const clusterCentroids: ClusterCentroid[] = centroids.map(
-              (vector, idx) => ({
-                clusterId: idx,
-                vector,
-              })
-            );
-
-            return {
-              numClusters: selectedK,
-              softAssignments,
-              centroids: clusterCentroids,
-              metadata: useBIC ? { bicScores, selectedK } : undefined,
-            };
-          },
-          catch: (e) => new ClusteringError(String(e)),
-        }),
+        clusteringEffect(() => buildSoftClusterResult(embeddings, options)),
 
       // Mini-batch k-means (scalable clustering for large datasets)
       clusterMiniBatch: (embeddings, options) =>
-        Effect.try({
-          try: () => {
-            const vectors = embeddings.map((e) => e.vector);
-            const { batchSize = 100, maxIterations = 100 } = options;
-            const rng = getRng(options.seed);
+        clusteringEffect(() => {
+          const vectors = embeddings.map((embedding) => embedding.vector);
+          const { batchSize = 100, maxIterations = 100 } = options;
+          const rng = getRng(options.seed);
 
-            return buildClusterResult(
-              embeddings,
-              miniBatchKMeans(
-                vectors,
-                options.k,
-                batchSize,
-                maxIterations,
-                rng
-              ),
-            );
-          },
-          catch: (e) => new ClusteringError(String(e)),
+          return buildClusterResult(
+            embeddings,
+            miniBatchKMeans(
+              vectors,
+              options.k,
+              batchSize,
+              maxIterations,
+              rng,
+            ),
+          );
         }),
     })
   ),

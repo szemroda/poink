@@ -131,6 +131,71 @@ function envForConfig(configPath: string): Record<string, string> {
   };
 }
 
+function childEnv(
+  overrides: Record<string, string | undefined> = {},
+): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries({
+      ...process.env,
+      ...overrides,
+    }).filter((entry): entry is [string, string] => entry[1] !== undefined),
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function unknownArray(value: unknown): unknown[] {
+  if (!Array.isArray(value)) return [];
+  return value;
+}
+
+function isTextContent(
+  value: unknown,
+): value is { type: "text"; text: string } {
+  return (
+    isRecord(value) &&
+    value.type === "text" &&
+    typeof value.text === "string"
+  );
+}
+
+type CapabilityCommand = {
+  name: string;
+  argv?: string[];
+};
+
+function isCapabilityCommand(value: unknown): value is CapabilityCommand {
+  return isRecord(value) && typeof value.name === "string";
+}
+
+type TestConfigWithStoredSecrets = ReturnType<typeof makeTestConfig> & {
+  providers: ReturnType<typeof makeTestConfig>["providers"] & {
+    openrouter: ReturnType<
+      typeof makeTestConfig
+    >["providers"]["openrouter"] & {
+      apiKey?: string;
+    };
+  };
+  storage: {
+    libsql: ReturnType<typeof makeTestConfig>["storage"]["libsql"] & {
+      authToken?: string;
+    };
+  };
+  server: ReturnType<typeof makeTestConfig>["server"] & {
+    auth: ReturnType<typeof makeTestConfig>["server"]["auth"] & {
+      token?: string;
+    };
+  };
+};
+
+function makeTestConfigWithStoredSecrets(
+  libraryPath: string,
+): TestConfigWithStoredSecrets {
+  return makeTestConfig(libraryPath);
+}
+
 function insertStoredMarkdownDocumentInChild(
   libraryPath: string,
   options: {
@@ -187,13 +252,8 @@ function runCli(
   argv: string[],
   opts?: { env?: Record<string, string | undefined> },
 ): { exitCode: number; stdout: string; stderr: string } {
-  const env: Record<string, string> = {
-    ...process.env,
-    ...(opts?.env ?? {}),
-  } as any;
-
   const proc = spawnSync(process.execPath, nodeTsxArgs(argv), {
-    env,
+    env: childEnv(opts?.env),
     encoding: "utf-8",
   });
 
@@ -306,10 +366,7 @@ describe("Node Build Smoke", () => {
         }
 
         const proc = spawnSync(process.execPath, ["dist/cli.js", "help", "--format", "json"], {
-          env: {
-            ...process.env,
-            ...envForConfig(configPath),
-          } as any,
+          env: childEnv(envForConfig(configPath)),
           encoding: "utf-8",
         });
 
@@ -1085,9 +1142,8 @@ describe("CLI JSON Envelope Contract", () => {
       expect("configurableDefaultFormat" in result).toBe(false);
 
       // Command list invariants (agent discovery depends on these names)
-      const commandNames = new Set(
-        (result.commands as Array<any>).map((c) => String(c.name)),
-      );
+      const commands = unknownArray(result.commands).filter(isCapabilityCommand);
+      const commandNames = new Set(commands.map((command) => command.name));
       expect(commandNames.has("search")).toBe(true);
       expect(commandNames.has("search-pack")).toBe(true);
       expect(commandNames.has("chunk")).toBe(true);
@@ -1102,8 +1158,8 @@ describe("CLI JSON Envelope Contract", () => {
       expect(commandNames.has("serve")).toBe(true);
       expect(commandNames.has("providers")).toBe(true);
       expect(commandNames.has("setup")).toBe(false);
-      const providersCommand = (result.commands as Array<any>).find(
-        (c) => c.name === "providers",
+      const providersCommand = commands.find(
+        (command) => command.name === "providers",
       );
       expect(providersCommand?.argv).toEqual([
         "providers",
@@ -1231,11 +1287,17 @@ describe("CLI JSON Envelope Contract", () => {
 
       const tree = runCli(["taxonomy", "tree", "--format", "json"], { env });
       expect(tree.exitCode).toBe(0);
-      const root = JSON.parse(tree.stdout).result.tree[0];
+      const taxonomyResult = JSON.parse(tree.stdout).result;
+      const taxonomyTree = unknownArray(taxonomyResult.tree);
+      const root = taxonomyTree[0];
       expect(root).not.toHaveProperty("concept");
-      const programmingRoot = JSON.parse(tree.stdout).result.tree.find(
-        (node: any) => node.id === "programming",
+      const programmingRoot = taxonomyTree.find(
+        (node) => isRecord(node) && node.id === "programming",
       );
+      expect(isRecord(programmingRoot)).toBe(true);
+      if (!isRecord(programmingRoot)) {
+        throw new Error("Expected programming taxonomy root");
+      }
       expect(programmingRoot.children).toContainEqual(
         expect.objectContaining({
           id: "programming/typescript",
@@ -1421,7 +1483,7 @@ describe("CLI JSON Envelope Contract", () => {
   test("config show redacts stored secrets in JSON output by default", () =>
     withTempLibraryPath((libraryPath) => {
       const configPath = join(libraryPath, "config.json");
-      const config: any = makeTestConfig(libraryPath);
+      const config = makeTestConfigWithStoredSecrets(libraryPath);
       config.providers.openrouter.apiKey = "openrouter-secret";
       config.storage.libsql.authToken = "libsql-secret";
       config.server.auth.token = "server-secret";
@@ -1447,7 +1509,7 @@ describe("CLI JSON Envelope Contract", () => {
   test("config show returns stored secrets when explicitly requested", () =>
     withTempLibraryPath((libraryPath) => {
       const configPath = join(libraryPath, "config.json");
-      const config: any = makeTestConfig(libraryPath);
+      const config = makeTestConfigWithStoredSecrets(libraryPath);
       config.providers.openrouter.apiKey = "openrouter-secret";
       config.server.auth.token = "server-secret";
       writeFileSync(configPath, JSON.stringify(config, null, 2), "utf-8");
@@ -1468,7 +1530,7 @@ describe("CLI JSON Envelope Contract", () => {
   test("config get redacts stored secrets unless explicitly requested", () =>
     withTempLibraryPath((libraryPath) => {
       const configPath = join(libraryPath, "config.json");
-      const config: any = makeTestConfig(libraryPath);
+      const config = makeTestConfigWithStoredSecrets(libraryPath);
       config.providers.openrouter.apiKey = "openrouter-secret";
       writeFileSync(configPath, JSON.stringify(config, null, 2), "utf-8");
 
@@ -1502,7 +1564,7 @@ describe("CLI JSON Envelope Contract", () => {
   test("config get redacts secrets inside parent object paths", () =>
     withTempLibraryPath((libraryPath) => {
       const configPath = join(libraryPath, "config.json");
-      const config: any = makeTestConfig(libraryPath);
+      const config = makeTestConfigWithStoredSecrets(libraryPath);
       config.providers.openrouter.apiKey = "openrouter-secret";
       config.server.auth.token = "server-secret";
       writeFileSync(configPath, JSON.stringify(config, null, 2), "utf-8");
@@ -2047,10 +2109,7 @@ describe("MCP Tool Output Contract", () => {
           args: nodeTsxArgs(["mcp"]),
           cwd: process.cwd(),
           stderr: "pipe",
-          env: {
-            ...process.env,
-            ...envForConfig(configPath),
-          } as any,
+          env: childEnv(envForConfig(configPath)),
         });
 
         const client = new Client({
@@ -2074,17 +2133,25 @@ describe("MCP Tool Output Contract", () => {
           expect(call.structuredContent).toBeDefined();
           expect(call.content).toBeDefined();
 
-          const textContent = (call.content as Array<any>).find(
-            (item) => item.type === "text",
-          );
+          const content = Array.isArray(call.content) ? call.content : [];
+          const textContent = content.find(isTextContent);
           expect(textContent).toBeDefined();
+          if (!textContent) throw new Error("Expected text tool content");
           expect(JSON.parse(textContent.text).ok).toBe(true);
 
-          const envelope: any = call.structuredContent;
+          const envelope = call.structuredContent;
+          expect(isRecord(envelope)).toBe(true);
+          if (!isRecord(envelope)) {
+            throw new Error("Expected structuredContent envelope");
+          }
+          const result = envelope.result;
+          expect(isRecord(result)).toBe(true);
+          if (!isRecord(result)) {
+            throw new Error("Expected stats result object");
+          }
           expect(envelope.ok).toBe(true);
           expect(envelope.command).toBe("stats");
-          expect(envelope.result).toBeDefined();
-          expect(envelope.result.libraryPath).toBe(libraryPath);
+          expect(result.libraryPath).toBe(libraryPath);
           expect("protocolVersion" in envelope).toBe(false);
           expect("meta" in envelope).toBe(false);
           expect(JSON.parse(textContent.text)).toEqual(envelope);
@@ -2333,10 +2400,7 @@ describe("HTTP MCP Server", () => {
           {
             cwd: process.cwd(),
             stdio: ["ignore", "pipe", "pipe"],
-            env: {
-              ...process.env,
-              ...envForConfig(configPath),
-            } as any,
+            env: childEnv(envForConfig(configPath)),
           },
         );
 
@@ -2396,11 +2460,10 @@ describe("HTTP MCP Server", () => {
           {
             cwd: process.cwd(),
             stdio: ["ignore", "pipe", "pipe"],
-            env: {
-              ...process.env,
+            env: childEnv({
               ...envForConfig(configPath),
               POINK_SERVER_TOKEN: "env-token",
-            } as any,
+            }),
           },
         );
 

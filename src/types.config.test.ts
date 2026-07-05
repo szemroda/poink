@@ -12,48 +12,23 @@ import {
   resolveVisualsConfig,
   withConfigPathOverride,
 } from "./types.js";
+import { restoreEnvSnapshot, snapshotEnv } from "./testUtils.js";
 
-const ORIGINAL_POINK_CONFIG = process.env.POINK_CONFIG;
-const ORIGINAL_OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
-const ORIGINAL_OPENROUTER_BASE_URL = process.env.OPENROUTER_BASE_URL;
-const ORIGINAL_GOOGLE_GENERATIVE_AI_API_KEY =
-  process.env.GOOGLE_GENERATIVE_AI_API_KEY;
-const ORIGINAL_ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
+const CONFIG_ENV_NAMES = [
+  "POINK_CONFIG",
+  "OPENROUTER_API_KEY",
+  "OPENROUTER_BASE_URL",
+  "GOOGLE_GENERATIVE_AI_API_KEY",
+  "ANTHROPIC_API_KEY",
+] as const;
+const ORIGINAL_ENV = snapshotEnv(CONFIG_ENV_NAMES);
 
 function makeTempDir(): string {
   return mkdtempSync(join(tmpdir(), "poink-config-"));
 }
 
 afterEach(() => {
-  if (ORIGINAL_POINK_CONFIG === undefined) {
-    delete process.env.POINK_CONFIG;
-  } else {
-    process.env.POINK_CONFIG = ORIGINAL_POINK_CONFIG;
-  }
-
-  if (ORIGINAL_OPENROUTER_API_KEY === undefined) {
-    delete process.env.OPENROUTER_API_KEY;
-  } else {
-    process.env.OPENROUTER_API_KEY = ORIGINAL_OPENROUTER_API_KEY;
-  }
-
-  if (ORIGINAL_OPENROUTER_BASE_URL === undefined) {
-    delete process.env.OPENROUTER_BASE_URL;
-  } else {
-    process.env.OPENROUTER_BASE_URL = ORIGINAL_OPENROUTER_BASE_URL;
-  }
-
-  if (ORIGINAL_GOOGLE_GENERATIVE_AI_API_KEY === undefined) {
-    delete process.env.GOOGLE_GENERATIVE_AI_API_KEY;
-  } else {
-    process.env.GOOGLE_GENERATIVE_AI_API_KEY = ORIGINAL_GOOGLE_GENERATIVE_AI_API_KEY;
-  }
-
-  if (ORIGINAL_ANTHROPIC_API_KEY === undefined) {
-    delete process.env.ANTHROPIC_API_KEY;
-  } else {
-    process.env.ANTHROPIC_API_KEY = ORIGINAL_ANTHROPIC_API_KEY;
-  }
+  restoreEnvSnapshot(ORIGINAL_ENV);
 });
 
 describe("loadConfig path and database defaults", () => {

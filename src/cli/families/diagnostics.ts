@@ -4,10 +4,20 @@ import { LibraryStore } from "../../services/LibraryStore.js";
 import { DocumentIntegrityRepository } from "../../services/StorageRepositories.js";
 import { runDoctorCommand } from "../commands/doctor.js";
 import { runInitCommand } from "../commands/init.js";
-import { CLIError, type CliLibrary } from "../runner.js";
+import { type CliLibrary } from "../runner.js";
 import { buildDiagnosticsLayer } from "../runtime.js";
-import { runFamilyEffect } from "./shared.js";
+import {
+  commandHandlers,
+  runFamilyEffect,
+  runResolvedFamilyCommand,
+} from "./shared.js";
 import type { FamilyRunner } from "./types.js";
+
+const COMMAND_HANDLERS = commandHandlers([
+  ["doctor", runDoctorCommand],
+  ["check", runDoctorCommand],
+  ["init", runInitCommand],
+]);
 
 export const runFamily: FamilyRunner = async ({
   parsed,
@@ -19,7 +29,6 @@ export const runFamily: FamilyRunner = async ({
     const store = yield* LibraryStore;
     const embedding = yield* EmbeddingProvider;
     const integrity = yield* DocumentIntegrityRepository;
-    const command = parsed.args[0];
     const commandGlobals = {
       ...globals,
       library: {
@@ -30,26 +39,12 @@ export const runFamily: FamilyRunner = async ({
       } as CliLibrary,
     };
 
-    if (command === "doctor" || command === "check") {
-      return yield* runDoctorCommand(
-        parsed.args,
-        commandGlobals,
-        parsed.options,
-      );
-    }
-
-    if (command === "init") {
-      return yield* runInitCommand(
-        parsed.args,
-        commandGlobals,
-        parsed.options,
-      );
-    }
-    return yield* Effect.fail(
-      new CLIError(
-        "UNKNOWN_COMMAND",
-        `Unknown diagnostics command: ${command}`,
-      ),
+    return yield* runResolvedFamilyCommand(
+      "diagnostics",
+      COMMAND_HANDLERS,
+      parsed.args,
+      commandGlobals,
+      parsed.options,
     );
   });
   const providedProgram = program.pipe(

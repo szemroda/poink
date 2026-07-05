@@ -36,6 +36,9 @@ type RepositoryConfig = {
 const CONTEXT_QUERY_LIMIT = 20;
 const CONTEXT_LENGTH_TOLERANCE = 1.2;
 const DOCUMENT_COUNT_BATCH_SIZE = 500;
+const DOCUMENT_SELECT_SQL = "SELECT * FROM documents";
+const DOCUMENT_TAG_FILTER_SQL =
+  "json_array_length(tags) > 0 AND EXISTS (SELECT 1 FROM json_each(tags) WHERE value = ?)";
 
 function documentBaseArgs(doc: Document): InValue[] {
   return [
@@ -130,6 +133,39 @@ function embeddingUpsertStatement(item: EmbeddingInput): InStatement {
   };
 }
 
+function documentListQuery(tag?: string): { sql: string; args: InValue[] } {
+  const args: InValue[] = [];
+  let sql = DOCUMENT_SELECT_SQL;
+  if (tag) {
+    sql += ` WHERE ${DOCUMENT_TAG_FILTER_SQL}`;
+    args.push(tag);
+  }
+
+  return { sql: `${sql} ORDER BY added_at DESC`, args };
+}
+
+async function getFirstDecodedRow<A>(
+  client: LibSQLClientService["client"],
+  statement: InStatement,
+  operation: string,
+  decodeRow: (row: unknown, operation: string) => A,
+): Promise<A | null> {
+  const result = await client.execute(statement);
+  const row = result.rows[0];
+  if (!row) return null;
+  return decodeRow(row, operation);
+}
+
+async function listDecodedRows<A>(
+  client: LibSQLClientService["client"],
+  statement: InStatement,
+  operation: string,
+  decodeRow: (row: unknown, operation: string) => A,
+): Promise<A[]> {
+  const result = await client.execute(statement);
+  return result.rows.map((row) => decodeRow(row, operation));
+}
+
 function validateSourceIdentity(sourceIdentity: SourceIdentity): void {
   if (
     sourceIdentity.algorithm !== "sha256" ||
@@ -161,40 +197,40 @@ function makeDocumentRepository(
       }),
 
     getDocument: (id) =>
-      storageEffect("get document", async () => {
-        const result = await client.execute({
-          sql: "SELECT * FROM documents WHERE id = ?",
-          args: [id],
-        });
-        const row = result.rows[0];
-        return row ? decodeDocumentRow(row, "get document") : null;
-      }),
+      storageEffect("get document", () =>
+        getFirstDecodedRow(
+          client,
+          {
+            sql: "SELECT * FROM documents WHERE id = ?",
+            args: [id],
+          },
+          "get document",
+          decodeDocumentRow,
+        ),
+      ),
 
     getDocumentByPath: (path) =>
-      storageEffect("get document by path", async () => {
-        const result = await client.execute({
-          sql: "SELECT * FROM documents WHERE path = ?",
-          args: [path],
-        });
-        const row = result.rows[0];
-        return row ? decodeDocumentRow(row, "get document by path") : null;
-      }),
+      storageEffect("get document by path", () =>
+        getFirstDecodedRow(
+          client,
+          {
+            sql: "SELECT * FROM documents WHERE path = ?",
+            args: [path],
+          },
+          "get document by path",
+          decodeDocumentRow,
+        ),
+      ),
 
     listDocuments: (tag) =>
-      storageEffect("list documents", async () => {
-        let sql = "SELECT * FROM documents";
-        const args: InValue[] = [];
-        if (tag) {
-          sql +=
-            " WHERE json_array_length(tags) > 0 AND EXISTS (SELECT 1 FROM json_each(tags) WHERE value = ?)";
-          args.push(tag);
-        }
-        sql += " ORDER BY added_at DESC";
-        const result = await client.execute({ sql, args });
-        return result.rows.map((row) =>
-          decodeDocumentRow(row, "list documents"),
-        );
-      }),
+      storageEffect("list documents", () =>
+        listDecodedRows(
+          client,
+          documentListQuery(tag),
+          "list documents",
+          decodeDocumentRow,
+        ),
+      ),
 
     deleteDocument: (id) =>
       storageEffect("delete document", async () => {
@@ -227,15 +263,18 @@ function makeDocumentRepository(
       }),
 
     getChunk: (chunkId) =>
-      storageEffect("get chunk", async () => {
-        const result = await client.execute({
-          sql: `SELECT id, doc_id, page, chunk_index, content, embedding_content
+      storageEffect("get chunk", () =>
+        getFirstDecodedRow(
+          client,
+          {
+            sql: `SELECT id, doc_id, page, chunk_index, content, embedding_content
                 FROM chunks WHERE id = ?`,
-          args: [chunkId],
-        });
-        const row = result.rows[0];
-        return row ? decodeChunkRow(row, "get chunk") : null;
-      }),
+            args: [chunkId],
+          },
+          "get chunk",
+          decodeChunkRow,
+        ),
+      ),
 
     listChunksByDocument: (docId, options) =>
       storageEffect("list document chunks", async () => {
@@ -247,9 +286,11 @@ function makeDocumentRepository(
           args.push(options.page);
         }
         sql += " ORDER BY page ASC, chunk_index ASC";
-        const result = await client.execute({ sql, args });
-        return result.rows.map((row) =>
-          decodeChunkRow(row, "list document chunks"),
+        return listDecodedRows(
+          client,
+          { sql, args },
+          "list document chunks",
+          decodeChunkRow,
         );
       }),
 
@@ -282,38 +323,27 @@ function makeDocumentRepository(
       }),
 
     getDocumentWithSourceIdentity: (id) =>
-      storageEffect("get document source identity", async () => {
-        const result = await client.execute({
-          sql: "SELECT * FROM documents WHERE id = ?",
-          args: [id],
-        });
-        const row = result.rows[0];
-        return row
-          ? decodeDocumentWithSourceIdentityRow(
-              row,
-              "get document source identity",
-            )
-          : null;
-      }),
+      storageEffect("get document source identity", () =>
+        getFirstDecodedRow(
+          client,
+          {
+            sql: "SELECT * FROM documents WHERE id = ?",
+            args: [id],
+          },
+          "get document source identity",
+          decodeDocumentWithSourceIdentityRow,
+        ),
+      ),
 
     listDocumentsWithSourceIdentity: (tag) =>
-      storageEffect("list document source identities", async () => {
-        let sql = "SELECT * FROM documents";
-        const args: InValue[] = [];
-        if (tag) {
-          sql +=
-            " WHERE json_array_length(tags) > 0 AND EXISTS (SELECT 1 FROM json_each(tags) WHERE value = ?)";
-          args.push(tag);
-        }
-        sql += " ORDER BY added_at DESC";
-        const result = await client.execute({ sql, args });
-        return result.rows.map((row) =>
-          decodeDocumentWithSourceIdentityRow(
-            row,
-            "list document source identities",
-          ),
-        );
-      }),
+      storageEffect("list document source identities", () =>
+        listDecodedRows(
+          client,
+          documentListQuery(tag),
+          "list document source identities",
+          decodeDocumentWithSourceIdentityRow,
+        ),
+      ),
   };
 }
 

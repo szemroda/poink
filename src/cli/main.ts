@@ -4,7 +4,6 @@ import { fileURLToPath } from "node:url";
 import {
   makeErrorEnvelope,
   makeSuccessEnvelope,
-  OUTPUT_FORMATS,
   type OutputFormat,
 } from "../agent/protocol.js";
 import { setLogLevel } from "../logger.js";
@@ -17,6 +16,7 @@ import {
 } from "./configFlag.js";
 import { writeEnvelope } from "./envelope.js";
 import { coerceCliError } from "./errors.js";
+import { outputOptionsFromRawArgs } from "./options.js";
 import {
   resolveConfiguredDefaultFormat,
   VERSION,
@@ -70,10 +70,6 @@ export const COMMAND_FAMILIES: Readonly<Record<string, CommandFamily>> = {
   mcp: "server",
   serve: "server",
 };
-
-function isOutputFormat(value: unknown): value is OutputFormat {
-  return typeof value === "string" && OUTPUT_FORMATS.includes(value as OutputFormat);
-}
 
 function isHelpOrVersionInvocation(rawArgs: string[]): boolean {
   return (
@@ -130,48 +126,14 @@ function configuredGlobals(
   configuredDefaultFormat: OutputFormat,
   rawArgs: string[],
 ): Omit<GlobalCLIOptions, "config" | "timing"> {
-  let format = configuredDefaultFormat;
-  let pretty = false;
-  let verbose = false;
-  let logLevel: GlobalCLIOptions["logLevel"] = "error";
-  if (rawArgs[0]?.startsWith("--")) {
-    return { format, configuredDefaultFormat, pretty, verbose, logLevel };
-  }
-  for (let index = 1; index < rawArgs.length; index++) {
-    const arg = rawArgs[index]!;
-    if (arg === "--pretty") pretty = true;
-    else if (arg === "--verbose") verbose = true;
-    else if (arg.startsWith("--format=")) {
-      const value = arg.slice("--format=".length);
-      if (isOutputFormat(value)) format = value;
-    } else if (arg === "--format") {
-      const value = rawArgs[index + 1];
-      if (isOutputFormat(value)) format = value;
-      index++;
-    } else if (arg.startsWith("--log-level=")) {
-      const value = arg.slice("--log-level=".length);
-      if (
-        value === "silent" ||
-        value === "error" ||
-        value === "info" ||
-        value === "debug"
-      ) {
-        logLevel = value;
-      }
-    } else if (arg === "--log-level") {
-      const value = rawArgs[index + 1];
-      if (
-        value === "silent" ||
-        value === "error" ||
-        value === "info" ||
-        value === "debug"
-      ) {
-        logLevel = value;
-      }
-      index++;
-    }
-  }
-  return { format, configuredDefaultFormat, pretty, verbose, logLevel };
+  const options = outputOptionsFromRawArgs(rawArgs);
+  return {
+    format: options.format ?? configuredDefaultFormat,
+    configuredDefaultFormat,
+    pretty: options.pretty === true,
+    verbose: options.verbose === true,
+    logLevel: options.logLevel ?? "error",
+  };
 }
 
 function writeCliError(
@@ -208,23 +170,18 @@ export function getCommandFamily(parsed: ParsedCommandLine): CommandFamily {
   return COMMAND_FAMILIES[parsed.args[0] ?? "--help"] ?? "lightweight";
 }
 
+const FAMILY_RUNNERS = {
+  lightweight: () => import("./families/lightweight.js"),
+  store: () => import("./families/store.js"),
+  search: () => import("./families/search.js"),
+  ingestion: () => import("./families/ingestion.js"),
+  setup: () => import("./families/setup.js"),
+  diagnostics: () => import("./families/diagnostics.js"),
+  server: () => import("./families/server.js"),
+} satisfies Record<CommandFamily, () => Promise<{ runFamily: FamilyRunner }>>;
+
 async function loadFamilyRunner(family: CommandFamily): Promise<FamilyRunner> {
-  switch (family) {
-    case "lightweight":
-      return (await import("./families/lightweight.js")).runFamily;
-    case "store":
-      return (await import("./families/store.js")).runFamily;
-    case "search":
-      return (await import("./families/search.js")).runFamily;
-    case "ingestion":
-      return (await import("./families/ingestion.js")).runFamily;
-    case "setup":
-      return (await import("./families/setup.js")).runFamily;
-    case "diagnostics":
-      return (await import("./families/diagnostics.js")).runFamily;
-    case "server":
-      return (await import("./families/server.js")).runFamily;
-  }
+  return (await FAMILY_RUNNERS[family]()).runFamily;
 }
 
 function isEither(

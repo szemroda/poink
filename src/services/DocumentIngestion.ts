@@ -39,6 +39,7 @@ import { buildChunkerMetadata } from "../chunking.js";
 import {
   assertStableSource,
   fingerprintSource,
+  type SourceFingerprint,
 } from "./SourceIntegrity.js";
 import {
   isOfficeDetectedSourceType,
@@ -57,6 +58,13 @@ type LibraryProcessedChunk = {
   chunkIndex: number;
   content: string;
   embeddingContent?: string;
+};
+
+type PreparedDocument = {
+  document: Document;
+  chunks: ChunkInput[];
+  embeddings: EmbeddingInput[];
+  sourceFingerprint: SourceFingerprint;
 };
 
 // ============================================================================
@@ -356,6 +364,111 @@ const makeDocumentIngestionService = (appConfig: Config) =>
         return embeddings;
       });
 
+    const stampedMetadata = (
+      fileType: Document["fileType"],
+      baseMetadata: Record<string, unknown>,
+      visualsMode: VisualsMode,
+    ): Record<string, unknown> => ({
+      ...baseMetadata,
+      chunker: buildChunkerMetadata(fileType, config),
+      visuals: {
+        enabled: visualsMode !== "disabled",
+        version: 1,
+        maxImageBytes: visualsConfig.maxImageBytes,
+        maxImagesPerDocument: visualsConfig.maxImagesPerDocument,
+      },
+    });
+
+    const buildChunkRecords = (
+      doc: Document,
+      chunks: readonly LibraryProcessedChunk[],
+    ): ChunkInput[] =>
+      chunks.map((chunk, index) => ({
+        id: `${doc.id}-${index}`,
+        docId: doc.id,
+        page: chunk.page,
+        chunkIndex: chunk.chunkIndex,
+        content: chunk.content,
+        embeddingContent: buildEmbeddingContent(doc, chunk),
+      }));
+
+    const prepareDocument = (
+      resolvedPath: string,
+      detected: DetectedSourceType,
+      initialFingerprint: SourceFingerprint,
+      options: {
+        id: string;
+        title: string;
+        addedAt: Date;
+        tags: readonly string[];
+        metadata: Record<string, unknown>;
+        visualsMode: VisualsMode;
+        logEmbeddingProgress: boolean;
+        logExtractionFailure: boolean;
+      },
+    ): Effect.Effect<PreparedDocument, unknown> =>
+      Effect.gen(function* () {
+        const { fileType } = detected;
+        const processResult = yield* Effect.either(
+          processDocument(resolvedPath, detected, {
+            visualsMode: options.visualsMode,
+            title: options.title,
+          }),
+        );
+
+        if (processResult._tag === "Left") {
+          if (options.logExtractionFailure) {
+            yield* Effect.logDebug(
+              `${fileType} extraction failed for ${resolvedPath}: ${processResult.left}`,
+            );
+          }
+          return yield* Effect.fail(processResult.left);
+        }
+
+        const { pageCount, chunks } = processResult.right;
+        if (chunks.length === 0) {
+          return yield* new DocumentNotFoundError({
+            query: `No text content extracted from ${fileType}`,
+          });
+        }
+
+        const doc = new Document({
+          id: options.id,
+          title: options.title,
+          path: resolvedPath,
+          addedAt: options.addedAt,
+          pageCount,
+          sizeBytes: initialFingerprint.sizeBytes,
+          tags: [...options.tags],
+          fileType,
+          metadata: stampedMetadata(
+            fileType,
+            options.metadata,
+            options.visualsMode,
+          ),
+        });
+        const chunkRecords = buildChunkRecords(doc, chunks);
+
+        const embeddingRecords = yield* generateEmbeddings(
+          doc.id,
+          chunkRecords,
+          options.logEmbeddingProgress,
+        );
+
+        const finalFingerprint = yield* fingerprintSource(resolvedPath);
+        yield* assertStableSource(initialFingerprint, finalFingerprint);
+
+        return {
+          document: new Document({
+            ...doc,
+            sizeBytes: finalFingerprint.sizeBytes,
+          }),
+          chunks: chunkRecords,
+          embeddings: embeddingRecords,
+          sourceFingerprint: finalFingerprint,
+        };
+      });
+
     return {
       /**
        * Check if embedding provider is ready
@@ -397,7 +510,6 @@ const makeDocumentIngestionService = (appConfig: Config) =>
             resolvedPath,
             options,
           );
-          const { fileType } = detected;
 
           const title = yield* resolveTitle(
             resolvedPath,
@@ -405,85 +517,37 @@ const makeDocumentIngestionService = (appConfig: Config) =>
             options.title,
           );
           const visualsMode = configuredVisualsMode(appConfig, options);
-          const processResult = yield* Effect.either(
-            processDocument(resolvedPath, detected, { visualsMode, title }),
-          );
-          if (processResult._tag === "Left") {
-            yield* Effect.logDebug(
-              `${fileType} extraction failed for ${resolvedPath}: ${processResult.left}`,
-            );
-            return yield* Effect.fail(processResult.left);
-          }
-          const { pageCount, chunks } = processResult.right;
-
-          if (chunks.length === 0) {
-            return yield* new DocumentNotFoundError({
-              query: `No text content extracted from ${fileType}`,
-            });
-          }
-
-          // Create document
-          const chunker = buildChunkerMetadata(fileType, config);
-          const mergedMetadata: Record<string, unknown> = {
-            ...(options.metadata ?? {}),
-            // Always stamp the chunker used to generate the current chunks/embeddings.
-            chunker,
-            visuals: {
-              enabled: visualsMode !== "disabled",
-              version: 1,
-              maxImageBytes: visualsConfig.maxImageBytes,
-              maxImagesPerDocument: visualsConfig.maxImagesPerDocument,
-            },
-          };
-
-          const doc = new Document({
-            id,
-            title,
-            path: resolvedPath,
-            addedAt: options.addedAt ?? new Date(),
-            pageCount,
-            sizeBytes: initialFingerprint.sizeBytes,
-            tags: options.tags || [],
-            fileType,
-            metadata: mergedMetadata,
-          });
-
-          const chunkRecords = chunks.map((chunk, i) => ({
-            id: `${id}-${i}`,
-            docId: id,
-            page: chunk.page,
-            chunkIndex: chunk.chunkIndex,
-            content: chunk.content,
-            embeddingContent: buildEmbeddingContent(doc, chunk),
-          }));
 
           // Generate every embedding before touching the DB. Otherwise a
           // mid-file failure can leave an incomplete vector index.
-          const embeddingRecords = yield* generateEmbeddings(
-            id,
-            chunkRecords,
-            true,
+          const prepared = yield* prepareDocument(
+            resolvedPath,
+            detected,
+            initialFingerprint,
+            {
+              id,
+              title,
+              addedAt: options.addedAt ?? new Date(),
+              tags: options.tags || [],
+              metadata: options.metadata ?? {},
+              visualsMode,
+              logEmbeddingProgress: true,
+              logExtractionFailure: true,
+            },
           );
-
-          const finalFingerprint = yield* fingerprintSource(resolvedPath);
-          yield* assertStableSource(initialFingerprint, finalFingerprint);
-          const committedDoc = new Document({
-            ...doc,
-            sizeBytes: finalFingerprint.sizeBytes,
-          });
 
           // Commit document + chunks + embeddings atomically only after all
           // embeddings have been generated.
           yield* documentIntegrity.replaceDocument(
-            committedDoc,
-            chunkRecords,
-            embeddingRecords,
-            finalFingerprint.identity,
+            prepared.document,
+            prepared.chunks,
+            prepared.embeddings,
+            prepared.sourceFingerprint.identity,
             "add",
           );
           yield* maintenance.checkpoint();
 
-          return committedDoc;
+          return prepared.document;
         }),
 
       /**
@@ -519,7 +583,6 @@ const makeDocumentIngestionService = (appConfig: Config) =>
             resolvedPath,
             options,
           );
-          const { fileType } = detected;
 
           // Preserve existing title/tags/metadata by default
           const title = options.title ?? existing.title;
@@ -528,79 +591,33 @@ const makeDocumentIngestionService = (appConfig: Config) =>
             options.metadata ?? existing.metadata ?? {};
 
           const visualsMode = configuredVisualsMode(appConfig, options);
-          const processResult = yield* Effect.either(
-            processDocument(resolvedPath, detected, { visualsMode, title }),
-          );
-          if (processResult._tag === "Left") {
-            return yield* Effect.fail(processResult.left);
-          }
-          const { pageCount, chunks } = processResult.right;
-
-          if (chunks.length === 0) {
-            return yield* new DocumentNotFoundError({
-              query: `No text content extracted from ${fileType}`,
-            });
-          }
-
-          // Stamp current chunker metadata (always overwrite)
-          const chunker = buildChunkerMetadata(fileType, config);
-          const mergedMetadata: Record<string, unknown> = {
-            ...baseMetadata,
-            chunker,
-            visuals: {
-              enabled: visualsMode !== "disabled",
-              version: 1,
-              maxImageBytes: visualsConfig.maxImageBytes,
-              maxImagesPerDocument: visualsConfig.maxImagesPerDocument,
+          const prepared = yield* prepareDocument(
+            resolvedPath,
+            detected,
+            initialFingerprint,
+            {
+              id,
+              title,
+              addedAt: options.addedAt ?? existing.addedAt,
+              tags,
+              metadata: baseMetadata,
+              visualsMode,
+              logEmbeddingProgress: false,
+              logExtractionFailure: false,
             },
-          };
-
-          const doc = new Document({
-            id,
-            title,
-            path: resolvedPath,
-            addedAt: options.addedAt ?? existing.addedAt,
-            pageCount,
-            sizeBytes: initialFingerprint.sizeBytes,
-            tags,
-            fileType,
-            metadata: mergedMetadata,
-          });
-
-          const chunkRecords = chunks.map((chunk, i) => ({
-            id: `${id}-${i}`,
-            docId: id,
-            page: chunk.page,
-            chunkIndex: chunk.chunkIndex,
-            content: chunk.content,
-            embeddingContent: buildEmbeddingContent(doc, chunk),
-          }));
-
-          // Generate all embeddings before touching the DB (non-destructive).
-          const embeddingRecords = yield* generateEmbeddings(
-            id,
-            chunkRecords,
-            false,
           );
-
-          const finalFingerprint = yield* fingerprintSource(resolvedPath);
-          yield* assertStableSource(initialFingerprint, finalFingerprint);
-          const committedDoc = new Document({
-            ...doc,
-            sizeBytes: finalFingerprint.sizeBytes,
-          });
 
           // Atomic DB replacement
           yield* documentIntegrity.replaceDocument(
-            committedDoc,
-            chunkRecords,
-            embeddingRecords,
-            finalFingerprint.identity,
+            prepared.document,
+            prepared.chunks,
+            prepared.embeddings,
+            prepared.sourceFingerprint.identity,
             "refresh",
           );
           yield* maintenance.checkpoint();
 
-          return (yield* documents.getDocument(id)) ?? committedDoc;
+          return (yield* documents.getDocument(id)) ?? prepared.document;
         }),
 
     };

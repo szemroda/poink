@@ -2,7 +2,11 @@ import { Context, Effect, Layer } from "effect";
 import { generateText, Output } from "ai";
 import dedent from "dedent";
 import { z } from "zod";
-import { describeLanguageModelError, getConfiguredLanguageModel } from "./AIProvider.js";
+import {
+  describeLanguageModelError,
+  getConfiguredLanguageModel,
+  providerOptionsInput,
+} from "./AIProvider.js";
 import { loadConfig } from "../types.js";
 
 /**
@@ -73,9 +77,7 @@ async function generateSummary(
 
   const { output } = await generateText({
     model: resolvedModel.model,
-    ...(resolvedModel.providerOptions
-      ? { providerOptions: resolvedModel.providerOptions }
-      : {}),
+    ...providerOptionsInput(resolvedModel),
     output: Output.object({ schema: SummarySchema }),
     prompt: dedent`
       Analyze these document chunks from a knowledge library cluster and create an abstractive summary.

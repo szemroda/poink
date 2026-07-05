@@ -6,12 +6,27 @@ import { join } from "path";
 import {
   ClusterSummarizerService,
   ClusterSummarizerImpl,
-  type ClusterSummary,
 } from "./ClusterSummarizer.js";
+
+type MockGenerateTextInput = {
+  readonly model?: {
+    readonly modelId?: string;
+  };
+};
+type MockGenerateTextOutput = {
+  readonly output: {
+    readonly summary: string;
+    readonly keyTopics: string[];
+    readonly representativeQuote?: string;
+  };
+};
+type MockGenerateText = (
+  input: MockGenerateTextInput,
+) => Promise<MockGenerateTextOutput>;
 
 // Mock the AI SDK
 const mockGenerateText = vi.hoisted(() =>
-  vi.fn(() =>
+  vi.fn<MockGenerateText>(() =>
     Promise.resolve({
       output: {
         summary:
@@ -249,8 +264,7 @@ describe("ClusterSummarizerService - LLM Abstractive Summarization", () => {
 
     // Verify generateText was called with correct model
     expect(mockGenerateText).toHaveBeenCalled();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const calls = mockGenerateText.mock.calls as any[];
+    const calls = mockGenerateText.mock.calls;
     expect(calls.length).toBeGreaterThan(0);
     expect(calls[calls.length - 1][0]?.model?.modelId).toBe("llama3.2:3b");
   });
