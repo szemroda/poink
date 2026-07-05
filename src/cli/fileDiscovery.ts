@@ -8,6 +8,16 @@ export type IngestSelectionFilters = {
   exclude: string[];
 };
 
+export type IngestSelectionFilterSource = {
+  include: readonly string[];
+  exclude: readonly string[];
+};
+
+export type IngestSelectionOptionValues = {
+  include?: unknown;
+  exclude?: unknown;
+};
+
 export type IngestSelectionSummary = IngestSelectionFilters & {
   discovered: number;
   included: number;
@@ -63,6 +73,19 @@ export function globPatternsFromOption(value: unknown): string[] {
   return [];
 }
 
+export function resolveIngestSelectionFilters(
+  configuredFilters: IngestSelectionFilterSource,
+  options: IngestSelectionOptionValues,
+): IngestSelectionFilters {
+  const cliInclude = globPatternsFromOption(options.include);
+  const cliExclude = globPatternsFromOption(options.exclude);
+  return {
+    include:
+      cliInclude.length > 0 ? cliInclude : [...configuredFilters.include],
+    exclude: dedupeStrings([...configuredFilters.exclude, ...cliExclude]),
+  };
+}
+
 function createMatcher(patterns: string[]): Matcher | undefined {
   if (patterns.length === 0) return undefined;
   return picomatch(patterns, MATCH_OPTIONS);
@@ -108,8 +131,8 @@ function discoverCandidates(
   return candidates;
 }
 
-function dedupePaths(paths: string[]): string[] {
-  return [...new Set(paths)];
+function dedupeStrings(values: string[]): string[] {
+  return [...new Set(values)];
 }
 
 function createSelectionSummary(
@@ -124,7 +147,7 @@ function createSelectionSummary(
 }
 
 function pathsFromCandidates(candidates: DiscoveryCandidate[]): string[] {
-  return dedupePaths(candidates.map((candidate) => candidate.absolutePath));
+  return dedupeStrings(candidates.map((candidate) => candidate.absolutePath));
 }
 
 function createDiscoveryResult(
@@ -183,17 +206,17 @@ export function combineIngestDiscoveryResults(
   results: IngestDiscoveryResult[],
   filters: IngestSelectionFilters,
 ): IngestDiscoveryResult {
-  const discoveredFiles = dedupePaths(
+  const discoveredFiles = dedupeStrings(
     results.flatMap((result) => result.discoveredFiles),
   );
-  const includedFiles = dedupePaths(
+  const includedFiles = dedupeStrings(
     results.flatMap((result) => result.includedFiles),
   );
-  const excludedFiles = dedupePaths(
+  const excludedFiles = dedupeStrings(
     results.flatMap((result) => result.excludedFiles),
   );
   const excludedPaths = new Set(excludedFiles);
-  const files = dedupePaths(results.flatMap((result) => result.files)).filter(
+  const files = dedupeStrings(results.flatMap((result) => result.files)).filter(
     (file) => !excludedPaths.has(file),
   );
 

@@ -52,6 +52,8 @@ describe("loadConfig path and database defaults", () => {
       expect(config.ingest.urlDownloads.maxRedirects).toBe(5);
       expect(config.ingest.urlDownloads.allowPrivateNetwork).toBe(false);
       expect(config.ingest.urlDownloads.allowedPrivateNetworkHosts).toEqual([]);
+      expect(config.ingest.include).toEqual([]);
+      expect(config.ingest.exclude).toEqual([]);
       expect(config.ingest.visuals.enabled).toBe(false);
       expect(config.ingest.visuals.maxImageBytes).toBe("5mb");
       expect(config.ingest.visuals.maxImagesPerDocument).toBe(100);
@@ -305,9 +307,32 @@ describe("loadConfig path and database defaults", () => {
     expect(normalized.ingest.urlDownloads.maxFileSize).toBe("100mb");
     expect(normalized.ingest.urlDownloads.timeout).toBe("30s");
     expect(normalized.ingest.urlDownloads.maxRedirects).toBe(5);
+    expect(normalized.ingest.include).toEqual([]);
+    expect(normalized.ingest.exclude).toEqual([]);
     expect(normalized.ingest.visuals.enabled).toBe(false);
     expect(normalized.ingest.visuals.maxImageBytes).toBe("5mb");
     expect(normalized.ingest.visuals.maxImagesPerDocument).toBe(100);
+  });
+
+  test("accepts configured ingest include and exclude patterns", () => {
+    const config = JSON.parse(JSON.stringify(Config.Default));
+    config.ingest.include = ["docs/**/*.md"];
+    config.ingest.exclude = ["docs/archive/**"];
+
+    const normalized = normalizeConfig(config);
+
+    expect(normalized.ingest.include).toEqual(["docs/**/*.md"]);
+    expect(normalized.ingest.exclude).toEqual(["docs/archive/**"]);
+  });
+
+  test("rejects non-string ingest include and exclude patterns", () => {
+    const config = JSON.parse(JSON.stringify(Config.Default));
+    config.ingest.include = ["docs/**/*.md", 3];
+    expect(() => normalizeConfig(config)).toThrow();
+
+    config.ingest.include = ["docs/**/*.md"];
+    config.ingest.exclude = [false];
+    expect(() => normalizeConfig(config)).toThrow();
   });
 
   test("normalizes legacy configs without visual settings", () => {

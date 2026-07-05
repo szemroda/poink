@@ -112,7 +112,7 @@ function buildCapabilitiesResult() {
           "[--no-recursive]",
           "[--no-progress]",
         ],
-        "Add supported documents from one or more directories",
+        "Add supported documents from one or more directories; --include overrides configured ingest.include and --exclude extends configured ingest.exclude",
       ),
       commandCapability("doctor", ["doctor"], "Health check"),
       commandCapability(

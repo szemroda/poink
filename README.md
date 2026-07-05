@@ -343,7 +343,20 @@ poink ingest ~/papers --enrich --sample 10
 
 # Disable line progress output
 poink ingest ~/papers --enrich --no-progress
+
+# Limit a run to matching files
+poink ingest ~/docs --include "**/*.md" --exclude "**/archive/**"
 ```
+
+Bulk ingest can also read reusable file selection rules from config:
+
+```bash
+poink config set ingest.include "**/*.md,**/*.pdf"
+poink config set ingest.exclude "**/archive/**,**/drafts/**"
+```
+
+When `--include` is passed, it replaces configured `ingest.include` for that
+run. When `--exclude` is passed, it is added to configured `ingest.exclude`.
 
 **Supported formats:**
 
@@ -530,6 +543,8 @@ poink config set models.enrichment.model anthropic/claude-haiku-4-5
     }
   },
   "ingest": {
+    "include": [],
+    "exclude": [],
     "visuals": {
       "enabled": false,
       "maxImageBytes": "5mb",

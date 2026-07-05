@@ -196,6 +196,8 @@ function defaultUrlDownloadsConfig() {
 
 function defaultIngestConfig() {
   return {
+    include: [],
+    exclude: [],
     visuals: defaultVisualsConfig(),
     urlDownloads: defaultUrlDownloadsConfig(),
   };
@@ -419,6 +421,12 @@ export class Config extends Schema.Class<Config>("Config")({
     default: defaultCliConfig,
   }),
   ingest: Schema.optionalWith(Schema.Struct({
+    include: Schema.optionalWith(Schema.Array(Schema.String), {
+      default: () => [],
+    }),
+    exclude: Schema.optionalWith(Schema.Array(Schema.String), {
+      default: () => [],
+    }),
     visuals: Schema.optionalWith(Schema.Struct({
       enabled: Schema.optionalWith(Schema.Boolean, {
         default: () => false,

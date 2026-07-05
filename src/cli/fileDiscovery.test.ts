@@ -12,6 +12,7 @@ import {
   discoverIngestFiles,
   globPatternsFromOption,
   normalizeGlobPath,
+  resolveIngestSelectionFilters,
 } from "./fileDiscovery.js";
 
 function withTempDirectory(run: (directory: string) => void): void {
@@ -131,5 +132,34 @@ describe("ingest file discovery", () => {
       "**/*.md",
       "**/*.pdf",
     ]);
+  });
+
+  test("uses config include when CLI include is absent", () => {
+    const configuredFilters = {
+      include: ["docs/**/*.md"],
+      exclude: ["docs/archive/**"],
+    };
+
+    expect(resolveIngestSelectionFilters(configuredFilters, {})).toEqual({
+      include: ["docs/**/*.md"],
+      exclude: ["docs/archive/**"],
+    });
+  });
+
+  test("CLI include overrides config include while CLI exclude extends config exclude", () => {
+    const configuredFilters = {
+      include: ["docs/**/*.md"],
+      exclude: ["docs/archive/**"],
+    };
+
+    expect(
+      resolveIngestSelectionFilters(configuredFilters, {
+        include: ["manual/**/*.pdf"],
+        exclude: ["manual/drafts/**", "docs/archive/**"],
+      }),
+    ).toEqual({
+      include: ["manual/**/*.pdf"],
+      exclude: ["docs/archive/**", "manual/drafts/**"],
+    });
   });
 });

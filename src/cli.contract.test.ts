@@ -35,6 +35,7 @@ function makeTestConfig(
   libraryPath: string,
   modelProvider: "ollama" | "openrouter" = "ollama",
   cliFormat: "json" | "ndjson" | "text" = "text",
+  ingestSelection: { include?: string[]; exclude?: string[] } = {},
 ) {
   const models =
     modelProvider === "openrouter"
@@ -73,6 +74,8 @@ function makeTestConfig(
     chunking: { strategy: "text", size: 2000, overlap: 200 },
     cli: { globalFlags: { format: cliFormat } },
     ingest: {
+      include: ingestSelection.include ?? [],
+      exclude: ingestSelection.exclude ?? [],
       urlDownloads: {
         maxFileSize: "100mb",
         timeout: "30s",
@@ -116,11 +119,30 @@ function writeTestConfig(
   libraryPath: string,
   modelProvider?: "ollama" | "openrouter",
   cliFormat?: "json" | "ndjson" | "text",
+  ingestSelection?: { include?: string[]; exclude?: string[] },
 ): void {
   writeFileSync(
     configPath,
-    JSON.stringify(makeTestConfig(libraryPath, modelProvider, cliFormat), null, 2),
+    JSON.stringify(
+      makeTestConfig(libraryPath, modelProvider, cliFormat, ingestSelection),
+      null,
+      2,
+    ),
     "utf-8",
+  );
+}
+
+function writeTestConfigWithIngestSelection(
+  configPath: string,
+  libraryPath: string,
+  ingestSelection: { include?: string[]; exclude?: string[] },
+): void {
+  writeTestConfig(
+    configPath,
+    libraryPath,
+    undefined,
+    undefined,
+    ingestSelection,
   );
 }
 
@@ -1766,6 +1788,59 @@ describe("CLI JSON Envelope Contract", () => {
       ]);
     }));
 
+  test("config set accepts ingest include and exclude patterns", () =>
+    withTempLibraryPath((libraryRoot) => {
+      const libraryPath = join(libraryRoot, "library");
+      const configPath = join(libraryRoot, "config.json");
+      writeTestConfig(configPath, libraryPath);
+
+      const includeRes = runCli(
+        [
+          "config",
+          "set",
+          "ingest.include",
+          "docs/**/*.md,papers/**/*.pdf",
+          "--format",
+          "json",
+        ],
+        {
+          env: envForConfig(configPath),
+        },
+      );
+      expect(includeRes.exitCode).toBe(0);
+
+      const excludeRes = runCli(
+        [
+          "config",
+          "set",
+          "ingest.exclude",
+          "docs/archive/**,papers/drafts/**",
+          "--format",
+          "json",
+        ],
+        {
+          env: envForConfig(configPath),
+        },
+      );
+      expect(excludeRes.exitCode).toBe(0);
+      const excludeObj = JSON.parse(excludeRes.stdout);
+      expect(excludeObj.ok).toBe(true);
+      expect(excludeObj.result.value).toEqual([
+        "docs/archive/**",
+        "papers/drafts/**",
+      ]);
+
+      const saved = JSON.parse(readFileSync(configPath, "utf-8"));
+      expect(saved.ingest.include).toEqual([
+        "docs/**/*.md",
+        "papers/**/*.pdf",
+      ]);
+      expect(saved.ingest.exclude).toEqual([
+        "docs/archive/**",
+        "papers/drafts/**",
+      ]);
+    }));
+
   test("config set accepts visual enrichment settings", () =>
     withTempLibraryPath((libraryRoot) => {
       const libraryPath = join(libraryRoot, "library");
@@ -2026,6 +2101,77 @@ describe("CLI JSON Envelope Contract", () => {
       });
     }));
 
+  test("ingest uses config include and exclude when CLI filters are absent", () =>
+    withTempLibraryPath((libraryRoot) => {
+      const libraryPath = join(libraryRoot, "library");
+      const docs = join(libraryRoot, "docs");
+      const configPath = join(libraryRoot, "config.json");
+      writeTestConfigWithIngestSelection(configPath, libraryPath, {
+        include: ["**/*.md"],
+        exclude: ["**/*.md"],
+      });
+      mkdirSync(docs);
+      writeFileSync(join(docs, "note.md"), "# Note", "utf-8");
+
+      const res = runCli(["ingest", docs, "--format", "json"], {
+        env: envForConfig(configPath),
+      });
+
+      expect(res.exitCode).toBe(0);
+      const obj = JSON.parse(res.stdout);
+      expect(obj.ok).toBe(true);
+      expect(obj.result.selection).toEqual({
+        include: ["**/*.md"],
+        exclude: ["**/*.md"],
+        discovered: 1,
+        included: 1,
+        excluded: 1,
+        selected: 0,
+        sampled: 0,
+      });
+    }));
+
+  test("ingest CLI include overrides config include and CLI exclude extends config exclude", () =>
+    withTempLibraryPath((libraryRoot) => {
+      const libraryPath = join(libraryRoot, "library");
+      const docs = join(libraryRoot, "docs");
+      const configPath = join(libraryRoot, "config.json");
+      writeTestConfigWithIngestSelection(configPath, libraryPath, {
+        include: ["**/*.pdf"],
+        exclude: ["archive/**"],
+      });
+      mkdirSync(join(docs, "drafts"), { recursive: true });
+      writeFileSync(join(docs, "paper.pdf"), "%PDF-1.7", "utf-8");
+      writeFileSync(join(docs, "drafts", "note.md"), "# Draft", "utf-8");
+
+      const res = runCli(
+        [
+          "ingest",
+          docs,
+          "--include",
+          "**/*.md",
+          "--exclude",
+          "drafts/**",
+          "--format",
+          "json",
+        ],
+        { env: envForConfig(configPath) },
+      );
+
+      expect(res.exitCode).toBe(0);
+      const obj = JSON.parse(res.stdout);
+      expect(obj.ok).toBe(true);
+      expect(obj.result.selection).toEqual({
+        include: ["**/*.md"],
+        exclude: ["archive/**", "drafts/**"],
+        discovered: 2,
+        included: 1,
+        excluded: 1,
+        selected: 0,
+        sampled: 0,
+      });
+    }));
+
   test("ingest excludes win over includes and text prints selection counters", () =>
     withTempLibraryPath((libraryRoot) => {
       const libraryPath = join(libraryRoot, "library");
@@ -2051,8 +2197,8 @@ describe("CLI JSON Envelope Contract", () => {
       expect(res.stdout).toContain(
         "Selection: discovered 1, included 1, excluded 1, selected 0",
       );
-      expect(res.stdout).not.toContain("**/*.md");
-      expect(res.stdout).not.toContain("**/archive/**");
+      expect(res.stdout).toContain("Include:\n  **/*.md");
+      expect(res.stdout).toContain("Exclude:\n  **/archive/**");
     }));
 
   test("CLI package dependencies do not include Ink or React", () => {

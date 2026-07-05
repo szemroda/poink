@@ -33,7 +33,7 @@ import {
 import {
   combineIngestDiscoveryResults,
   discoverIngestFiles,
-  globPatternsFromOption,
+  resolveIngestSelectionFilters,
   withSampledSelection,
   type IngestDiscoveryResult,
   type IngestSelectionFilters,
@@ -123,15 +123,6 @@ function parseSampleSize(
 ): number | undefined {
   if (!sample) return undefined;
   return parseInt(String(sample), 10);
-}
-
-function selectionFiltersFromOptions(
-  options: IngestCommandOptions,
-): IngestSelectionFilters {
-  return {
-    include: globPatternsFromOption(options.include),
-    exclude: globPatternsFromOption(options.exclude),
-  };
 }
 
 function resolveTargetDirectories(directories: string[], Console: CliConsole) {
@@ -303,6 +294,11 @@ function renderSelectionSummary(selection: IngestSelectionSummary): string {
   return `Selection: discovered ${selection.discovered}, included ${selection.included}, excluded ${selection.excluded}, selected ${selection.selected}`;
 }
 
+function renderScopePatterns(label: string, patterns: string[]): string[] {
+  if (patterns.length === 0) return [];
+  return [`${label}:`, ...patterns.map((pattern) => `  ${pattern}`)];
+}
+
 function discoverTargetFiles(
   targetDirs: string[],
   selectionFilters: IngestSelectionFilters,
@@ -315,6 +311,13 @@ function discoverTargetFiles(
         targetDirs.length > 1 ? "ies" : "y"
       }...`,
     );
+    const scopeLines = [
+      ...renderScopePatterns("Include", selectionFilters.include),
+      ...renderScopePatterns("Exclude", selectionFilters.exclude),
+    ];
+    yield* Effect.forEach(scopeLines, (line) => Console.log(line), {
+      discard: true,
+    });
 
     const discoveryResults: IngestDiscoveryResult[] = [];
     for (const dir of targetDirs) {
@@ -422,8 +425,12 @@ export function runIngestCommand(
           );
           yield* Console.error("  --tags a,b,c   Manual tags for all files");
           yield* Console.error("  --sample N     Process only first N files");
-          yield* Console.error("  --include GLOB Include matching paths");
-          yield* Console.error("  --exclude GLOB Exclude matching paths");
+          yield* Console.error(
+            "  --include GLOB Include matching paths (overrides config include)",
+          );
+          yield* Console.error(
+            "  --exclude GLOB Exclude matching paths (adds to config exclude)",
+          );
           yield* Console.error("  --no-progress  Disable line progress output");
           return yield* Effect.fail(
             new CLIError("INVALID_ARGS", "At least one directory required", {
@@ -441,7 +448,6 @@ export function runIngestCommand(
           options["no-recursive"] === true
             ? false
             : options.recursive !== false;
-        const selectionFilters = selectionFiltersFromOptions(options);
         const manualTags = parseManualTags(options.tags);
         const sampleSize = parseSampleSize(options.sample);
         // Agent-only mode: progress writes to stdout and will break JSON parsing.
@@ -450,6 +456,10 @@ export function runIngestCommand(
         const autoTag = options["auto-tag"] === true;
         const enrich = options.enrich === true;
         const ingestConfig = globals.config!;
+        const selectionFilters = resolveIngestSelectionFilters(
+          ingestConfig.ingest,
+          options,
+        );
         const visualsExplicit = options.visuals === true;
         const visualsEnabled =
           visualsExplicit || resolveVisualsConfig(ingestConfig).enabled;

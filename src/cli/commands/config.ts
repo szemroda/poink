@@ -117,6 +117,7 @@ function runShowConfig(
       `Database:    ${config.storage.libsql.url}`,
       "",
       `CLI Format:  ${config.cli.globalFlags.format}`,
+      `Ingest Scope: include ${config.ingest.include.length}, exclude ${config.ingest.exclude.length}`,
       `URL Downloads: max ${config.ingest.urlDownloads.maxFileSize}, timeout ${config.ingest.urlDownloads.timeout}, redirects ${config.ingest.urlDownloads.maxRedirects}`,
       `Visuals:     ${config.ingest.visuals.enabled ? "enabled" : "disabled"}, max image ${config.ingest.visuals.maxImageBytes}, max images/doc ${config.ingest.visuals.maxImagesPerDocument}`,
       "",
