@@ -15,10 +15,6 @@
   "publishConfig": {
     "access": "public"
   },
-  "main": "./dist/index.js",
-  "exports": {
-    ".": "./dist/index.js"
-  },
   "bin": {
     "poink": "dist/cli.js"
   },
