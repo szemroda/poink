@@ -173,6 +173,5 @@ jobs:
       skill_path: skills/poink-semantic-search
       ref: ${{ needs.release.outputs.tag }}
       dry_run: false
-      bump: patch
     secrets:
       clawhub_token: ${{ secrets.CLAWHUB_TOKEN }}
