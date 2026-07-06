@@ -37,7 +37,7 @@ poink add ~/Documents/paper.pdf --enrich
 
 ### Prerequisites
 
-poink requires Node.js 20.17.0 or newer.
+poink requires Node.js 22.22.1 or newer.
 
 The setup wizard lets you choose local or hosted providers for embeddings, enrichment, and judging:
 
