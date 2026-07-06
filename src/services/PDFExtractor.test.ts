@@ -265,13 +265,14 @@ describe("chunkText", () => {
     expect(chunks[0]).toContain("| Zysk netto | 535 042 | 193 923 |");
   });
 
-  test("filters tiny chunks (<20 chars)", () => {
+  test("preserves short PDF section-title context", () => {
     const input = ["Short", "", "This is a longer paragraph that should remain."]
       .join("\n");
     const chunks = chunkText(input, 25, 0);
-    // With the small chunk size, the long paragraph will be split or kept,
-    // but the tiny "Short" paragraph should be filtered out.
-    expect(chunks.join("\n")).not.toContain("Short");
+    const output = chunks.join("\n");
+
+    expect(output).toContain("# Short");
+    expect(output).toContain("This is a longer paragrap");
   });
 
   test("throws when chunk overlap is not smaller than chunk size", () => {
