@@ -81,6 +81,7 @@ async function initializeDocumentSchema(client: Client): Promise<void> {
        WHEN lower(path) LIKE '%.md' OR lower(path) LIKE '%.markdown' THEN 'markdown'
        WHEN lower(path) LIKE '%.docx' THEN 'docx'
        WHEN lower(path) LIKE '%.odt' OR lower(path) LIKE '%.fodt' THEN 'odt'
+       WHEN lower(path) LIKE '%.txt' THEN 'txt'
        ELSE 'pdf'
      END`,
   );

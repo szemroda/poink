@@ -60,6 +60,7 @@ export async function buildIngestionLayer(config: Config) {
     { makePDFExtractor },
     { makeMarkdownExtractor },
     { makeOfficeExtractor },
+    { makeTextExtractor },
     { SourceFileTypeDetectorLive },
     { makeVisualEnrichment },
     { makeAutoTagger },
@@ -73,6 +74,7 @@ export async function buildIngestionLayer(config: Config) {
     import("../services/PDFExtractor.js"),
     import("../services/MarkdownExtractor.js"),
     import("../services/OfficeExtractor.js"),
+    import("../services/TextExtractor.js"),
     import("../services/SourceFileType.js"),
     import("../services/VisualEnrichment.js"),
     import("../services/AutoTagger.js"),
@@ -85,10 +87,12 @@ export async function buildIngestionLayer(config: Config) {
   const pdfExtractor = makePDFExtractor(libraryConfig);
   const markdownExtractor = makeMarkdownExtractor(libraryConfig);
   const officeExtractor = makeOfficeExtractor(libraryConfig);
+  const textExtractor = makeTextExtractor(libraryConfig);
   const extractors = Layer.mergeAll(
     pdfExtractor,
     markdownExtractor,
     officeExtractor,
+    textExtractor,
   );
   const visuals = makeVisualEnrichment(config).pipe(
     Layer.provide(Layer.merge(pdfExtractor, officeExtractor)),

@@ -234,7 +234,7 @@ describe("LibraryConfig path resolution", () => {
 });
 
 describe("Document file types", () => {
-  test("accepts DOCX and ODT file types", () => {
+  test("accepts DOCX, ODT, and TXT file types", () => {
     const docx = new Document({
       id: "docx-1",
       title: "Word Notes",
@@ -255,8 +255,19 @@ describe("Document file types", () => {
       tags: [],
       fileType: "odt",
     });
+    const txt = new Document({
+      id: "txt-1",
+      title: "Text Notes",
+      path: "/tmp/notes.txt",
+      addedAt: new Date("2024-01-01T00:00:00Z"),
+      pageCount: 1,
+      sizeBytes: 123,
+      tags: [],
+      fileType: "txt",
+    });
 
     expect(docx.fileType).toBe("docx");
     expect(odt.fileType).toBe("odt");
+    expect(txt.fileType).toBe("txt");
   });
 });

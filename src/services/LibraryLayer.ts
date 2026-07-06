@@ -14,6 +14,7 @@ import { makeOfficeExtractor } from "./OfficeExtractor.js";
 import { makePDFExtractor } from "./PDFExtractor.js";
 import { makeSemanticLibrary } from "./SemanticLibrary.js";
 import { makeStorageLayer } from "./StorageLayer.js";
+import { makeTextExtractor } from "./TextExtractor.js";
 import { makeVisualEnrichment } from "./VisualEnrichment.js";
 import { SourceFileTypeDetectorLive } from "./SourceFileType.js";
 
@@ -26,10 +27,12 @@ export function makeLibraryLayer(config: Config) {
   const pdfExtractor = makePDFExtractor(libraryConfig);
   const markdownExtractor = makeMarkdownExtractor(libraryConfig);
   const officeExtractor = makeOfficeExtractor(libraryConfig);
+  const textExtractor = makeTextExtractor(libraryConfig);
   const extractors = Layer.mergeAll(
     pdfExtractor,
     markdownExtractor,
     officeExtractor,
+    textExtractor,
   );
   const visuals = makeVisualEnrichment(config).pipe(
     Layer.provide(Layer.merge(pdfExtractor, officeExtractor)),

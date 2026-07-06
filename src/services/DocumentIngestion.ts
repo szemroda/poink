@@ -23,6 +23,7 @@ import { EmbeddingProvider } from "./EmbeddingProvider.js";
 import { chunkText, PDFExtractor } from "./PDFExtractor.js";
 import { MarkdownExtractor } from "./MarkdownExtractor.js";
 import { OfficeExtractor } from "./OfficeExtractor.js";
+import { TextExtractor } from "./TextExtractor.js";
 import {
   VisualEnrichment,
   type VisualDescriptionChunk,
@@ -51,7 +52,7 @@ import {
 // Helper Functions
 // ============================================================================
 
-const DOCUMENT_TITLE_EXTENSION_RE = /\.(pdf|md|markdown|docx|odt|fodt)$/i;
+const DOCUMENT_TITLE_EXTENSION_RE = /\.(pdf|md|markdown|docx|odt|fodt|txt)$/i;
 
 type LibraryProcessedChunk = {
   page: number;
@@ -77,6 +78,7 @@ const makeDocumentIngestionService = (appConfig: Config) =>
     const pdfExtractor = yield* PDFExtractor;
     const markdownExtractor = yield* MarkdownExtractor;
     const officeExtractor = yield* OfficeExtractor;
+    const textExtractor = yield* TextExtractor;
     const visualEnrichment = yield* VisualEnrichment;
     const sourceFileTypeDetector = yield* SourceFileTypeDetector;
     const documents = yield* DocumentRepository;
@@ -208,6 +210,9 @@ const makeDocumentIngestionService = (appConfig: Config) =>
     ) => {
       if (detected.fileType === "markdown") {
         return markdownExtractor.process(resolvedPath);
+      }
+      if (detected.fileType === "txt") {
+        return textExtractor.process(resolvedPath);
       }
       if (isOfficeDetectedSourceType(detected)) {
         return officeExtractor.process(resolvedPath, detected.sourceFormat);

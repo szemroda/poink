@@ -28,7 +28,7 @@ import {
   type GlobalCLIOptions,
 } from "../runner.js";
 
-const DOCUMENT_TITLE_EXTENSION_RE = /\.(pdf|md|markdown|docx|odt|fodt)$/i;
+const DOCUMENT_TITLE_EXTENSION_RE = /\.(pdf|md|markdown|docx|odt|fodt|txt)$/i;
 
 interface AddCommandOptions extends Record<string, unknown> {
   tags?: string;

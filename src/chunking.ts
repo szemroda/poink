@@ -36,17 +36,19 @@ type ChunkerAssessment = {
 const CHUNK_UNIT = "chars" as const;
 const MARKDOWN_EXTENSIONS = [".md", ".markdown"] as const;
 const ODT_EXTENSIONS = [".odt", ".fodt"] as const;
-const MIN_CHUNK_LENGTH = 20;
+const TXT_EXTENSIONS = [".txt"] as const;
 
 export const CURRENT_CHUNKER: Record<DocumentFileType, ChunkerIdentity> = {
-  // v6: shared chunking + optional visual enrichment chunks
-  pdf: { id: "pdf-extractor:shared-context-v6", version: 6 },
-  // v3: shared chunking + heading ancestry/table preservation + enriched embedding text
-  markdown: { id: "markdown-extractor:shared-context-v3", version: 3 },
-  // v4: shared chunking + optional visual enrichment chunks
-  docx: { id: "office-extractor:docx-shared-context-v4", version: 4 },
-  // v3: shared chunking + OpenDocument heading/table extraction + enriched embedding text
-  odt: { id: "office-extractor:odt-shared-context-v3", version: 3 },
+  // v7: shared chunking preserves short trailing chunks + optional visual enrichment chunks
+  pdf: { id: "pdf-extractor:shared-context-v7", version: 7 },
+  // v4: shared chunking preserves short trailing chunks + heading ancestry/table preservation + enriched embedding text
+  markdown: { id: "markdown-extractor:shared-context-v4", version: 4 },
+  // v5: shared chunking preserves short trailing chunks + optional visual enrichment chunks
+  docx: { id: "office-extractor:docx-shared-context-v5", version: 5 },
+  // v4: shared chunking preserves short trailing chunks + OpenDocument heading/table extraction + enriched embedding text
+  odt: { id: "office-extractor:odt-shared-context-v4", version: 4 },
+  // v1: plain UTF-8 text normalization + shared chunking
+  txt: { id: "txt-extractor:plain-context-v1", version: 1 },
 };
 
 const SENTENCE_RE = /[^.!?]+[.!?]+["')\]]*\s*|[^.!?]+$/g;
@@ -259,7 +261,7 @@ export function chunkNormalizedText(
   }
 
   return applyAdjacentChunkOverlap(
-    chunks.filter((chunk) => chunk.length > MIN_CHUNK_LENGTH),
+    chunks.filter((chunk) => chunk.length > 0),
     chunkOverlap,
   );
 }
@@ -269,6 +271,7 @@ export function inferFileTypeFromPath(path: string): DocumentFileType {
   if (hasExtension(lower, MARKDOWN_EXTENSIONS)) return "markdown";
   if (lower.endsWith(".docx")) return "docx";
   if (hasExtension(lower, ODT_EXTENSIONS)) return "odt";
+  if (hasExtension(lower, TXT_EXTENSIONS)) return "txt";
   return "pdf";
 }
 

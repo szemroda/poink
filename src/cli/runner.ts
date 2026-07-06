@@ -259,7 +259,7 @@ export function extractEnrichmentPreview(
       ? content.slice(0, ENRICHMENT_PREVIEW_MAX_CHARS)
       : content;
   const { detected } = options;
-  if (detected.fileType === "markdown") {
+  if (detected.fileType === "markdown" || detected.fileType === "txt") {
     return Effect.either(Effect.promise(() => readFileText(path))).pipe(
       Effect.map((result) =>
         result._tag === "Right" ? trim(result.right) : undefined,

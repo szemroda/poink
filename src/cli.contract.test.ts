@@ -866,8 +866,8 @@ describe("CLI JSON Envelope Contract", () => {
         url: `file:${join(libraryPath, "library.db")}`,
       });
       const chunker = {
-        id: "markdown-extractor:shared-context-v3",
-        version: 3,
+        id: "markdown-extractor:shared-context-v4",
+        version: 4,
         unit: "chars",
         chunkSize: 2000,
         chunkOverlap: 200,

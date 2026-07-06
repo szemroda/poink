@@ -7,11 +7,15 @@ import {
   fileTypeFromFile,
   type FileTypeResult,
 } from "file-type";
-import { MAX_ODT_XML_BYTES } from "./SourceFileLimits.js";
+import {
+  MAX_ODT_XML_BYTES,
+  MAX_TEXT_SOURCE_BYTES,
+} from "./SourceFileLimits.js";
 
 export type SourceFormat =
   | "pdf"
   | "markdown-text"
+  | "plain-text"
   | "docx-package"
   | "odt-package"
   | "odt-flat-xml";
@@ -19,6 +23,7 @@ export type SourceFormat =
 export type DetectedSourceType =
   | { sourceFormat: "pdf"; fileType: "pdf" }
   | { sourceFormat: "markdown-text"; fileType: "markdown" }
+  | { sourceFormat: "plain-text"; fileType: "txt" }
   | { sourceFormat: "docx-package"; fileType: "docx" }
   | {
       sourceFormat: "odt-package" | "odt-flat-xml";
@@ -69,9 +74,19 @@ type SourceProbe = {
   prefix: Uint8Array;
 };
 
+type TextFallbackSourceType = Extract<
+  DetectedSourceType,
+  { sourceFormat: "markdown-text" | "plain-text" }
+>;
+type PlainTextFallbackSourceType = Extract<
+  TextFallbackSourceType,
+  { sourceFormat: "plain-text" }
+>;
+
 const SOURCE_TYPES = {
   pdf: { sourceFormat: "pdf", fileType: "pdf" },
   markdown: { sourceFormat: "markdown-text", fileType: "markdown" },
+  txt: { sourceFormat: "plain-text", fileType: "txt" },
   docx: { sourceFormat: "docx-package", fileType: "docx" },
   odtPackage: { sourceFormat: "odt-package", fileType: "odt" },
   odtFlatXml: { sourceFormat: "odt-flat-xml", fileType: "odt" },
@@ -85,6 +100,25 @@ const ODF_TEXT_MIME = "application/vnd.oasis.opendocument.text";
 const OFFICE_NAMESPACE =
   "urn:oasis:names:tc:opendocument:xmlns:office:1.0";
 const MARKDOWN_EXTENSIONS = new Set([".md", ".markdown"]);
+const TXT_EXTENSIONS = new Set([".txt"]);
+const CONTROL_CHAR_BINARY_THRESHOLD = 0.05;
+const HORIZONTAL_TAB_CODE = 0x09;
+const LINE_FEED_CODE = 0x0a;
+const CARRIAGE_RETURN_CODE = 0x0d;
+
+function textFallbackSourceType(
+  extension: string,
+): TextFallbackSourceType | null {
+  if (MARKDOWN_EXTENSIONS.has(extension)) return { ...SOURCE_TYPES.markdown };
+  if (TXT_EXTENSIONS.has(extension)) return { ...SOURCE_TYPES.txt };
+  return null;
+}
+
+function isPlainTextFallback(
+  fallbackType: TextFallbackSourceType | null,
+): fallbackType is PlainTextFallbackSourceType {
+  return fallbackType?.sourceFormat === "plain-text";
+}
 
 function supportedBinaryType(
   extension: string,
@@ -207,18 +241,61 @@ function inspectFlatOdtXml(text: string): FlatOdtInspection {
 type Utf8FileInspection = {
   valid: boolean;
   firstSignificantCharacter?: string;
+  binaryLike: boolean;
 };
 
 function firstSignificantCharacter(text: string): string | undefined {
   return text.match(/[^\s\uFEFF]/u)?.[0];
 }
 
+function isBinaryLookingText(text: string): boolean {
+  if (text.includes("\u0000")) return true;
+
+  let suspiciousControlChars = 0;
+  for (const char of text) {
+    const code = char.charCodeAt(0);
+    const allowedWhitespace =
+      code === HORIZONTAL_TAB_CODE ||
+      code === LINE_FEED_CODE ||
+      code === CARRIAGE_RETURN_CODE;
+    if (code < 0x20 && !allowedWhitespace) {
+      suspiciousControlChars++;
+    }
+  }
+
+  return (
+    suspiciousControlChars > 0 &&
+    suspiciousControlChars / text.length > CONTROL_CHAR_BINARY_THRESHOLD
+  );
+}
+
+function assertPlainTextInspectionSupported(
+  fallbackType: TextFallbackSourceType | null,
+  inspection: Utf8FileInspection,
+): void {
+  if (!isPlainTextFallback(fallbackType)) return;
+  if (inspection.valid && !inspection.binaryLike) return;
+  throw new UnsupportedSourceFileTypeError();
+}
+
+function assertPlainTextContentSupported(
+  fallbackType: TextFallbackSourceType | null,
+  text: string | null,
+): void {
+  if (!isPlainTextFallback(fallbackType) || text === null) return;
+  if (!isBinaryLookingText(text)) return;
+  throw new UnsupportedSourceFileTypeError();
+}
+
 async function inspectUtf8File(path: string): Promise<Utf8FileInspection> {
   const decoder = new TextDecoder("utf-8", { fatal: true });
   let firstCharacter: string | undefined;
+  let binaryLike = false;
   const inspectText = (text: string) => {
-    if (firstCharacter !== undefined) return;
-    firstCharacter = firstSignificantCharacter(text);
+    if (firstCharacter === undefined) {
+      firstCharacter = firstSignificantCharacter(text);
+    }
+    binaryLike = binaryLike || isBinaryLookingText(text);
   };
 
   try {
@@ -226,20 +303,25 @@ async function inspectUtf8File(path: string): Promise<Utf8FileInspection> {
       inspectText(decoder.decode(chunk, { stream: true }));
     }
     inspectText(decoder.decode());
-    return { valid: true, firstSignificantCharacter: firstCharacter };
+    return {
+      valid: true,
+      firstSignificantCharacter: firstCharacter,
+      binaryLike,
+    };
   } catch {
-    return { valid: false };
+    return { valid: false, binaryLike: false };
   }
 }
 
 async function detectLargeTextFallback(
   path: string,
-  markdownExtension: boolean,
+  fallbackType: TextFallbackSourceType | null,
 ): Promise<DetectedSourceType> {
-  if (markdownExtension) {
+  if (fallbackType) {
     const utf8 = await inspectUtf8File(path);
+    assertPlainTextInspectionSupported(fallbackType, utf8);
     if (utf8.valid && utf8.firstSignificantCharacter !== "<") {
-      return { ...SOURCE_TYPES.markdown };
+      return fallbackType;
     }
   }
   throw new SourceFileTypeUndeterminedError();
@@ -248,7 +330,7 @@ async function detectLargeTextFallback(
 function detectBoundedTextFallback(
   text: string | null,
   binary: BinaryDetection,
-  markdownExtension: boolean,
+  fallbackType: TextFallbackSourceType | null,
 ): DetectedSourceType {
   if (text !== null && text.trimStart().startsWith("<")) {
     const flatOdt = inspectFlatOdtXml(text);
@@ -258,13 +340,17 @@ function detectBoundedTextFallback(
     if (flatOdt === "failure") {
       throw new SourceFileTypeUndeterminedError();
     }
+    if (isPlainTextFallback(fallbackType)) {
+      throw new UnsupportedSourceFileTypeError();
+    }
   }
 
   if (binary.kind === "generic-xml") {
     throw new UnsupportedSourceFileTypeError();
   }
-  if (markdownExtension && text !== null) {
-    return { ...SOURCE_TYPES.markdown };
+  assertPlainTextContentSupported(fallbackType, text);
+  if (fallbackType && text !== null) {
+    return fallbackType;
   }
   throw new SourceFileTypeUndeterminedError();
 }
@@ -293,16 +379,26 @@ async function detectSourceFileType(
   }
 
   const extension = extname(path).toLowerCase();
-  const markdownExtension = MARKDOWN_EXTENSIONS.has(extension);
+  const fallbackType = textFallbackSourceType(extension);
+
+  if (
+    isPlainTextFallback(fallbackType) &&
+    probe.fileSize > MAX_TEXT_SOURCE_BYTES
+  ) {
+    throw new SourceFileTypeUndeterminedError();
+  }
 
   if (probe.fileSize > MAX_ODT_XML_BYTES) {
-    return detectLargeTextFallback(path, markdownExtension);
+    return detectLargeTextFallback(path, fallbackType);
   }
 
   const text = await resolveOrUndetermined(async () =>
     decodeUtf8(await readFile(path)),
   );
-  return detectBoundedTextFallback(text, binary, markdownExtension);
+  if (text === null && isPlainTextFallback(fallbackType)) {
+    throw new UnsupportedSourceFileTypeError();
+  }
+  return detectBoundedTextFallback(text, binary, fallbackType);
 }
 
 function hasErrorTag(error: unknown): error is { _tag: unknown } {

@@ -144,7 +144,8 @@ function isDocumentFileType(value: string): value is DocumentFileType {
     value === "pdf" ||
     value === "markdown" ||
     value === "docx" ||
-    value === "odt"
+    value === "odt" ||
+    value === "txt"
   );
 }
 

@@ -19,13 +19,19 @@ describe("document file type inference", () => {
     expect(inferFileTypeFromPath("brief.docx")).toBe("docx");
     expect(inferFileTypeFromPath("draft.odt")).toBe("odt");
     expect(inferFileTypeFromPath("draft.fodt")).toBe("odt");
+    expect(inferFileTypeFromPath("notes.txt")).toBe("txt");
   });
 
-  test("builds chunker metadata for office document types", () => {
+  test("builds chunker metadata for non-PDF document types", () => {
     const config = { chunkSize: 512, chunkOverlap: 50 };
 
     expect(buildChunkerMetadata("docx", config).id).toContain("docx");
     expect(buildChunkerMetadata("odt", config).id).toContain("odt");
+    expect(buildChunkerMetadata("txt", config)).toMatchObject({
+      id: "txt-extractor:plain-context-v1",
+      version: 1,
+      unit: "chars",
+    });
   });
 
   test("rejects invalid chunking config when overlap is not smaller than chunk size", () => {
@@ -67,10 +73,11 @@ describe("chunk overlap helpers", () => {
 });
 
 describe("normalized text chunking", () => {
-  test("hard-splits oversized text and filters short trailing chunks", () => {
+  test("hard-splits oversized text and preserves short trailing chunks", () => {
     expect(chunkNormalizedText("x".repeat(65), 30, 0)).toEqual([
       "x".repeat(30),
       "x".repeat(30),
+      "x".repeat(5),
     ]);
   });
 });

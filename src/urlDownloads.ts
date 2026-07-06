@@ -89,6 +89,7 @@ const SUPPORTED_DOCUMENT_EXTENSIONS = [
   ".pdf",
   ".md",
   ".markdown",
+  ".txt",
   ".docx",
   ".odt",
   ".fodt",
@@ -100,6 +101,7 @@ const DOCUMENT_FILE_TYPES_BY_EXTENSION: Readonly<
   ".pdf": "pdf",
   ".md": "markdown",
   ".markdown": "markdown",
+  ".txt": "txt",
   ".docx": "docx",
   ".odt": "odt",
   ".fodt": "odt",
@@ -146,7 +148,7 @@ export function filenameFromURL(url: string): string {
 }
 
 function stripRecognizedDocumentExtension(filename: string): string {
-  return filename.replace(/\.(pdf|md|markdown|docx|odt|fodt)$/i, "");
+  return filename.replace(/\.(pdf|md|markdown|txt|docx|odt|fodt)$/i, "");
 }
 
 function extensionForDetectedType(
@@ -158,6 +160,7 @@ function extensionForDetectedType(
     const ext = extname(sourceName).toLowerCase();
     return ext === ".markdown" ? ".markdown" : ".md";
   }
+  if (fileType === "txt") return ".txt";
   if (fileType === "docx") return ".docx";
   return extname(sourceName).toLowerCase() === ".fodt" ? ".fodt" : ".odt";
 }
@@ -640,6 +643,10 @@ function provisionalDocumentTypeFromHeaders(
     return { detectedFileType: "markdown", hasTextPlainMime };
   }
 
+  if (extensionFileType === "txt" && !hasTextXmlMime) {
+    return { detectedFileType: "txt", hasTextPlainMime };
+  }
+
   if (
     contentType.includes(
       "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -661,10 +668,10 @@ function provisionalDocumentTypeFromHeaders(
 
 function detectTextPlainDocumentType(
   buffer: ArrayBuffer,
-): DocumentFileType | null {
+): DocumentFileType {
   const decoder = new TextDecoder("utf-8", { fatal: false });
   const preview = decoder.decode(buffer.slice(0, MARKDOWN_PEEK_SIZE));
-  return looksLikeMarkdown(preview) ? "markdown" : null;
+  return looksLikeMarkdown(preview) ? "markdown" : "txt";
 }
 
 function resolveProvisionalDownloadType(
@@ -677,7 +684,7 @@ function resolveProvisionalDownloadType(
     return headerResult.detectedFileType;
   }
   if (headerResult.hasTextPlainMime) {
-    return detectTextPlainDocumentType(buffer) ?? "pdf";
+    return detectTextPlainDocumentType(buffer);
   }
   return "pdf";
 }

@@ -1,5 +1,5 @@
 import { Effect } from "effect";
-import { assessDocChunker } from "../../chunking.js";
+import { assessDocChunker, CURRENT_CHUNKER } from "../../chunking.js";
 import { EmbeddingProvider } from "../../services/EmbeddingProvider.js";
 import type {
   DocumentWithSourceIdentity,
@@ -64,10 +64,7 @@ interface RechunkWarning {
 }
 
 const CHUNKER_SUMMARY = {
-  pdf: { id: "pdf-extractor:shared-context-v6", version: 6 },
-  markdown: { id: "markdown-extractor:shared-context-v3", version: 3 },
-  docx: { id: "office-extractor:docx-shared-context-v4", version: 4 },
-  odt: { id: "office-extractor:odt-shared-context-v3", version: 3 },
+  ...CURRENT_CHUNKER,
   unit: "chars",
 } as const;
 

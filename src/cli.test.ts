@@ -100,6 +100,10 @@ describe("filenameFromURL", () => {
     );
   });
 
+  test("preserves .txt extension", () => {
+    expect(filenameFromURL("https://example.com/notes.txt")).toBe("notes.txt");
+  });
+
   test("preserves office document extensions", () => {
     expect(filenameFromURL("https://example.com/brief.docx")).toBe(
       "brief.docx"
@@ -181,6 +185,23 @@ describe("getDownloadTargetPath", () => {
         "markdown"
       )
     ).toBe(join("tmp", "downloads", "guide.markdown"));
+  });
+
+  test("uses .txt for plain text downloads", () => {
+    expect(
+      getDownloadTargetPath(
+        "https://example.com/notes",
+        downloadsDir,
+        "txt"
+      )
+    ).toBe(join("tmp", "downloads", "notes.txt"));
+    expect(
+      getDownloadTargetPath(
+        "https://example.com/notes.txt",
+        downloadsDir,
+        "txt"
+      )
+    ).toBe(join("tmp", "downloads", "notes.txt"));
   });
 
   test("keeps office extensions when detected from URL downloads", () => {
@@ -534,6 +555,39 @@ describe("secure URL download options", () => {
       );
       expect(path).toMatch(/index\.html\.pdf$/);
       await expect(eventually(responseClosed, 1_000)).resolves.toBeUndefined();
+    } finally {
+      rmSync(downloadsDir, { recursive: true, force: true });
+      await waitForServerClose(server);
+    }
+  });
+
+  test("saves text/plain downloads as .txt", async () => {
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
+      res.end("Plain text note without markdown markers.");
+    });
+
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const downloadsDir = mkdtempSync(join(tmpdir(), "poink-url-downloads-"));
+    try {
+      const { port } = server.address() as AddressInfo;
+      const options = resolveURLDownloadOptions(Config.Default, {
+        "allow-private-network": true,
+        "download-timeout": "5s",
+      });
+
+      const path = await eventually(
+        Effect.runPromise(
+          downloadFile(
+            `http://127.0.0.1:${port}/notes`,
+            downloadsDir,
+            options,
+            "poink-test",
+          ),
+        ),
+        1_000,
+      );
+      expect(path).toMatch(/notes\.txt$/);
     } finally {
       rmSync(downloadsDir, { recursive: true, force: true });
       await waitForServerClose(server);

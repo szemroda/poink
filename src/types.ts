@@ -22,7 +22,7 @@ import { assertValidChunking } from "./chunking.js";
 /**
  * Represents a document in the library.
  */
-export type DocumentFileType = "pdf" | "markdown" | "docx" | "odt";
+export type DocumentFileType = "pdf" | "markdown" | "docx" | "odt" | "txt";
 
 export class Document extends Schema.Class<Document>("Document")({
   id: Schema.String,
@@ -33,7 +33,7 @@ export class Document extends Schema.Class<Document>("Document")({
   sizeBytes: Schema.Number,
   tags: Schema.Array(Schema.String),
   fileType: Schema.optionalWith(
-    Schema.Literal("pdf", "markdown", "docx", "odt"),
+    Schema.Literal("pdf", "markdown", "docx", "odt", "txt"),
     {
     default: () => "pdf" as const,
     },
@@ -907,6 +907,10 @@ const DetectedSourceTypeSchema = Schema.Union(
   Schema.Struct({
     sourceFormat: Schema.Literal("markdown-text"),
     fileType: Schema.Literal("markdown"),
+  }),
+  Schema.Struct({
+    sourceFormat: Schema.Literal("plain-text"),
+    fileType: Schema.Literal("txt"),
   }),
   Schema.Struct({
     sourceFormat: Schema.Literal("docx-package"),

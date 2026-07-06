@@ -31,6 +31,7 @@ import { EmbeddingProvider } from "./EmbeddingProvider.js";
 import { MarkdownExtractor } from "./MarkdownExtractor.js";
 import { PDFExtractor } from "./PDFExtractor.js";
 import { OfficeExtractor } from "./OfficeExtractor.js";
+import { TextExtractor } from "./TextExtractor.js";
 import { VisualEnrichment } from "./VisualEnrichment.js";
 import {
   SourceFileTypeDetector,
@@ -47,6 +48,7 @@ type EmbeddingProviderService = Context.Tag.Service<typeof EmbeddingProvider>;
 type MarkdownExtractorService = Context.Tag.Service<typeof MarkdownExtractor>;
 type PDFExtractorService = Context.Tag.Service<typeof PDFExtractor>;
 type OfficeExtractorService = Context.Tag.Service<typeof OfficeExtractor>;
+type TextExtractorService = Context.Tag.Service<typeof TextExtractor>;
 type VisualEnrichmentService = Context.Tag.Service<typeof VisualEnrichment>;
 type SourceFileTypeDetectorService = Context.Tag.Service<
   typeof SourceFileTypeDetector
@@ -115,12 +117,19 @@ function unusedOfficeExtractor(): OfficeExtractorService {
   };
 }
 
+function unusedTextExtractor(): TextExtractorService {
+  return {
+    process: () => Effect.die("Text extractor should not be used"),
+  };
+}
+
 function makeIngestionDependencies(services: {
   database: DatabaseService;
   embeddingProvider: EmbeddingProviderService;
   markdownExtractor: MarkdownExtractorService;
   pdfExtractor: PDFExtractorService;
   officeExtractor: OfficeExtractorService;
+  textExtractor?: TextExtractorService;
   visualEnrichment: VisualEnrichmentService;
   sourceFileTypeDetector?: SourceFileTypeDetectorService;
 }) {
@@ -136,6 +145,10 @@ function makeIngestionDependencies(services: {
     Layer.succeed(MarkdownExtractor, services.markdownExtractor),
     Layer.succeed(PDFExtractor, services.pdfExtractor),
     Layer.succeed(OfficeExtractor, services.officeExtractor),
+    Layer.succeed(
+      TextExtractor,
+      services.textExtractor ?? unusedTextExtractor(),
+    ),
     Layer.succeed(VisualEnrichment, services.visualEnrichment),
     sourceFileTypeDetector,
   );
@@ -178,6 +191,7 @@ function migrationExtractors(
   markdown: MarkdownExtractorService;
   pdf: PDFExtractorService;
   office: OfficeExtractorService;
+  text: TextExtractorService;
 } {
   return {
     markdown: {
@@ -212,6 +226,15 @@ function migrationExtractors(
         return Effect.succeed({
           pageCount: 3,
           chunks: [{ page: 1, chunkIndex: 0, content: sourceFormat }],
+        });
+      },
+    },
+    text: {
+      process: () => {
+        onProcessed("plain-text");
+        return Effect.succeed({
+          pageCount: 1,
+          chunks: [{ page: 1, chunkIndex: 0, content: "text" }],
         });
       },
     },
@@ -463,6 +486,93 @@ describe("DocumentIngestion.add", () => {
     expect(embeddedTexts[0]).toBe(persistedChunks[0].embeddingContent);
   });
 
+  test("ingests detected TXT files with txt chunker metadata", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "poink-add-txt-"));
+    tempDirs.push(dir);
+    const docPath = join(dir, "meeting-notes.txt");
+    writeFileSync(docPath, "Unique plain text phrase.", "utf8");
+
+    let processedByTextExtractor = false;
+    let persistedDoc: Document | undefined;
+    let persistedChunks: ReplacementChunk[] = [];
+    let embeddedTexts: string[] = [];
+
+    const database = makeDatabase({
+      replaceDocument: (doc, chunksArg) =>
+        Effect.sync(() => {
+          persistedDoc = doc;
+          persistedChunks = chunksArg;
+        }),
+    });
+
+    const embeddingProvider: EmbeddingProviderService = {
+      provider: "ollama",
+      checkHealth: () => Effect.void,
+      embed: () => Effect.succeed([1, 0, 0]),
+      embedBatch: (texts: string[]) =>
+        Effect.sync(() => {
+          embeddedTexts = texts;
+          return texts.map(() => [1, 0, 0]);
+        }),
+    };
+
+    const deps = makeIngestionDependencies({
+      database,
+      embeddingProvider,
+      markdownExtractor: {
+        extractFrontmatter: () => Effect.die("Markdown should not be used"),
+        extract: () => Effect.die("Markdown should not be used"),
+        process: () => Effect.die("Markdown should not be used"),
+      },
+      pdfExtractor: unusedPDFExtractor(),
+      officeExtractor: unusedOfficeExtractor(),
+      textExtractor: {
+        process: () => {
+          processedByTextExtractor = true;
+          return Effect.succeed({
+            pageCount: 1,
+            chunks: [
+              { page: 1, chunkIndex: 0, content: "Unique plain text phrase." },
+            ],
+          });
+        },
+      },
+      visualEnrichment: {
+        enrichDocument: () => Effect.succeed([]),
+      },
+    });
+
+    const program = Effect.gen(function* () {
+      const library = yield* DocumentIngestion;
+      return yield* library.add(docPath);
+    });
+
+    const doc = await Effect.runPromise(
+      program.pipe(
+        Effect.provide(
+          makeDocumentIngestion(Config.Default).pipe(Layer.provide(deps)),
+        ),
+      ),
+    );
+
+    expect(processedByTextExtractor).toBe(true);
+    expect(doc.title).toBe("meeting-notes");
+    expect(persistedDoc).toMatchObject({
+      fileType: "txt",
+      pageCount: 1,
+      title: "meeting-notes",
+    });
+    expect(persistedDoc?.metadata?.chunker).toMatchObject({
+      id: "txt-extractor:plain-context-v1",
+      version: 1,
+      unit: "chars",
+    });
+    expect(persistedChunks[0]?.embeddingContent).toContain(
+      "Document: meeting-notes",
+    );
+    expect(embeddedTexts[0]).toBe(persistedChunks[0]?.embeddingContent);
+  });
+
   test("appends visual chunks when visual enrichment is enabled", async () => {
     const dir = mkdtempSync(join(tmpdir(), "poink-visual-chunks-"));
     tempDirs.push(dir);
@@ -614,10 +724,11 @@ describe("DocumentIngestion.add", () => {
 });
 
 describe("DocumentIngestion.replace source type migration", () => {
-  const storedTypes = ["pdf", "markdown", "docx", "odt"] as const;
+  const storedTypes = ["pdf", "markdown", "docx", "odt", "txt"] as const;
   const detectedTypes = [
     { sourceFormat: "pdf", fileType: "pdf" },
     { sourceFormat: "markdown-text", fileType: "markdown" },
+    { sourceFormat: "plain-text", fileType: "txt" },
     { sourceFormat: "docx-package", fileType: "docx" },
     { sourceFormat: "odt-package", fileType: "odt" },
     { sourceFormat: "odt-flat-xml", fileType: "odt" },
@@ -658,6 +769,7 @@ describe("DocumentIngestion.replace source type migration", () => {
         markdownExtractor: extractors.markdown,
         pdfExtractor: extractors.pdf,
         officeExtractor: extractors.office,
+        textExtractor: extractors.text,
         visualEnrichment: {
           enrichDocument: () => Effect.succeed([]),
         },

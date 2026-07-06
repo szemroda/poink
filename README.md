@@ -1,10 +1,10 @@
 # poink
 
-Local-first **PDF, Markdown, DOCX, and ODT** knowledge base with semantic search and AI-powered enrichment.
+Local-first **PDF, Markdown, TXT, DOCX, and ODT** knowledge base with semantic search and AI-powered enrichment.
 
 ## Features
 
-- **PDF + Markdown + Office docs** - Index `.pdf`, `.md`, `.docx`, `.odt`, and `.fodt` files with the same workflow
+- **PDF + Markdown + TXT + Office docs** - Index `.pdf`, `.md`, `.txt`, `.docx`, `.odt`, and `.fodt` files with the same workflow
 - **Local-first by default** - Run with Ollama on your machine when you want no API costs
 - **External provider support** - Use AI Gateway, OpenAI, OpenAI Codex, OpenRouter, Google, or Anthropic for hosted models
 - **AI enrichment** - LLM extracts titles, summaries, tags, and concepts
@@ -165,6 +165,9 @@ poink add /path/to/document.pdf
 
 # Add a Markdown file
 poink add /path/to/notes.md
+
+# Add a plain text file
+poink add /path/to/notes.txt
 
 # Add Word or OpenDocument text files
 poink add /path/to/report.docx
@@ -363,6 +366,7 @@ run. When `--exclude` is passed, it is added to configured `ingest.exclude`.
 - `.pdf` - Research papers, books, documents
 - `.md` - Notes, documentation, Obsidian vaults, READMEs
 - `.markdown` - Markdown documents
+- `.txt` - Plain UTF-8 text documents
 - `.docx` - Microsoft Word / OOXML documents
 - `.odt` - OpenDocument text documents
 - `.fodt` - Flat XML OpenDocument text documents
@@ -816,7 +820,7 @@ SELECT COUNT(chunk_id) FROM embeddings  -- correct
 
 ## How It Works
 
-1. **Extract** - PDF text via `pdf-parse`, Markdown parsed directly, DOCX via `mammoth`, ODT/FODT via OpenDocument XML
+1. **Extract** - PDF text via `pdf-parse`, Markdown and plain TXT parsed directly, DOCX via `mammoth`, ODT/FODT via OpenDocument XML
 2. **Enrich** (optional) - LLM extracts metadata, matches taxonomy concepts
 3. **Chunk** - Text split into ~512 token chunks with overlap
 4. **Embed** - Each chunk embedded via the configured embedding provider

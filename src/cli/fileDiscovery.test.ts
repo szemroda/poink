@@ -47,7 +47,7 @@ describe("ingest file discovery", () => {
       expect(result.selection).toEqual({
         include: ["**/*.md"],
         exclude: ["**/archive/**"],
-        discovered: 3,
+        discovered: 4,
         included: 2,
         excluded: 1,
         selected: 1,

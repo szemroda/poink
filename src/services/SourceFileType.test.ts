@@ -15,7 +15,10 @@ import {
   SourceFileTypeDetector,
   SourceFileTypeDetectorLive,
 } from "./SourceFileType.js";
-import { MAX_ODT_XML_BYTES } from "./SourceFileLimits.js";
+import {
+  MAX_ODT_XML_BYTES,
+  MAX_TEXT_SOURCE_BYTES,
+} from "./SourceFileLimits.js";
 
 const tempDirs: string[] = [];
 
@@ -210,6 +213,79 @@ test("uses Markdown extension fallback only for valid UTF-8", async () => {
   const invalid = tempPath("invalid.md");
   writeFileSync(invalid, Buffer.from([0xc3, 0x28]));
   await expect(detectEither(invalid)).resolves.toMatchObject({
+    _tag: "Left",
+    left: { _tag: "SOURCE_FILE_TYPE_UNDETERMINED" },
+  });
+});
+
+test("detects valid plain text only for .txt extensions", async () => {
+  const text = tempPath("notes.TXT");
+  writeFileSync(text, "Plain text note\n\nSecond paragraph.", "utf8");
+  await expect(detect(text)).resolves.toEqual({
+    sourceFormat: "plain-text",
+    fileType: "txt",
+  });
+
+  const empty = tempPath("empty.txt");
+  writeFileSync(empty, "", "utf8");
+  await expect(detect(empty)).resolves.toEqual({
+    sourceFormat: "plain-text",
+    fileType: "txt",
+  });
+});
+
+test("rejects invalid UTF-8 and binary-looking .txt files", async () => {
+  const invalid = tempPath("invalid.txt");
+  writeFileSync(invalid, Buffer.from([0xc3, 0x28]));
+  await expect(detectEither(invalid)).resolves.toMatchObject({
+    _tag: "Left",
+    left: { _tag: "UNSUPPORTED_SOURCE_FILE_TYPE" },
+  });
+
+  const binary = tempPath("image.txt");
+  writeFileSync(
+    binary,
+    Buffer.from(
+      "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000049454e44ae426082",
+      "hex",
+    ),
+  );
+  await expect(detectEither(binary)).resolves.toMatchObject({
+    _tag: "Left",
+    left: { _tag: "UNSUPPORTED_SOURCE_FILE_TYPE" },
+  });
+
+  const nullBytes = tempPath("null-bytes.txt");
+  writeFileSync(nullBytes, "Header\u0000\u0000\u0000payload", "utf8");
+  await expect(detectEither(nullBytes)).resolves.toMatchObject({
+    _tag: "Left",
+    left: { _tag: "UNSUPPORTED_SOURCE_FILE_TYPE" },
+  });
+
+  const controlChars = tempPath("control-chars.txt");
+  writeFileSync(controlChars, "abc\u0001\u0002\u0003\u0004def", "utf8");
+  await expect(detectEither(controlChars)).resolves.toMatchObject({
+    _tag: "Left",
+    left: { _tag: "UNSUPPORTED_SOURCE_FILE_TYPE" },
+  });
+});
+
+test("rejects XML-looking .txt files that are not flat ODT", async () => {
+  const xml = tempPath("data.txt");
+  writeFileSync(xml, "<root><item>plain XML</item></root>", "utf8");
+
+  await expect(detectEither(xml)).resolves.toMatchObject({
+    _tag: "Left",
+    left: { _tag: "UNSUPPORTED_SOURCE_FILE_TYPE" },
+  });
+});
+
+test("does not accept .txt files above the TXT source limit", async () => {
+  const path = tempPath("oversized.txt");
+  writeFileSync(path, "Large text document\n", "utf8");
+  truncateSync(path, MAX_TEXT_SOURCE_BYTES + 1);
+
+  await expect(detectEither(path)).resolves.toMatchObject({
     _tag: "Left",
     left: { _tag: "SOURCE_FILE_TYPE_UNDETERMINED" },
   });
