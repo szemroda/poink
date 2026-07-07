@@ -71,6 +71,7 @@ const AGENT_HELP_TEXT = dedent`
   ## Options
     --help, -h
     --version, -v
+    --config <path>       use this config file for one command; place after command name
     --format <mode>       ${OUTPUT_FORMAT_HELP}
     --pretty
     --log-level <level>   silent (default), error, info, debug

@@ -18,5 +18,6 @@ metadata:
 
 - `poink capabilities --format json` provides the current agent-optimized CLI contract.
 - Use `--format json` when executing `poink` non-interactive commands yourself.
+- Use command-scoped `--config <path>` after the command name to select a config file for one invocation.
 - Prefer the default text output or `--format text` when suggesting commands for user to run.
 - The [poink README](https://github.com/szemroda/poink#readme) documents installation and usage.

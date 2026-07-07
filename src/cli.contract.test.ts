@@ -1156,6 +1156,10 @@ describe("CLI JSON Envelope Contract", () => {
       expect(result).toBeDefined();
       expect(typeof result.poinkVersion).toBe("string");
       expect(result.outputFormats).toEqual(["text", "json", "ndjson"]);
+      expect(result.globalFlags["--config"]).toMatchObject({
+        type: "path",
+        placement: "after-command",
+      });
       expect(result.globalFlags["--verbose"]).toBeDefined();
       expect(result.globalFlags["--quiet"]).toBeUndefined();
       expect(result.globalFlags["--no-hints"]).toBeUndefined();

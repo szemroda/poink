@@ -89,10 +89,11 @@ npx skills add https://github.com/szemroda/poink --skill poink-semantic-search
 
 ## CLI Reference
 
-### Output Format
+### Global Flags
 
 `poink` uses human-readable text by default. JSON and NDJSON remain available for scripts and agents.
 
+- `--config <path>` use a config file for one command; place it after the command name, for example `poink stats --config ./poink.json`
 - `--format text|json|ndjson` (default: `text`)
 - `--pretty` pretty-print JSON
 - `--verbose` include metadata, next actions, and command diagnostics in structured output
@@ -515,11 +516,14 @@ Custom taxonomy JSON files can be loaded programmatically through the library AP
 
 ### Config File
 
-poink stores configuration in `~/.config/poink/config.json` unless `POINK_CONFIG` is set.
+poink stores configuration in `~/.config/poink/config.json` unless `POINK_CONFIG` is set. Use command-scoped `--config <path>` to override it for one invocation.
 
 ```bash
 # Show all config
 poink config show
+
+# Show config from an explicit file
+poink config show --config ./poink.json
 
 # Get a specific value
 poink config get models.enrichment.provider

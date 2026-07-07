@@ -30,6 +30,11 @@ function buildCapabilitiesResult() {
     poinkVersion: VERSION,
     outputFormats: OUTPUT_FORMATS,
     globalFlags: {
+      "--config": {
+        type: "path",
+        placement: "after-command",
+        description: "Use this config file for one command.",
+      },
       "--format": OUTPUT_FORMATS,
       "--pretty": { type: "boolean", default: false },
       "--verbose": { type: "boolean", default: false },
