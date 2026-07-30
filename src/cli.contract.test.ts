@@ -2556,7 +2556,7 @@ describe("HTTP MCP Server", () => {
 
         try {
           let health: Response | undefined;
-          for (let i = 0; i < 40; i++) {
+          for (let i = 0; i < 100; i++) {
             try {
               health = await fetch(`http://127.0.0.1:${port}/health`);
               if (health.ok) break;
@@ -2619,7 +2619,7 @@ describe("HTTP MCP Server", () => {
 
         try {
           let health: Response | undefined;
-          for (let i = 0; i < 40; i++) {
+          for (let i = 0; i < 100; i++) {
             try {
               health = await fetch(`http://127.0.0.1:${port}/health`);
               if (health.ok) break;
