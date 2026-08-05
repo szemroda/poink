@@ -6,6 +6,12 @@ import { CLIError, type CliLibrary } from "../runner.js";
 import type { CliCommandOutput, CliConsole } from "./types.js";
 
 type DocRelocateLibrary = Pick<CliLibrary, "relocate">;
+type DocRelocateLibraryError = Effect.Effect.Error<
+  ReturnType<DocRelocateLibrary["relocate"]>
+>;
+export type DocRelocateCommandError =
+  | CLIError
+  | DocRelocateLibraryError;
 
 type DocRelocateResult = {
   docId: string;
@@ -64,7 +70,10 @@ function isTaggedError(error: unknown, tag: string): boolean {
   );
 }
 
-function toDocRelocateError(error: unknown, docId: string): unknown {
+function toDocRelocateError(
+  error: DocRelocateLibraryError,
+  docId: string,
+): DocRelocateCommandError {
   if (!isTaggedError(error, "DocumentNotFoundError")) return error;
   return new CLIError("NOT_FOUND", `Document not found: ${docId}`, { docId });
 }
@@ -82,7 +91,7 @@ export function runDocRelocateCommand(
   library: DocRelocateLibrary,
   Console: CliConsole,
   options: Record<string, unknown>,
-): Effect.Effect<CliCommandOutput<DocRelocateResult>, unknown, never> {
+): Effect.Effect<CliCommandOutput<DocRelocateResult>, DocRelocateCommandError> {
   return Effect.gen(function* () {
     const docId = args[2];
     const rawNewPath = args[3];

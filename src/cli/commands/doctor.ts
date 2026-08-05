@@ -21,9 +21,13 @@ import {
   type WALHealthResult,
 } from "../health.js";
 import {
-  runCommandWithContext,
+  CLIError,
+  describeCliFailure,
+  runCommandWithLibraryContext,
   type CommandExecutionContext,
+  type DiagnosticsCliLibrary,
   type GlobalCLIOptions,
+  type GlobalCLIOptionsWithLibrary,
 } from "../runner.js";
 
 type OpenAICodexRole = "enrichment" | "judge";
@@ -558,10 +562,10 @@ interface DoctorCommandOptions extends Record<string, unknown> {
 
 export function runDoctorCommand(
   args: string[],
-  globals: GlobalCLIOptions,
+  globals: GlobalCLIOptionsWithLibrary<DiagnosticsCliLibrary>,
   options: DoctorCommandOptions = {},
 ) {
-  return runCommandWithContext(args, globals, ({ Console, library, globals }) =>
+  return runCommandWithLibraryContext(args, globals, ({ Console, library, globals }) =>
     Effect.gen(function* () {
       if (args[0] === "check") {
         yield* library.checkReady();
@@ -577,9 +581,14 @@ export function runDoctorCommand(
       const deep = opts.deep === true;
       const appConfig = globals.config!;
       const config = LibraryConfig.fromConfig(appConfig);
-      const openAICodexStatus = yield* Effect.promise(() =>
-        checkConfiguredOpenAICodexRuntime(appConfig),
-      );
+      const openAICodexStatus = yield* Effect.tryPromise({
+        try: () => checkConfiguredOpenAICodexRuntime(appConfig),
+        catch: (error) =>
+          new CLIError(
+            "PROVIDER_CHECK_FAILED",
+            `OpenAI Codex provider check failed: ${describeCliFailure(error)}`,
+          ),
+      });
       const openAICodexCheck = buildOpenAICodexHealthCheck(openAICodexStatus);
       const dbPath = config.dbPath;
       const walPath = `${dbPath}-wal`;

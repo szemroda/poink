@@ -4,16 +4,17 @@ import { DocumentIntegrityRepository } from "../../services/StorageRepositories.
 import { runLibraryCommand } from "../commands/library.js";
 import { runRepairCommand } from "../commands/repair.js";
 import {
-  runCommandWithContext,
-  type CliLibrary,
-  type GlobalCLIOptions,
+  runCommandWithLibraryContext,
+  type CommandExecutionOutput,
+  type GlobalCLIOptionsWithLibrary,
+  type StoreCliLibrary,
 } from "../runner.js";
 import { buildStoreLayer } from "../runtime.js";
 import {
   commandHandlers,
+  type KnownFamilyError,
   runFamilyEffect,
   runResolvedFamilyCommand,
-  toFamilyLayer,
 } from "./shared.js";
 import type { FamilyRunner } from "./types.js";
 
@@ -31,10 +32,10 @@ const LIBRARY_COMMANDS = [
 
 function runStoreLibraryCommand(
   args: string[],
-  globals: GlobalCLIOptions,
+  globals: GlobalCLIOptionsWithLibrary<StoreCliLibrary>,
   options: Record<string, unknown>,
 ) {
-  return runCommandWithContext(
+  return runCommandWithLibraryContext(
     args,
     globals,
     ({ Console, format, library, globals: contextGlobals }) =>
@@ -50,7 +51,16 @@ function runStoreLibraryCommand(
   );
 }
 
-const COMMAND_HANDLERS = commandHandlers([
+type StoreCommandError =
+  | Effect.Effect.Error<ReturnType<typeof runRepairCommand>>
+  | Effect.Effect.Error<ReturnType<typeof runStoreLibraryCommand>>;
+
+const COMMAND_HANDLERS = commandHandlers<
+  CommandExecutionOutput,
+  KnownFamilyError<StoreCommandError>,
+  never,
+  GlobalCLIOptionsWithLibrary<StoreCliLibrary>
+>([
   ["repair", runRepairCommand],
   ...LIBRARY_COMMANDS.map(
     (command) => [command, runStoreLibraryCommand] as const,
@@ -72,7 +82,7 @@ export const runFamily: FamilyRunner = async ({
         ...store,
         getWithSourceIdentity: integrity.getDocumentWithSourceIdentity,
         listWithSourceIdentity: integrity.listDocumentsWithSourceIdentity,
-      } as CliLibrary,
+      } satisfies StoreCliLibrary,
     };
     return yield* runResolvedFamilyCommand(
       "store",
@@ -82,5 +92,8 @@ export const runFamily: FamilyRunner = async ({
       parsed.options,
     );
   });
-  return runFamilyEffect(program, globals, toFamilyLayer(layer));
+  return runFamilyEffect(
+    program.pipe(Effect.provide(layer), Effect.scoped),
+    globals,
+  );
 };

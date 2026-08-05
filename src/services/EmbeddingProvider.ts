@@ -6,7 +6,7 @@
  * embedding client.
  */
 import { embed, embedMany } from "ai";
-import { Effect, Context, Layer } from "effect";
+import { Context, Effect, Layer, Ref } from "effect";
 import {
   AnthropicError,
   type Config,
@@ -94,40 +94,33 @@ function toEmbeddingError(
   return new OllamaError({ reason: message });
 }
 
-function validateEmbedding(
+function embeddingValidationError(
   embedding: number[],
   expectedDimension: number | null,
   provider: SupportedProvider,
-): Effect.Effect<{ embedding: number[]; expectedDimension: number }, EmbeddingError> {
+): EmbeddingError | undefined {
   if (embedding.length === 0) {
-    return Effect.fail(
-      toEmbeddingError(provider, "Invalid embedding: dimension 0 (empty vector)"),
+    return toEmbeddingError(
+      provider,
+      "Invalid embedding: dimension 0 (empty vector)",
     );
   }
 
   const nextExpectedDimension = expectedDimension ?? embedding.length;
   if (embedding.length !== nextExpectedDimension) {
-    return Effect.fail(
-      toEmbeddingError(
-        provider,
-        `Invalid embedding: dimension ${embedding.length} (expected ${nextExpectedDimension})`,
-      ),
+    return toEmbeddingError(
+      provider,
+      `Invalid embedding: dimension ${embedding.length} (expected ${nextExpectedDimension})`,
     );
   }
 
   if (embedding.some((value) => !Number.isFinite(value))) {
-    return Effect.fail(
-      toEmbeddingError(
-        provider,
-        "Invalid embedding: contains non-finite values (NaN or Infinity)",
-      ),
+    return toEmbeddingError(
+      provider,
+      "Invalid embedding: contains non-finite values (NaN or Infinity)",
     );
   }
-
-  return Effect.succeed({
-    embedding,
-    expectedDimension: nextExpectedDimension,
-  });
+  return undefined;
 }
 
 /**
@@ -139,16 +132,61 @@ export function makeEmbeddingProvider(config: Config) {
     Effect.gen(function* () {
     const queryCacheSize = readQueryEmbedCacheSize();
     const queryEmbedCache = makeLruCache<number[]>(queryCacheSize);
-    let expectedDimension: number | null = null;
-    let resolvedCache: Awaited<
+    const expectedDimension = yield* Ref.make<number | null>(null);
+    type ResolvedEmbeddingModel = Awaited<
       ReturnType<typeof getConfiguredEmbeddingModel>
-    > | null = null;
+    >;
+    let resolvedPromise: Promise<ResolvedEmbeddingModel> | undefined;
 
     const getResolved = async () => {
-      if (resolvedCache) return resolvedCache;
-      resolvedCache = await getConfiguredEmbeddingModel(config);
-      return resolvedCache;
+      if (resolvedPromise) return resolvedPromise;
+      const pending = getConfiguredEmbeddingModel(config);
+      resolvedPromise = pending;
+      try {
+        return await pending;
+      } catch (error) {
+        if (resolvedPromise === pending) resolvedPromise = undefined;
+        throw error;
+      }
     };
+
+    const resolveModel = Effect.tryPromise({
+      try: getResolved,
+      catch: (error) =>
+        toEmbeddingError(
+          config.models.embedding.provider,
+          `Embedding model resolution failed: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        ),
+    });
+
+    const validateAndTrackDimension = (
+      embedding: number[],
+      provider: SupportedProvider,
+    ) =>
+      Ref.modify<
+        number | null,
+        | { readonly ok: true; readonly embedding: number[] }
+        | { readonly ok: false; readonly error: EmbeddingError }
+      >(expectedDimension, (current) => {
+        const error = embeddingValidationError(
+          embedding,
+          current,
+          provider,
+        );
+        if (error) {
+          return [{ ok: false as const, error }, current] as const;
+        }
+        return [
+          { ok: true as const, embedding },
+          current ?? embedding.length,
+        ] as const;
+      }).pipe(
+        Effect.flatMap((result) =>
+          result.ok ? Effect.succeed(result.embedding) : Effect.fail(result.error),
+        ),
+      );
 
     const runEmbed = (
       texts: string[],
@@ -159,7 +197,7 @@ export function makeEmbeddingProvider(config: Config) {
           | Awaited<ReturnType<typeof getConfiguredEmbeddingModel>>
           | undefined;
         const embeddings = yield* Effect.tryPromise({
-          try: async () => {
+          try: async (signal) => {
             resolved = await getResolved();
             if (texts.length === 0) return [];
 
@@ -167,7 +205,8 @@ export function makeEmbeddingProvider(config: Config) {
               const result = await embed({
                 model: resolved.model,
                 value: texts[0],
-                maxRetries: 3,
+                abortSignal: signal,
+                maxRetries: 0,
               });
               return [result.embedding];
             }
@@ -175,7 +214,8 @@ export function makeEmbeddingProvider(config: Config) {
             const result = await embedMany({
               model: resolved.model,
               values: texts,
-              maxRetries: 3,
+              abortSignal: signal,
+              maxRetries: 0,
               maxParallelCalls,
             });
             return result.embeddings;
@@ -187,21 +227,23 @@ export function makeEmbeddingProvider(config: Config) {
                 error instanceof Error ? error.message : String(error)
               }`,
             ),
-        });
+        }).pipe(
+          Effect.timeoutFail({
+            duration: "30 seconds",
+            onTimeout: () =>
+              toEmbeddingError(
+                resolved?.provider ?? config.models.embedding.provider,
+                "Embedding request timed out after 30 seconds",
+              ),
+          }),
+        );
 
         const provider = resolved?.provider ?? config.models.embedding.provider;
-        const validated: number[][] = [];
-        for (const embedding of embeddings) {
-          const result = yield* validateEmbedding(
-            embedding,
-            expectedDimension,
-            provider,
-          );
-          expectedDimension = result.expectedDimension;
-          validated.push(result.embedding);
-        }
-
-        return validated;
+        return yield* Effect.forEach(
+          embeddings,
+          (embedding) => validateAndTrackDimension(embedding, provider),
+          { concurrency: 1 },
+        );
       });
 
     const wrapQueryCache = (
@@ -210,7 +252,7 @@ export function makeEmbeddingProvider(config: Config) {
       if (queryCacheSize <= 0) return embedSingle;
       return (text: string) =>
         Effect.gen(function* () {
-          const resolved = yield* Effect.promise(getResolved);
+          const resolved = yield* resolveModel;
           const key = `${resolved.provider}:${resolved.modelId}:${text}`;
           const cached = queryEmbedCache.get(key);
           if (cached) return cached;

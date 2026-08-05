@@ -2,9 +2,9 @@ import { Effect } from "effect";
 import { EmbeddingProvider } from "../../services/EmbeddingProvider.js";
 import {
   CLIError,
-  runCommandWithContext,
+  runCommandWithLibraryContext,
   type CommandBodyOutput,
-  type GlobalCLIOptions,
+  type GlobalCLIOptionsWithLibrary,
 } from "../runner.js";
 
 interface ReindexCommandOptions extends Record<string, unknown> {
@@ -41,10 +41,10 @@ function createReindexOutput(
 
 export function runReindexCommand(
   args: string[],
-  globals: GlobalCLIOptions,
+  globals: GlobalCLIOptionsWithLibrary,
   options: ReindexCommandOptions = {},
 ) {
-  return runCommandWithContext(args, globals, ({ Console, library }) =>
+  return runCommandWithLibraryContext(args, globals, ({ Console, library }) =>
     Effect.gen(function* () {
       const cleanFirst = options.clean === true;
       const singleDocId = options.doc;

@@ -145,6 +145,7 @@ function expandSearchResults(
             }),
         ),
       ),
+    { concurrency: 8 },
   );
 }
 

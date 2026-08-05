@@ -1,4 +1,8 @@
 import type { CommanderError } from "commander";
+import {
+  boundaryErrorDetails,
+  errorTag,
+} from "../errors.js";
 import { CLIError, describeCliFailure } from "./runner.js";
 
 export { CLIError, describeCliFailure };
@@ -8,23 +12,20 @@ const INVALID_FLAG_ARGUMENT_PREFIXES = [
   "option '--log-level",
 ];
 
-function errorTag(error: unknown): string {
-  if (
-    typeof error !== "object" ||
-    error === null ||
-    !("_tag" in error) ||
-    typeof error._tag !== "string"
-  ) {
-    return "UNKNOWN_ERROR";
+export function coerceCliError(error: unknown): CLIError {
+  if (error instanceof CLIError) {
+    return new CLIError(
+      error.code,
+      error.message,
+      boundaryErrorDetails(error.details),
+    );
   }
 
-  return error._tag;
-}
-
-export function coerceCliError(error: unknown): CLIError {
-  if (error instanceof CLIError) return error;
-
-  return new CLIError(errorTag(error), describeCliFailure(error), error);
+  return new CLIError(
+    errorTag(error),
+    describeCliFailure(error),
+    boundaryErrorDetails(error),
+  );
 }
 
 function isInvalidFlagArgument(message: string): boolean {

@@ -9,9 +9,10 @@ import {
   type TaxonomyService as TaxonomyServiceApi,
 } from "../../services/TaxonomyService.js";
 import {
-  runCommandWithContext,
+  runCommandWithLibraryContext,
   type CliLibrary,
-  type GlobalCLIOptions,
+  type DiagnosticsCliLibrary,
+  type GlobalCLIOptionsWithLibrary,
 } from "../runner.js";
 import type { CliConsole } from "./types.js";
 
@@ -19,6 +20,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const taxonomyFile = join(__dirname, "..", "..", "data", "taxonomy.json");
 
 type InitCommandOptions = Record<string, unknown>;
+type InitializableLibrary = Pick<CliLibrary, "checkReady" | "stats">;
 
 function initializeLibraryDirectory(
   Console: CliConsole,
@@ -32,7 +34,10 @@ function initializeLibraryDirectory(
   return Console.log(`OK Created library directory: ${libraryPath}`);
 }
 
-function checkOllamaReadiness(Console: CliConsole, library: CliLibrary) {
+function checkOllamaReadiness(
+  Console: CliConsole,
+  library: InitializableLibrary,
+) {
   return Effect.gen(function* () {
     const result = yield* Effect.either(library.checkReady());
     if (result._tag === "Right") {
@@ -101,7 +106,7 @@ function logLibraryStatus(
 
 export function initializePoinkLibrary(
   Console: CliConsole,
-  library: CliLibrary,
+  library: InitializableLibrary,
   config: LibraryConfig,
 ) {
   return Effect.gen(function* () {
@@ -136,10 +141,10 @@ export function initializePoinkLibrary(
 
 export function runInitCommand(
   args: string[],
-  globals: GlobalCLIOptions,
+  globals: GlobalCLIOptionsWithLibrary<DiagnosticsCliLibrary>,
   options: InitCommandOptions = {},
 ) {
-  return runCommandWithContext(args, globals, ({ Console, library, globals }) =>
+  return runCommandWithLibraryContext(args, globals, ({ Console, library, globals }) =>
     Effect.gen(function* () {
       const result = yield* initializePoinkLibrary(
         Console,

@@ -9,6 +9,9 @@ import {
   parsePngWidth,
 } from "../../services/PageExtraction.js";
 import {
+  type StorageError,
+} from "../../services/StorageRepositories.js";
+import {
   SourceFileChangedError,
   SourceFileUnavailableError,
   SourceFileUnreadableError,
@@ -94,6 +97,11 @@ type ExtractionFailure =
   | SourceFileUnreadableError
   | SourceFileChangedError;
 
+export type PageExtractCommandError =
+  | CLIError
+  | StorageError
+  | ExtractionFailure;
+
 function extractionFailure(error: unknown): ExtractionFailure {
   if (
     error instanceof PageExtractionError ||
@@ -115,7 +123,7 @@ export function runPageExtractCommand(
   library: PageExtractLibrary,
   Console: CliConsole,
   rawOptions: Record<string, unknown>,
-): Effect.Effect<CliCommandOutput, unknown, never> {
+): Effect.Effect<CliCommandOutput, PageExtractCommandError> {
   return Effect.gen(function* () {
     const docId = args[2];
     const selectorValue = args[3];

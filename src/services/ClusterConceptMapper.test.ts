@@ -1,8 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { Effect } from "effect";
 import {
-  ClusterConceptMapperService,
-  ClusterConceptMapperImpl,
+  mapClusterToConcept,
   type ClusterInput,
   type ConceptInput,
   type MapOptions,
@@ -13,16 +11,11 @@ function mapCluster(
   concepts: ConceptInput[],
   options: MapOptions
 ) {
-  return Effect.runPromise(
-    Effect.gen(function* () {
-      const service = yield* ClusterConceptMapperService;
-      return yield* service.mapCluster(cluster, concepts, options);
-    }).pipe(Effect.provide(ClusterConceptMapperImpl.Default))
-  );
+  return mapClusterToConcept(cluster, concepts, options);
 }
 
-describe("ClusterConceptMapperService", () => {
-  it("should map cluster to existing concept when similarity is high", async () => {
+describe("mapClusterToConcept", () => {
+  it("should map cluster to existing concept when similarity is high", () => {
     const cluster = {
       id: 1,
       summary: "React hooks and state management",
@@ -38,13 +31,13 @@ describe("ClusterConceptMapperService", () => {
       { id: "programming/vue", label: "Vue.js", embedding: [0.9, 0.8, 0.7] },
     ];
 
-    const result = await mapCluster(cluster, concepts, { threshold: 0.8 });
+    const result = mapCluster(cluster, concepts, { threshold: 0.8 });
 
     expect(result.matched).toBe(true);
     expect(result.conceptId).toBe("programming/react-hooks");
   });
 
-  it("should suggest new concept when no match found", async () => {
+  it("should suggest new concept when no match found", () => {
     const cluster = {
       id: 2,
       summary: "Quantum computing algorithms",
@@ -55,14 +48,14 @@ describe("ClusterConceptMapperService", () => {
       { id: "programming/react", label: "React", embedding: [0.0, 1.0, 0.0] },
     ];
 
-    const result = await mapCluster(cluster, concepts, { threshold: 0.8 });
+    const result = mapCluster(cluster, concepts, { threshold: 0.8 });
 
     expect(result.matched).toBe(false);
     expect(result.suggestedLabel).toBe("Quantum computing algorithms");
   });
 
-  it("should include matches exactly at the threshold", async () => {
-    const result = await mapCluster(
+  it("should include matches exactly at the threshold", () => {
+    const result = mapCluster(
       {
         id: 3,
         summary: "Threshold match",
@@ -85,8 +78,8 @@ describe("ClusterConceptMapperService", () => {
     });
   });
 
-  it("should keep the first concept when similarities are equal", async () => {
-    const result = await mapCluster(
+  it("should keep the first concept when similarities are equal", () => {
+    const result = mapCluster(
       {
         id: 4,
         summary: "Equal matches",
@@ -102,9 +95,9 @@ describe("ClusterConceptMapperService", () => {
     expect(result.conceptId).toBe("first");
   });
 
-  it("should truncate suggested labels from the first sentence", async () => {
+  it("should truncate suggested labels from the first sentence", () => {
     const firstSentence = "A".repeat(60);
-    const result = await mapCluster(
+    const result = mapCluster(
       {
         id: 5,
         summary: `${firstSentence}. Ignored sentence`,

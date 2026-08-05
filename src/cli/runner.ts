@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { formatHintBlock } from "../agent/format.js";
 import { generateHints, generateNextActions } from "../agent/hints.js";
+import { describeError } from "../errors.js";
 import {
   DEFAULT_CLI_OUTPUT_FORMAT,
   OUTPUT_FORMATS,
@@ -18,6 +19,7 @@ import type { SemanticLibraryService } from "../services/SemanticLibrary.js";
 import type {
   DocumentWithSourceIdentity,
 } from "../services/StorageRepositories.js";
+import type { StorageError } from "../services/StorageRepositories.js";
 import {
   isOfficeDetectedSourceType,
   type DetectedSourceType,
@@ -54,11 +56,22 @@ export type CliLibrary = LibraryStoreService &
   DocumentIngestionService & {
     getWithSourceIdentity: (
       id: string,
-    ) => Effect.Effect<DocumentWithSourceIdentity | null, unknown>;
+    ) => Effect.Effect<DocumentWithSourceIdentity | null, StorageError>;
     listWithSourceIdentity: (
       tag?: string,
-    ) => Effect.Effect<DocumentWithSourceIdentity[], unknown>;
+    ) => Effect.Effect<DocumentWithSourceIdentity[], StorageError>;
   };
+
+type SourceIdentityLibrary = Pick<
+  CliLibrary,
+  "getWithSourceIdentity" | "listWithSourceIdentity"
+>;
+
+export type StoreCliLibrary = LibraryStoreService & SourceIdentityLibrary;
+export type SearchCliLibrary = LibraryStoreService & SemanticLibraryService;
+export type DiagnosticsCliLibrary = LibraryStoreService &
+  Pick<DocumentIngestionService, "checkReady"> &
+  SourceIdentityLibrary;
 
 export class CLIError extends Error {
   readonly _tag = "CLIError";
@@ -72,37 +85,38 @@ export class CLIError extends Error {
 }
 
 export function describeCliFailure(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  if (
-    typeof error === "object" &&
-    error !== null &&
-    "message" in error &&
-    typeof error.message === "string"
-  ) {
-    return error.message;
-  }
-  return String(error);
+  return describeError(error);
 }
 
-export type GlobalCLIOptions = {
+export type GlobalCLIOptions<
+  L extends Pick<CliLibrary, "stats"> = CliLibrary,
+> = {
   format: OutputFormat;
   configuredDefaultFormat: OutputFormat;
   pretty: boolean;
   verbose: boolean;
   logLevel: LogLevel;
+  signal?: AbortSignal;
   timing?: InvocationTiming;
   config?: Config;
-  library?: CliLibrary;
+  library?: L;
 };
 
-export type CommandExecutionContext = {
+export type GlobalCLIOptionsWithLibrary<
+  L extends Pick<CliLibrary, "stats"> = CliLibrary,
+> = GlobalCLIOptions<L> & {
+  library: L;
+};
+
+export type BaseCommandExecutionContext<
+  L extends Pick<CliLibrary, "stats"> = CliLibrary,
+> = {
   args: string[];
   options: Record<string, unknown>;
-  globals: GlobalCLIOptions;
+  globals: GlobalCLIOptions<L>;
   command: string;
   format: OutputFormat;
   Console: CliConsole;
-  library: CliLibrary;
   getLoadedLibraryStats: () => Effect.Effect<
     | {
         _tag: "Right";
@@ -117,36 +131,40 @@ export type CommandExecutionContext = {
   >;
 };
 
+export type CommandExecutionContext<
+  L extends Pick<CliLibrary, "stats"> = CliLibrary,
+> = Omit<BaseCommandExecutionContext<L>, "globals"> & {
+  globals: GlobalCLIOptionsWithLibrary<L>;
+  library: L;
+};
+
 export type CommandBodyOutput = CliCommandOutput & {
   command?: string;
 };
 
-function unavailableLibrary(): CliLibrary {
-  return new Proxy({} as CliLibrary, {
-    get(_target, property) {
-      return () =>
-        Effect.die(
-          new Error(
-            `Command family did not provide library operation ${String(property)}`,
-          ),
-        );
-    },
-  });
-}
+export type CommandExecutionOutput = {
+  command: string;
+  result: unknown;
+  agentResult: CommandBodyOutput["agentResult"];
+  nextActions?: NextAction[];
+};
 
-export function runCommandWithContext(
+export function runCommandWithContext<
+  L extends Pick<CliLibrary, "stats">,
+  E,
+  R,
+>(
   args: string[],
-  globals: GlobalCLIOptions,
+  globals: GlobalCLIOptions<L>,
   execute: (
-    context: CommandExecutionContext,
-  ) => Effect.Effect<CommandBodyOutput, unknown, unknown>,
+    context: BaseCommandExecutionContext<L>,
+  ) => Effect.Effect<CommandBodyOutput, E, R>,
   options: Record<string, unknown> = {},
-) {
+): Effect.Effect<CommandExecutionOutput, E, R> {
   return Effect.gen(function* () {
     const { format, verbose } = globals;
     globals.timing?.startCommand();
     const command = args[0] ?? "cli";
-    const library = globals.library ?? unavailableLibrary();
     const Console = {
       log: (message: string) =>
         format === "text" ? EffectConsole.log(message) : Effect.void,
@@ -154,19 +172,20 @@ export function runCommandWithContext(
         format === "text" ? EffectConsole.error(message) : Effect.void,
     };
 
-    const output = yield* execute({
+    const context: BaseCommandExecutionContext<L> = {
       args,
       options,
       globals,
       command,
       format,
       Console,
-      library,
       getLoadedLibraryStats: () =>
         globals.library
           ? Effect.either(globals.library.stats())
           : Effect.succeed({ _tag: "Left" as const }),
-    }).pipe(
+    };
+
+    const output = yield* execute(context).pipe(
       Effect.ensuring(
         Effect.sync(() => {
           globals.timing?.finishCommand();
@@ -200,6 +219,31 @@ export function runCommandWithContext(
       nextActions,
     };
   });
+}
+
+export function runCommandWithLibraryContext<
+  L extends Pick<CliLibrary, "stats">,
+  E,
+  R,
+>(
+  args: string[],
+  globals: GlobalCLIOptionsWithLibrary<L>,
+  execute: (
+    context: CommandExecutionContext<L>,
+  ) => Effect.Effect<CommandBodyOutput, E, R>,
+  options: Record<string, unknown> = {},
+): Effect.Effect<CommandExecutionOutput, E, R> {
+  return runCommandWithContext(
+    args,
+    globals,
+    (context) =>
+      execute({
+        ...context,
+        globals,
+        library: globals.library,
+      }),
+    options,
+  );
 }
 
 export function splitPositionalsAndFlags(args: string[]): {
@@ -258,15 +302,15 @@ export function extractEnrichmentPreview(
     content.length > ENRICHMENT_PREVIEW_MAX_CHARS
       ? content.slice(0, ENRICHMENT_PREVIEW_MAX_CHARS)
       : content;
+  const noPreview = Effect.sync((): string | undefined => undefined);
   const { detected } = options;
   if (detected.fileType === "markdown" || detected.fileType === "txt") {
-    return Effect.either(Effect.promise(() => readFileText(path))).pipe(
-      Effect.map((result) =>
-        result._tag === "Right" ? trim(result.right) : undefined,
-      ),
+    return Effect.tryPromise(() => readFileText(path)).pipe(
+      Effect.map(trim),
+      Effect.catchAll(() => noPreview),
     );
   }
-  if (!options.enrich) return Effect.as(Effect.void, undefined);
+  if (!options.enrich) return noPreview;
   if (detected.fileType === "pdf") {
     return Effect.either(options.pdfExtractor.extract(path)).pipe(
       Effect.map((result) =>
@@ -328,37 +372,50 @@ export function renderConceptTree(
   return lines;
 }
 
-export async function buildTreeStructure(
+export function buildTreeStructure(
   taxonomy: TaxonomyService,
   rootId?: string,
-): Promise<TaxonomyTreeNode[]> {
-  const concepts = await Effect.runPromise(taxonomy.listConcepts());
-  const conceptMap = new Map(concepts.map((concept) => [concept.id, concept]));
-  const childrenMap = new Map<string, string[]>();
-  const roots: string[] = [];
-  for (const concept of concepts) {
-    const broaders = await Effect.runPromise(taxonomy.getBroader(concept.id));
-    if (broaders.length === 0) roots.push(concept.id);
-    for (const broader of broaders) {
-      const children = childrenMap.get(broader.id) ?? [];
-      children.push(concept.id);
-      childrenMap.set(broader.id, children);
+) {
+  return Effect.gen(function* () {
+    const concepts = yield* taxonomy.listConcepts();
+    const broaderEntries = yield* Effect.forEach(
+      concepts,
+      (concept) =>
+        taxonomy.getBroader(concept.id).pipe(
+          Effect.map((broaders) => [concept.id, broaders] as const),
+        ),
+      { concurrency: 8 },
+    );
+    const conceptMap = new Map(
+      concepts.map((concept) => [concept.id, concept]),
+    );
+    const childrenMap = new Map<string, string[]>();
+    const roots: string[] = [];
+
+    for (const [conceptId, broaders] of broaderEntries) {
+      if (broaders.length === 0) roots.push(conceptId);
+      for (const broader of broaders) {
+        const children = childrenMap.get(broader.id) ?? [];
+        children.push(conceptId);
+        childrenMap.set(broader.id, children);
+      }
     }
-  }
-  const buildNode = (id: string): TaxonomyTreeNode | null => {
-    const concept = conceptMap.get(id);
-    if (!concept) return null;
-    return {
-      concept,
-      children: (childrenMap.get(id) ?? [])
-        .map(buildNode)
-        .filter((node): node is TaxonomyTreeNode => node !== null),
+
+    const buildNode = (id: string): TaxonomyTreeNode | null => {
+      const concept = conceptMap.get(id);
+      if (!concept) return null;
+      return {
+        concept,
+        children: (childrenMap.get(id) ?? [])
+          .map(buildNode)
+          .filter((node): node is TaxonomyTreeNode => node !== null),
+      };
     };
-  };
-  const ids = rootId ? [rootId] : roots;
-  return ids
-    .map(buildNode)
-    .filter((node): node is TaxonomyTreeNode => node !== null);
+    const ids = rootId ? [rootId] : roots;
+    return ids
+      .map(buildNode)
+      .filter((node): node is TaxonomyTreeNode => node !== null);
+  });
 }
 
 export function resolveConfiguredDefaultFormat(config: Config): OutputFormat {

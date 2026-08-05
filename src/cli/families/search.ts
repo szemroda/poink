@@ -1,18 +1,35 @@
 import { Effect } from "effect";
 import { LibraryStore } from "../../services/LibraryStore.js";
 import { SemanticLibrary } from "../../services/SemanticLibrary.js";
+import { EmbeddingProvider } from "../../services/EmbeddingProvider.js";
+import { TaxonomyService } from "../../services/TaxonomyService.js";
 import { runSearchCommand } from "../commands/search.js";
 import { runTaxonomyCommand } from "../commands/taxonomy.js";
-import { type CliLibrary } from "../runner.js";
+import {
+  type CommandExecutionOutput,
+  type GlobalCLIOptionsWithLibrary,
+  type SearchCliLibrary,
+} from "../runner.js";
 import { buildSearchLayer } from "../runtime.js";
 import {
   commandHandlers,
+  type KnownFamilyError,
   runFamilyEffect,
   runResolvedFamilyCommand,
 } from "./shared.js";
 import type { FamilyRunner } from "./types.js";
 
-const COMMAND_HANDLERS = commandHandlers([
+type SearchServices = EmbeddingProvider | TaxonomyService;
+type SearchCommandError =
+  | Effect.Effect.Error<ReturnType<typeof runSearchCommand>>
+  | Effect.Effect.Error<ReturnType<typeof runTaxonomyCommand>>;
+
+const COMMAND_HANDLERS = commandHandlers<
+  CommandExecutionOutput,
+  KnownFamilyError<SearchCommandError>,
+  SearchServices,
+  GlobalCLIOptionsWithLibrary<SearchCliLibrary>
+>([
   ["search", runSearchCommand],
   ["search-pack", runSearchCommand],
   ["taxonomy", runTaxonomyCommand],
@@ -29,7 +46,10 @@ export const runFamily: FamilyRunner = async ({
     const semantic = yield* SemanticLibrary;
     const commandGlobals = {
       ...globals,
-      library: { ...store, ...semantic } as CliLibrary,
+      library: {
+        ...store,
+        ...semantic,
+      } satisfies SearchCliLibrary,
     };
     return yield* runResolvedFamilyCommand(
       "search",

@@ -1,19 +1,34 @@
 import { Effect } from "effect";
 import { EmbeddingProvider } from "../../services/EmbeddingProvider.js";
 import { LibraryStore } from "../../services/LibraryStore.js";
+import { TaxonomyService } from "../../services/TaxonomyService.js";
 import { DocumentIntegrityRepository } from "../../services/StorageRepositories.js";
 import { runDoctorCommand } from "../commands/doctor.js";
 import { runInitCommand } from "../commands/init.js";
-import { type CliLibrary } from "../runner.js";
+import {
+  type CommandExecutionOutput,
+  type DiagnosticsCliLibrary,
+  type GlobalCLIOptionsWithLibrary,
+} from "../runner.js";
 import { buildDiagnosticsLayer } from "../runtime.js";
 import {
   commandHandlers,
+  type KnownFamilyError,
   runFamilyEffect,
   runResolvedFamilyCommand,
 } from "./shared.js";
 import type { FamilyRunner } from "./types.js";
 
-const COMMAND_HANDLERS = commandHandlers([
+type DiagnosticsCommandError =
+  | Effect.Effect.Error<ReturnType<typeof runDoctorCommand>>
+  | Effect.Effect.Error<ReturnType<typeof runInitCommand>>;
+
+const COMMAND_HANDLERS = commandHandlers<
+  CommandExecutionOutput,
+  KnownFamilyError<DiagnosticsCommandError>,
+  TaxonomyService,
+  GlobalCLIOptionsWithLibrary<DiagnosticsCliLibrary>
+>([
   ["doctor", runDoctorCommand],
   ["check", runDoctorCommand],
   ["init", runInitCommand],
@@ -36,7 +51,7 @@ export const runFamily: FamilyRunner = async ({
         checkReady: () => embedding.checkHealth(),
         getWithSourceIdentity: integrity.getDocumentWithSourceIdentity,
         listWithSourceIdentity: integrity.listDocumentsWithSourceIdentity,
-      } as CliLibrary,
+      } satisfies DiagnosticsCliLibrary,
     };
 
     return yield* runResolvedFamilyCommand(

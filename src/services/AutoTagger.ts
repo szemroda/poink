@@ -614,7 +614,8 @@ function describeEnrichmentCause(error: unknown): string {
 async function llmJudgeDuplicate(
   config: Config,
   proposed: ProposedConcept,
-  existing: { id: string; prefLabel: string; definition?: string | null }
+  existing: { id: string; prefLabel: string; definition?: string | null },
+  abortSignal: AbortSignal,
 ): Promise<boolean> {
   const resolved = await getConfiguredLanguageModel(config, "judge");
 
@@ -640,6 +641,8 @@ async function llmJudgeDuplicate(
   const result = await generateText({
     model: resolved.model,
     ...providerOptionsInput(resolved),
+    abortSignal,
+    maxRetries: 0,
     prompt,
   });
   const answer = result.text.trim().toUpperCase();
@@ -684,14 +687,18 @@ function autoAcceptProposals(
 
       if (similar.length > 0) {
         // Use LLM to judge if it's actually a duplicate
-        const isDuplicate = yield* Effect.tryPromise({
-          try: () => llmJudgeDuplicate(config, proposal, similar[0]),
-          catch: (error) =>
-            new EnrichmentError(
-              `Duplicate check failed: ${describeEnrichmentCause(error)}`,
-              error,
-            ),
-        });
+        const isDuplicate = yield* withEnrichmentTimeout(
+          Effect.tryPromise({
+            try: (signal) =>
+              llmJudgeDuplicate(config, proposal, similar[0], signal),
+            catch: (error) =>
+              new EnrichmentError(
+                `Duplicate check failed: ${describeEnrichmentCause(error)}`,
+                error,
+              ),
+          }),
+          "Duplicate check",
+        );
 
         if (isDuplicate) {
           yield* Effect.logDebug(
@@ -782,7 +789,8 @@ async function enrichWithLLM(
   content: string,
   provider: LLMProvider,
   availableConcepts: TaxonomyConcept[] = [],
-  model?: string
+  model?: string,
+  abortSignal?: AbortSignal,
 ): Promise<Omit<EnrichmentResult, "provider" | "confidence">> {
   const resolvedModel = await resolveLanguageModel(
     config,
@@ -797,6 +805,8 @@ async function enrichWithLLM(
     const { output } = await generateText({
       model: resolvedModel.model,
       ...providerOptionsInput(resolvedModel),
+      abortSignal,
+      maxRetries: 0,
       output: Output.object({ schema: EnrichmentSchema }),
       prompt: dedent`
         Analyze this document and extract metadata for a personal knowledge library.
@@ -843,6 +853,8 @@ async function enrichWithLLM(
   const { text } = await generateText({
     model: resolvedModel.model,
     ...providerOptionsInput(resolvedModel),
+    abortSignal,
+    maxRetries: 0,
     prompt: dedent`
       <role>You are a librarian cataloging documents for a personal knowledge library.</role>
 
@@ -1002,7 +1014,8 @@ async function tagWithLLM(
   filename: string,
   content: string,
   provider: LLMProvider,
-  model?: string
+  model?: string,
+  abortSignal?: AbortSignal,
 ): Promise<{ tags: string[]; category?: string; author?: string }> {
   const resolvedModel = await resolveLanguageModel(
     config,
@@ -1016,6 +1029,8 @@ async function tagWithLLM(
     const { output } = await generateText({
       model: resolvedModel.model,
       ...providerOptionsInput(resolvedModel),
+      abortSignal,
+      maxRetries: 0,
       output: Output.object({ schema: TagSchema }),
       prompt: dedent`
         Generate tags for this document.
@@ -1038,6 +1053,8 @@ async function tagWithLLM(
   const { text } = await generateText({
     model: resolvedModel.model,
     ...providerOptionsInput(resolvedModel),
+    abortSignal,
+    maxRetries: 0,
     prompt: dedent`
       Generate tags for this document. Return ONLY a JSON object.
 
@@ -1084,6 +1101,18 @@ export class EnrichmentError {
   }
 }
 
+const withEnrichmentTimeout = <A>(
+  effect: Effect.Effect<A, EnrichmentError>,
+  operation: string,
+): Effect.Effect<A, EnrichmentError> =>
+  effect.pipe(
+    Effect.timeoutFail({
+      duration: "60 seconds",
+      onTimeout: () =>
+        new EnrichmentError(`${operation} timed out after 60 seconds`),
+    }),
+  );
+
 /**
  * AutoTagger service interface
  *
@@ -1101,7 +1130,7 @@ export interface AutoTagger {
   ) => Effect.Effect<
     EnrichmentResult,
     EnrichmentError,
-    TaxonomyService | EmbeddingProvider
+    never
   >;
 
   /**
@@ -1118,8 +1147,7 @@ export interface AutoTagger {
     proposals: ProposedConcept[],
   ) => Effect.Effect<
     { accepted: number; rejected: number },
-    EnrichmentError,
-    TaxonomyService | EmbeddingProvider
+    EnrichmentError
   >;
 }
 
@@ -1133,6 +1161,20 @@ export function makeAutoTagger(config: Config) {
   return Layer.effect(
     AutoTagger,
     Effect.gen(function* () {
+      const taxonomy = yield* TaxonomyService;
+      const embeddingProvider = yield* EmbeddingProvider;
+      const provideDependencies = <A, E>(
+        effect: Effect.Effect<
+          A,
+          E,
+          TaxonomyService | EmbeddingProvider
+        >,
+      ): Effect.Effect<A, E> =>
+        effect.pipe(
+          Effect.provideService(TaxonomyService, taxonomy),
+          Effect.provideService(EmbeddingProvider, embeddingProvider),
+        );
+
       return AutoTagger.of({
       enrich: (
         filePath: string,
@@ -1163,7 +1205,7 @@ export function makeAutoTagger(config: Config) {
           }
 
           const ragContextResult = yield* Effect.either(
-            extractRAGContext(content)
+            provideDependencies(extractRAGContext(content)),
           );
           const ragConcepts =
             ragContextResult._tag === "Right" ? ragContextResult.right : [];
@@ -1186,22 +1228,26 @@ export function makeAutoTagger(config: Config) {
           const provider = opts.provider || config.models.enrichment.provider;
           const model = opts.model || config.models.enrichment.model;
 
-          const result = yield* Effect.tryPromise({
-            try: () =>
-              enrichWithLLM(
-                config,
-                filename,
-                content,
-                provider,
-                conceptsForPrompt,
-                model
-              ),
-            catch: (error) =>
-              new EnrichmentError(
-                `Enrichment failed: ${describeLanguageModelError(error)}`,
-                error
-              ),
-          });
+          const result = yield* withEnrichmentTimeout(
+            Effect.tryPromise({
+              try: (signal) =>
+                enrichWithLLM(
+                  config,
+                  filename,
+                  content,
+                  provider,
+                  conceptsForPrompt,
+                  model,
+                  signal,
+                ),
+              catch: (error) =>
+                new EnrichmentError(
+                  `Enrichment failed: ${describeLanguageModelError(error)}`,
+                  error,
+                ),
+            }),
+            "Enrichment",
+          );
 
           return {
             ...result,
@@ -1211,7 +1257,7 @@ export function makeAutoTagger(config: Config) {
         }),
 
       acceptProposals: (proposals: ProposedConcept[]) =>
-        autoAcceptProposals(config, proposals),
+        provideDependencies(autoAcceptProposals(config, proposals)),
 
       generateTags: (
         filePath: string,
@@ -1235,15 +1281,25 @@ export function makeAutoTagger(config: Config) {
             const provider = opts.provider || config.models.enrichment.provider;
             const model = opts.model || config.models.enrichment.model;
 
-            const llmResult = yield* Effect.tryPromise({
-              try: () =>
-                tagWithLLM(config, filename, content, provider, model),
-              catch: (error) =>
-                new EnrichmentError(
-                  `LLM tagging failed: ${describeLanguageModelError(error)}`,
-                  error
-                ),
-            });
+            const llmResult = yield* withEnrichmentTimeout(
+              Effect.tryPromise({
+                try: (signal) =>
+                  tagWithLLM(
+                    config,
+                    filename,
+                    content,
+                    provider,
+                    model,
+                    signal,
+                  ),
+                catch: (error) =>
+                  new EnrichmentError(
+                    `LLM tagging failed: ${describeLanguageModelError(error)}`,
+                    error,
+                  ),
+              }),
+              "LLM tagging",
+            );
 
             llmTags = llmResult.tags;
             category = llmResult.category;

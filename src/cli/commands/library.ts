@@ -1,10 +1,16 @@
 import { Effect } from "effect";
 import type { OutputFormat } from "../../agent/protocol.js";
 import type { Document } from "../../types.js";
-import { CLIError, type CliLibrary } from "../runner.js";
+import { CLIError, type StoreCliLibrary } from "../runner.js";
 import type { CliCommandOutput, CliConsole } from "./types.js";
-import { runPageExtractCommand } from "./pageExtract.js";
-import { runDocRelocateCommand } from "./docRelocate.js";
+import {
+  runPageExtractCommand,
+  type PageExtractCommandError,
+} from "./pageExtract.js";
+import {
+  runDocRelocateCommand,
+  type DocRelocateCommandError,
+} from "./docRelocate.js";
 
 export type DocumentSummary = Pick<
   Document,
@@ -15,15 +21,27 @@ type LibraryCommandContext = {
   args: string[];
   command: string;
   format: OutputFormat;
-  library: CliLibrary;
+  library: StoreCliLibrary;
   Console: CliConsole;
   verbose: boolean;
   options: Record<string, unknown>;
 };
 
+type EffectMethodError<T> = T extends (
+  ...args: infer _Args
+) => Effect.Effect<unknown, infer E, unknown>
+  ? E
+  : never;
+
+export type LibraryCommandError =
+  | CLIError
+  | DocRelocateCommandError
+  | PageExtractCommandError
+  | EffectMethodError<StoreCliLibrary[keyof StoreCliLibrary]>;
+
 type LibraryCommandHandler = (
   context: LibraryCommandContext,
-) => Effect.Effect<CliCommandOutput, unknown, unknown>;
+) => Effect.Effect<CliCommandOutput, LibraryCommandError>;
 
 export function toDocumentSummary(doc: Document): DocumentSummary {
   return {
@@ -439,7 +457,7 @@ const commandHandlers: Readonly<
 export function runLibraryCommand(
   args: string[],
   format: OutputFormat,
-  library: CliLibrary,
+  library: StoreCliLibrary,
   Console: CliConsole,
   verbose = false,
   options: Record<string, unknown> = {},

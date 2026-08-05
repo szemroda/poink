@@ -5,7 +5,7 @@
  * Supports frontmatter extraction via gray-matter.
  */
 
-import { Context, Effect, Layer, Schema } from "effect";
+import { Context, Effect, Layer } from "effect";
 import { existsSync, readFileSync } from "node:fs";
 import { unified } from "unified";
 import remarkParse from "remark-parse";
@@ -20,21 +20,16 @@ import {
   preprocessLargeMarkdownTables,
 } from "../chunking.js";
 import { resolveUserPath } from "../pathUtils.js";
+import {
+  MarkdownExtractionError,
+  MarkdownNotFoundError,
+} from "../errors.js";
 import { LibraryConfig } from "../types.js";
 
-// ============================================================================
-// Custom Error Types
-// ============================================================================
-
-export class MarkdownNotFoundError extends Schema.TaggedError<MarkdownNotFoundError>()(
-  "MarkdownNotFoundError",
-  { path: Schema.String },
-) {}
-
-export class MarkdownExtractionError extends Schema.TaggedError<MarkdownExtractionError>()(
-  "MarkdownExtractionError",
-  { path: Schema.String, reason: Schema.String },
-) {}
+export {
+  MarkdownExtractionError,
+  MarkdownNotFoundError,
+} from "../errors.js";
 
 // ============================================================================
 // Types

@@ -3,6 +3,10 @@
  */
 
 import { Schema } from "effect";
+export {
+  MarkdownExtractionError,
+  MarkdownNotFoundError,
+} from "./errors.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
 import { homedir } from "os";
@@ -955,16 +959,6 @@ export class PDFNotFoundError extends Schema.TaggedError<PDFNotFoundError>()(
 
 export class PDFExtractionError extends Schema.TaggedError<PDFExtractionError>()(
   "PDFExtractionError",
-  { path: Schema.String, reason: Schema.String }
-) {}
-
-export class MarkdownNotFoundError extends Schema.TaggedError<MarkdownNotFoundError>()(
-  "MarkdownNotFoundError",
-  { path: Schema.String }
-) {}
-
-export class MarkdownExtractionError extends Schema.TaggedError<MarkdownExtractionError>()(
-  "MarkdownExtractionError",
   { path: Schema.String, reason: Schema.String }
 ) {}
 

@@ -14,19 +14,37 @@ import {
   Document,
   DocumentExistsError,
   DocumentNotFoundError,
+  PDFExtractionError,
+  PDFNotFoundError,
   expandHomePath,
   LibraryConfig,
   resolveVisualsConfig,
 } from "../types.js";
 import { DEFAULT_QUEUE_CONFIG } from "./EmbeddingQueue.js";
-import { EmbeddingProvider } from "./EmbeddingProvider.js";
+import {
+  EmbeddingProvider,
+  type EmbeddingError,
+} from "./EmbeddingProvider.js";
 import { chunkText, PDFExtractor } from "./PDFExtractor.js";
-import { MarkdownExtractor } from "./MarkdownExtractor.js";
-import { OfficeExtractor } from "./OfficeExtractor.js";
-import { TextExtractor } from "./TextExtractor.js";
+import {
+  MarkdownExtractor,
+  type MarkdownExtractionError,
+  type MarkdownNotFoundError,
+} from "./MarkdownExtractor.js";
+import {
+  OfficeExtractor,
+  type OfficeExtractionError,
+  type OfficeNotFoundError,
+} from "./OfficeExtractor.js";
+import {
+  TextExtractor,
+  type TextExtractionError,
+  type TextNotFoundError,
+} from "./TextExtractor.js";
 import {
   VisualEnrichment,
   type VisualDescriptionChunk,
+  type VisualEnrichmentError,
   type VisualsMode,
 } from "./VisualEnrichment.js";
 import {
@@ -35,17 +53,23 @@ import {
   LibraryMaintenance,
   type ChunkInput,
   type EmbeddingInput,
+  type StorageError,
 } from "./StorageRepositories.js";
 import { buildChunkerMetadata } from "../chunking.js";
 import {
   assertStableSource,
   fingerprintSource,
+  type SourceFileChangedError,
+  type SourceFileUnavailableError,
+  type SourceFileUnreadableError,
   type SourceFingerprint,
 } from "./SourceIntegrity.js";
 import {
   isOfficeDetectedSourceType,
   SourceFileTypeDetector,
   type DetectedSourceType,
+  type SourceFileTypeUndeterminedError,
+  type UnsupportedSourceFileTypeError,
 } from "./SourceFileType.js";
 
 // ============================================================================
@@ -67,6 +91,29 @@ type PreparedDocument = {
   embeddings: EmbeddingInput[];
   sourceFingerprint: SourceFingerprint;
 };
+
+export type DocumentExtractionError =
+  | PDFExtractionError
+  | PDFNotFoundError
+  | MarkdownExtractionError
+  | MarkdownNotFoundError
+  | OfficeExtractionError
+  | OfficeNotFoundError
+  | TextExtractionError
+  | TextNotFoundError
+  | VisualEnrichmentError;
+
+export type DocumentIngestionError =
+  | DocumentExtractionError
+  | EmbeddingError
+  | StorageError
+  | DocumentExistsError
+  | DocumentNotFoundError
+  | SourceFileChangedError
+  | SourceFileUnavailableError
+  | SourceFileUnreadableError
+  | SourceFileTypeUndeterminedError
+  | UnsupportedSourceFileTypeError;
 
 // ============================================================================
 // Library Service
@@ -229,7 +276,7 @@ const makeDocumentIngestionService = (appConfig: Config) =>
       },
     ): Effect.Effect<
       { pageCount: number; chunks: LibraryProcessedChunk[] },
-      unknown
+      DocumentExtractionError
     > =>
       Effect.gen(function* () {
         const textResult = yield* extractDocumentText(resolvedPath, detected);
@@ -306,7 +353,7 @@ const makeDocumentIngestionService = (appConfig: Config) =>
       documentId: string,
       chunks: readonly ChunkInput[],
       logProgress: boolean,
-    ): Effect.Effect<EmbeddingInput[], unknown> =>
+    ): Effect.Effect<EmbeddingInput[], EmbeddingError> =>
       Effect.gen(function* () {
         const batchSize = DEFAULT_QUEUE_CONFIG.batchSize;
         const contents = chunks.map(
@@ -411,7 +458,7 @@ const makeDocumentIngestionService = (appConfig: Config) =>
         logEmbeddingProgress: boolean;
         logExtractionFailure: boolean;
       },
-    ): Effect.Effect<PreparedDocument, unknown> =>
+    ): Effect.Effect<PreparedDocument, DocumentIngestionError> =>
       Effect.gen(function* () {
         const { fileType } = detected;
         const processResult = yield* Effect.either(

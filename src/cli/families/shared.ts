@@ -1,29 +1,57 @@
-import { Effect, type Layer } from "effect";
-import type { GlobalCLIOptions } from "../runner.js";
+import { Effect, type Either } from "effect";
+import type {
+  CliLibrary,
+  GlobalCLIOptions,
+} from "../runner.js";
 import { CLIError } from "../runner.js";
 import { withConfiguredLogging } from "../runtime.js";
 
-export type FamilyCommandHandler = (
+export type KnownFamilyError<E> = unknown extends E ? never : E;
+
+export type FamilyCommandHandler<
+  A,
+  E,
+  R = never,
+  G extends GlobalCLIOptions<Pick<CliLibrary, "stats">> = GlobalCLIOptions,
+> = (
   args: string[],
-  globals: GlobalCLIOptions,
+  globals: G,
   options: Record<string, unknown>,
-) => Effect.Effect<unknown, unknown, unknown>;
+) => Effect.Effect<A, E, R>;
 
-export type FamilyCommandHandlers = ReadonlyMap<string, FamilyCommandHandler>;
+export type FamilyCommandHandlers<
+  A,
+  E,
+  R,
+  G extends GlobalCLIOptions<Pick<CliLibrary, "stats">>,
+> = ReadonlyMap<
+  string,
+  FamilyCommandHandler<A, E, R, G>
+>;
 
-export function commandHandlers(
-  entries: ReadonlyArray<readonly [string, FamilyCommandHandler]>,
-): FamilyCommandHandlers {
+export function commandHandlers<
+  A,
+  E,
+  R = never,
+  G extends GlobalCLIOptions<Pick<CliLibrary, "stats">> = GlobalCLIOptions,
+>(
+  entries: ReadonlyArray<readonly [string, FamilyCommandHandler<A, E, R, G>]>,
+): FamilyCommandHandlers<A, E, R, G> {
   return new Map(entries);
 }
 
-export function runResolvedFamilyCommand(
+export function runResolvedFamilyCommand<
+  A,
+  E,
+  R,
+  G extends GlobalCLIOptions<Pick<CliLibrary, "stats">>,
+>(
   familyName: string,
-  handlers: FamilyCommandHandlers,
+  handlers: FamilyCommandHandlers<A, E, R, G>,
   args: string[],
-  globals: GlobalCLIOptions,
+  globals: G,
   options: Record<string, unknown>,
-): Effect.Effect<unknown, unknown, unknown> {
+): Effect.Effect<A, E | CLIError, R> {
   const command = args[0];
   const handler = command ? handlers.get(command) : undefined;
   if (!handler) {
@@ -38,26 +66,15 @@ export function runResolvedFamilyCommand(
   return handler(args, globals, options);
 }
 
-export type FamilyLayer = Layer.Layer<unknown, unknown, never>;
-
-export function toFamilyLayer<Services, Error>(
-  layer: Layer.Layer<Services, Error, never>,
-): FamilyLayer {
-  return layer as unknown as FamilyLayer;
-}
-
-export async function runFamilyEffect(
-  program: Effect.Effect<unknown, unknown, unknown>,
+export async function runFamilyEffect<A, E>(
+  program: Effect.Effect<A, E, never>,
   globals: GlobalCLIOptions,
-  layer?: FamilyLayer,
-): Promise<unknown> {
-  const provided = layer
-    ? program.pipe(Effect.provide(layer), Effect.scoped)
-    : program;
+): Promise<Either.Either<A, E>> {
   return Effect.runPromise(
     withConfiguredLogging(
-      provided.pipe(Effect.either) as Effect.Effect<unknown, never, never>,
+      program.pipe(Effect.either),
       globals.logLevel,
     ),
+    globals.signal ? { signal: globals.signal } : undefined,
   );
 }

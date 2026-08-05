@@ -12,8 +12,9 @@ import {
   renderConceptTree,
   runCommandWithContext,
   type CommandBodyOutput,
-  type CommandExecutionContext,
+  type BaseCommandExecutionContext,
   type GlobalCLIOptions,
+  type SearchCliLibrary,
 } from "../runner.js";
 
 interface TaxonomyCommandOptions extends Record<string, unknown> {
@@ -138,7 +139,7 @@ function matchesQuery(concept: Concept, query: string): boolean {
 }
 
 function renderConceptList(
-  Console: CommandExecutionContext["Console"],
+  Console: BaseCommandExecutionContext["Console"],
   concepts: Concept[],
 ) {
   return Effect.gen(function* () {
@@ -150,7 +151,7 @@ function renderConceptList(
 }
 
 function renderConceptDetails(
-  Console: CommandExecutionContext["Console"],
+  Console: BaseCommandExecutionContext["Console"],
   concept: Concept,
   broader: Concept[],
   narrower: Concept[],
@@ -185,7 +186,7 @@ function renderConceptDetails(
 }
 
 function renderSearchResults(
-  Console: CommandExecutionContext["Console"],
+  Console: BaseCommandExecutionContext["Console"],
   matches: Concept[],
 ) {
   return Effect.gen(function* () {
@@ -255,7 +256,7 @@ function storeEmbeddingIfAvailable(
 }
 
 function runList(
-  context: CommandExecutionContext,
+  context: BaseCommandExecutionContext<SearchCliLibrary>,
   taxonomy: TaxonomyServiceApi,
 ) {
   return Effect.gen(function* () {
@@ -277,14 +278,12 @@ function runList(
 }
 
 function runTree(
-  context: CommandExecutionContext,
+  context: BaseCommandExecutionContext<SearchCliLibrary>,
   taxonomy: TaxonomyServiceApi,
 ) {
   return Effect.gen(function* () {
     const rootId = context.args[2];
-    const roots = yield* Effect.promise(() =>
-      buildTreeStructure(taxonomy, rootId),
-    );
+    const roots = yield* buildTreeStructure(taxonomy, rootId);
 
     if (rootId && roots.length === 0) {
       yield* context.Console.error(`Concept not found: ${rootId}`);
@@ -315,7 +314,7 @@ function runTree(
 }
 
 function runGet(
-  context: CommandExecutionContext,
+  context: BaseCommandExecutionContext<SearchCliLibrary>,
   taxonomy: TaxonomyServiceApi,
 ) {
   return Effect.gen(function* () {
@@ -364,7 +363,7 @@ function runGet(
 }
 
 function runSearch(
-  context: CommandExecutionContext,
+  context: BaseCommandExecutionContext<SearchCliLibrary>,
   taxonomy: TaxonomyServiceApi,
   options: TaxonomyCommandOptions,
 ) {
@@ -423,7 +422,7 @@ function runSearch(
 }
 
 function runAdd(
-  context: CommandExecutionContext,
+  context: BaseCommandExecutionContext<SearchCliLibrary>,
   taxonomy: TaxonomyServiceApi,
   options: TaxonomyCommandOptions,
 ) {
@@ -490,7 +489,7 @@ function runAdd(
 }
 
 function runTaxonomySubcommand(
-  context: CommandExecutionContext,
+  context: BaseCommandExecutionContext<SearchCliLibrary>,
   options: TaxonomyCommandOptions,
 ) {
   return Effect.gen(function* () {
@@ -548,7 +547,7 @@ function runTaxonomySubcommand(
 
 export function runTaxonomyCommand(
   args: string[],
-  globals: GlobalCLIOptions,
+  globals: GlobalCLIOptions<SearchCliLibrary>,
   options: TaxonomyCommandOptions = {},
 ) {
   return runCommandWithContext(

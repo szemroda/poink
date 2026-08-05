@@ -15,8 +15,8 @@ import {
 } from "../../types.js";
 import {
   CLIError,
-  runCommandWithContext,
-  type GlobalCLIOptions,
+  runCommandWithLibraryContext,
+  type GlobalCLIOptionsWithLibrary,
 } from "../runner.js";
 
 interface RechunkCommandOptions extends Record<string, unknown> {
@@ -304,10 +304,10 @@ function getVisualSettings(
 
 export function runRechunkCommand(
   args: string[],
-  globals: GlobalCLIOptions,
+  globals: GlobalCLIOptionsWithLibrary,
   options: RechunkCommandOptions = {},
 ) {
-  return runCommandWithContext(args, globals, ({ library, globals }) =>
+  return runCommandWithLibraryContext(args, globals, ({ library, globals }) =>
     Effect.gen(function* () {
       const command = args[0];
       if (command !== "rechunk") {

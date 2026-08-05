@@ -200,6 +200,7 @@ function isEither(
 async function runCliWithNormalizedArgs(
   normalizedArgs: string[],
   timing: InvocationTiming,
+  signal?: AbortSignal,
 ): Promise<number> {
   const bootstrapCommand = normalizedArgs[0] ?? "--help";
   const malformedConfigIsNonFatal = isHelpOrVersionInvocation(normalizedArgs);
@@ -266,6 +267,7 @@ async function runCliWithNormalizedArgs(
     ...parsed.globals,
     config,
     timing,
+    signal,
   };
   setLogLevel(globals.logLevel);
 
@@ -314,6 +316,7 @@ async function runCliWithNormalizedArgs(
 async function runCliWithTiming(
   rawArgs: string[],
   timing: InvocationTiming,
+  signal?: AbortSignal,
 ): Promise<number> {
   const inputArgs = normalizeRawArgs(rawArgs);
   const inputCommand = inputArgs[0] ?? "--help";
@@ -336,11 +339,11 @@ async function runCliWithTiming(
   }
 
   if (configSelection.configPath === undefined) {
-    return runCliWithNormalizedArgs(configSelection.args, timing);
+    return runCliWithNormalizedArgs(configSelection.args, timing, signal);
   }
 
   return withConfigPathOverride(configSelection.configPath, () =>
-    runCliWithNormalizedArgs(configSelection.args, timing),
+    runCliWithNormalizedArgs(configSelection.args, timing, signal),
   );
 }
 
@@ -363,9 +366,28 @@ export function isMainModule(
 }
 
 export async function runMain(argv: string[] = process.argv): Promise<void> {
-  const exitCode = await runCliWithTiming(
-    argv.slice(2),
-    createProcessInvocationTiming(),
-  );
-  process.exit(exitCode);
+  const controller = new AbortController();
+  let signalExitCode: number | undefined;
+  const onSigint = () => {
+    signalExitCode = 130;
+    controller.abort(new Error("Interrupted by SIGINT"));
+  };
+  const onSigterm = () => {
+    signalExitCode = 143;
+    controller.abort(new Error("Interrupted by SIGTERM"));
+  };
+  process.once("SIGINT", onSigint);
+  process.once("SIGTERM", onSigterm);
+
+  try {
+    const exitCode = await runCliWithTiming(
+      argv.slice(2),
+      createProcessInvocationTiming(),
+      controller.signal,
+    );
+    process.exit(signalExitCode ?? exitCode);
+  } finally {
+    process.off("SIGINT", onSigint);
+    process.off("SIGTERM", onSigterm);
+  }
 }

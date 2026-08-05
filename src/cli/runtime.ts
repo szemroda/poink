@@ -111,7 +111,9 @@ export async function buildIngestionLayer(config: Config) {
   const semantic = makeSemanticLibrary(config).pipe(
     Layer.provide(Layer.merge(storage, embedding)),
   );
-  const autoTagger = makeAutoTagger(config);
+  const autoTagger = makeAutoTagger(config).pipe(
+    Layer.provide(Layer.merge(storage, embedding)),
+  );
 
   return Layer.mergeAll(
     storage,

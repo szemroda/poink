@@ -1,5 +1,11 @@
 import { Effect } from "effect";
 import { renderHelp } from "../agent/manifest.js";
+import { AutoTagger } from "../services/AutoTagger.js";
+import { EmbeddingProvider } from "../services/EmbeddingProvider.js";
+import { OfficeExtractor } from "../services/OfficeExtractor.js";
+import { PDFExtractor } from "../services/PDFExtractor.js";
+import { SourceFileTypeDetector } from "../services/SourceFileType.js";
+import { TaxonomyService } from "../services/TaxonomyService.js";
 import { runAddCommand } from "./commands/add.js";
 import { runCapabilitiesCommand } from "./commands/capabilities.js";
 import { runConfigCommand } from "./commands/config.js";
@@ -16,7 +22,10 @@ import { runSetupCommand } from "./commands/setup.js";
 import { runTaxonomyCommand } from "./commands/taxonomy.js";
 import {
   CLIError,
+  type CommandExecutionOutput,
+  type GlobalCLIOptionsWithLibrary,
   type GlobalCLIOptions,
+  runCommandWithLibraryContext,
   runCommandWithContext,
   VERSION,
 } from "./runner.js";
@@ -53,11 +62,45 @@ const LIBRARY_COMMANDS = new Set([
   "stats",
 ]);
 
+export type CommandServices =
+  | AutoTagger
+  | EmbeddingProvider
+  | OfficeExtractor
+  | PDFExtractor
+  | SourceFileTypeDetector
+  | TaxonomyService;
+
+type CommandEffectError<T> = T extends (
+  ...args: infer _Args
+) => Effect.Effect<unknown, infer E, unknown>
+  ? E
+  : never;
+
+type DerivedCommandError = CommandEffectError<
+  | typeof runAddCommand
+  | typeof runCapabilitiesCommand
+  | typeof runConfigCommand
+  | typeof runDoctorCommand
+  | typeof runIngestCommand
+  | typeof runInitCommand
+  | typeof runLibraryCommand
+  | typeof runProvidersCommand
+  | typeof runRechunkCommand
+  | typeof runReindexCommand
+  | typeof runRepairCommand
+  | typeof runSearchCommand
+  | typeof runSetupCommand
+  | typeof runTaxonomyCommand
+>;
+
+export type CommandError =
+  unknown extends DerivedCommandError ? never : DerivedCommandError | CLIError;
+
 type CommandRunner = (
   args: string[],
-  globals: GlobalCLIOptions,
+  globals: GlobalCLIOptionsWithLibrary,
   options: Record<string, unknown>,
-) => ReturnType<typeof runAddCommand>;
+) => Effect.Effect<CommandExecutionOutput, CommandError, CommandServices>;
 
 const DIRECT_COMMANDS = new Map<string, CommandRunner>([
   ["capabilities", runCapabilitiesCommand],
@@ -99,7 +142,7 @@ function runInformationalCommand(
 
 export function dispatchCommand(
   args: string[],
-  globals: GlobalCLIOptions,
+  globals: GlobalCLIOptionsWithLibrary,
   options: Record<string, unknown> = {},
 ) {
   const command = args[0];
@@ -137,7 +180,7 @@ export function dispatchCommand(
     return runDoctorCommand(args, globals, options);
   }
   if (command === "config") {
-    return runCommandWithContext(
+    return runCommandWithLibraryContext(
       args,
       globals,
       ({ Console }) => runConfigCommand(args, Console, globals.config!),
@@ -154,7 +197,7 @@ export function dispatchCommand(
     );
   }
   if (LIBRARY_COMMANDS.has(command)) {
-    return runCommandWithContext(
+    return runCommandWithLibraryContext(
       args,
       globals,
       ({ Console, format, library, globals: contextGlobals }) =>

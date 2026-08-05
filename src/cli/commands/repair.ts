@@ -1,7 +1,8 @@
 import { Effect } from "effect";
 import {
-  runCommandWithContext,
-  type GlobalCLIOptions,
+  runCommandWithLibraryContext,
+  type GlobalCLIOptionsWithLibrary,
+  type StoreCliLibrary,
 } from "../runner.js";
 
 type RepairCommandOptions = Record<string, unknown>;
@@ -22,10 +23,10 @@ function listCompletedRepairs(result: {
 
 export function runRepairCommand(
   args: string[],
-  globals: GlobalCLIOptions,
+  globals: GlobalCLIOptionsWithLibrary<StoreCliLibrary>,
   options: RepairCommandOptions = {},
 ) {
-  return runCommandWithContext(args, globals, ({ Console, library }) =>
+  return runCommandWithLibraryContext(args, globals, ({ Console, library }) =>
     Effect.gen(function* () {
       yield* Console.log("Checking database integrity...\n");
       const result = yield* library.repair();

@@ -37,7 +37,6 @@
     "@ai-sdk/anthropic": "^3.0.93",
     "@ai-sdk/google": "^3.0.88",
     "@ai-sdk/openai": "^3.0.80",
-    "@effect/platform": "^0.96.2",
     "@inquirer/prompts": "^8.5.2",
     "@libsql/client": "^0.17.4",
     "@modelcontextprotocol/sdk": "^1.29.0",

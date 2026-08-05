@@ -1,5 +1,3 @@
-import { Context, Effect, Layer } from "effect";
-
 /**
  * Input cluster with centroid embedding
  */
@@ -35,27 +33,6 @@ export interface MapResult {
 export interface MapOptions {
   threshold: number;
 }
-
-/**
- * Service for mapping document clusters to SKOS concepts
- */
-export interface ClusterConceptMapperService {
-  readonly mapCluster: (
-    cluster: ClusterInput,
-    concepts: ConceptInput[],
-    options: MapOptions
-  ) => Effect.Effect<MapResult, ClusterConceptMapperError>;
-}
-
-export class ClusterConceptMapperError {
-  readonly _tag = "ClusterConceptMapperError";
-  constructor(readonly reason: string) {}
-}
-
-export const ClusterConceptMapperService =
-  Context.GenericTag<ClusterConceptMapperService>(
-    "@services/ClusterConceptMapperService"
-  );
 
 interface ConceptMatch {
   conceptId: string;
@@ -129,7 +106,7 @@ function createSuggestedResult(cluster: ClusterInput): MapResult {
   };
 }
 
-function mapClusterToConcept(
+export function mapClusterToConcept(
   cluster: ClusterInput,
   concepts: ConceptInput[],
   options: MapOptions
@@ -144,17 +121,4 @@ function mapClusterToConcept(
   }
 
   return createMatchedResult(cluster.id, bestMatch);
-}
-
-export class ClusterConceptMapperImpl {
-  static Default = Layer.succeed(
-    ClusterConceptMapperService,
-    ClusterConceptMapperService.of({
-      mapCluster: (cluster, concepts, options) =>
-        Effect.try({
-          try: () => mapClusterToConcept(cluster, concepts, options),
-          catch: (error) => new ClusterConceptMapperError(String(error)),
-        }),
-    })
-  );
 }

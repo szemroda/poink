@@ -24,6 +24,7 @@ const { generateText } = await import("ai");
 const mockedGenerateText = vi.mocked(generateText);
 
 const ORIGINAL_POINK_CONFIG = process.env.POINK_CONFIG;
+const ORIGINAL_VISUAL_CONCURRENCY = process.env.POINK_VISUAL_CONCURRENCY;
 const DETECTED_PDF = {
   sourceFormat: "pdf",
   fileType: "pdf",
@@ -37,6 +38,11 @@ afterEach(() => {
     delete process.env.POINK_CONFIG;
   } else {
     process.env.POINK_CONFIG = ORIGINAL_POINK_CONFIG;
+  }
+  if (ORIGINAL_VISUAL_CONCURRENCY === undefined) {
+    delete process.env.POINK_VISUAL_CONCURRENCY;
+  } else {
+    process.env.POINK_VISUAL_CONCURRENCY = ORIGINAL_VISUAL_CONCURRENCY;
   }
 });
 
@@ -150,6 +156,8 @@ describe("VisualEnrichment", () => {
       expect(chunks[0]?.content).toContain("A concise visual description.");
       const call = mockedGenerateText.mock.calls[0]?.[0];
       expect(call).toBeDefined();
+      expect(call?.abortSignal).toBeInstanceOf(AbortSignal);
+      expect(call?.maxRetries).toBe(0);
       const message = call?.messages?.[0];
       expect(message?.role).toBe("user");
       expect(Array.isArray(message?.content)).toBe(true);
@@ -159,6 +167,81 @@ describe("VisualEnrichment", () => {
       if (content[1]?.type === "image") {
         expect(content[1].mediaType).toBe("image/png");
       }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("describes images concurrently while preserving chunk order", async () => {
+    const dir = configureVisuals();
+    process.env.POINK_VISUAL_CONCURRENCY = "2";
+    let active = 0;
+    let maxActive = 0;
+    mockedGenerateText.mockImplementation(async (request) => {
+      active++;
+      maxActive = Math.max(maxActive, active);
+      const messages = request.messages ?? [];
+      const user = messages[0];
+      const content =
+        user?.role === "user" && Array.isArray(user.content)
+          ? user.content
+          : [];
+      const prompt = content[0]?.type === "text" ? content[0].text : "";
+      const visualIndex = Number(
+        prompt.match(/image (\d+)/)?.[1] ?? "0",
+      );
+      await new Promise((resolve) =>
+        setTimeout(resolve, visualIndex === 1 ? 20 : 5),
+      );
+      active--;
+      return { text: `Description ${visualIndex}` } as never;
+    });
+
+    try {
+      const pdfExtractor: PDFExtractorService = {
+        extract: () => Effect.die("unused"),
+        extractImages: () =>
+          Effect.succeed([
+            image({ hash: "a", visualIndex: 1 }),
+            image({ hash: "b", visualIndex: 2 }),
+            image({ hash: "c", visualIndex: 3 }),
+          ]),
+        process: () => Effect.die("unused"),
+      };
+      const officeExtractor: OfficeExtractorService = {
+        extract: () => Effect.die("unused"),
+        extractImages: () => Effect.succeed([]),
+        process: () => Effect.die("unused"),
+      };
+      const program = Effect.gen(function* () {
+        const visuals = yield* VisualEnrichment;
+        return yield* visuals.enrichDocument("doc.pdf", DETECTED_PDF, {
+          mode: "explicit",
+        });
+      });
+
+      const chunks = await Effect.runPromise(
+        program.pipe(
+          Effect.provide(
+            makeVisualEnrichment(loadConfig()).pipe(
+              Layer.provide(
+                Layer.mergeAll(
+                  Layer.succeed(PDFExtractor, pdfExtractor),
+                  Layer.succeed(OfficeExtractor, officeExtractor),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+
+      expect(maxActive).toBe(2);
+      expect(chunks.map((chunk) => chunk.chunkIndex)).toEqual([0, 1, 2]);
+      expect(chunks.map((chunk) => chunk.content)).toEqual([
+        expect.stringContaining("Description 1"),
+        expect.stringContaining("Description 2"),
+        expect.stringContaining("Description 3"),
+      ]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

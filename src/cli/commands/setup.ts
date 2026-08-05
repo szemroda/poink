@@ -1,5 +1,5 @@
 import { confirm, input, password, select } from "@inquirer/prompts";
-import { Effect, Layer } from "effect";
+import { Effect } from "effect";
 import { existsSync, readFileSync } from "fs";
 import {
   Config,
@@ -17,7 +17,6 @@ import {
   CLIError,
   describeCliFailure,
   runCommandWithContext,
-  type CliLibrary,
   type GlobalCLIOptions,
 } from "../runner.js";
 import { initializePoinkLibrary } from "./init.js";
@@ -612,16 +611,27 @@ function initializeSelectedLibrary(Console: CliConsole, plan: SetupPlan) {
       { buildDiagnosticsLayer },
       { LibraryStore },
       { EmbeddingProvider },
-    ] = yield* Effect.promise(() =>
-      Promise.all([
-        import("../runtime.js"),
-        import("../../services/LibraryStore.js"),
-        import("../../services/EmbeddingProvider.js"),
-      ]),
-    );
-    const layer = yield* Effect.promise(() =>
-      buildDiagnosticsLayer(plan.config),
-    );
+    ] = yield* Effect.tryPromise({
+      try: () =>
+        Promise.all([
+          import("../runtime.js"),
+          import("../../services/LibraryStore.js"),
+          import("../../services/EmbeddingProvider.js"),
+        ]),
+      catch: (error) =>
+        new CLIError(
+          "INITIALIZATION_FAILED",
+          `Failed to load initialization services: ${describeCliFailure(error)}`,
+        ),
+    });
+    const layer = yield* Effect.tryPromise({
+      try: () => buildDiagnosticsLayer(plan.config),
+      catch: (error) =>
+        new CLIError(
+          "INITIALIZATION_FAILED",
+          `Failed to build initialization services: ${describeCliFailure(error)}`,
+        ),
+    });
     const initialize = Effect.gen(function* () {
       const store = yield* LibraryStore;
       const embedding = yield* EmbeddingProvider;
@@ -630,7 +640,7 @@ function initializeSelectedLibrary(Console: CliConsole, plan: SetupPlan) {
         {
           ...store,
           checkReady: () => embedding.checkHealth(),
-        } as CliLibrary,
+        },
         new LibraryConfig({
           libraryPath: plan.selectedLibraryPath,
           dbPath: resolveLibraryDbPath(plan.config),
@@ -640,10 +650,7 @@ function initializeSelectedLibrary(Console: CliConsole, plan: SetupPlan) {
       );
     });
 
-    return yield* initialize.pipe(
-      Effect.provide(layer as unknown as Layer.Layer<unknown, unknown, never>),
-      Effect.scoped,
-    ) as Effect.Effect<unknown, unknown, never>;
+    return yield* initialize.pipe(Effect.provide(layer), Effect.scoped);
   });
 }
 

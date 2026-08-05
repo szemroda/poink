@@ -30,13 +30,36 @@ export function fileExists(path: string): boolean {
 type FetchHandler = (request: Request) => Response | Promise<Response>;
 
 export interface FetchServer {
-  stop: (force?: boolean) => void;
+  stop: (force?: boolean) => Promise<void>;
 }
 
 export interface ServeFetchOptions {
   hostname: string;
   port: number;
   fetch: FetchHandler;
+}
+
+export function waitForShutdownSignal(
+  signal?: AbortSignal,
+): Promise<"SIGINT" | "SIGTERM" | "ABORT"> {
+  if (signal) {
+    if (signal.aborted) return Promise.resolve("ABORT");
+    return new Promise((resolve) => {
+      signal.addEventListener("abort", () => resolve("ABORT"), { once: true });
+    });
+  }
+
+  return new Promise((resolve) => {
+    const finish = (signal: "SIGINT" | "SIGTERM") => {
+      process.off("SIGINT", onSigint);
+      process.off("SIGTERM", onSigterm);
+      resolve(signal);
+    };
+    const onSigint = () => finish("SIGINT");
+    const onSigterm = () => finish("SIGTERM");
+    process.once("SIGINT", onSigint);
+    process.once("SIGTERM", onSigterm);
+  });
 }
 
 function requestUrl(req: IncomingMessage): string {
@@ -132,9 +155,17 @@ export async function serveFetch(
   });
 
   return {
-    stop: (force = false) => {
+    stop: async (force = false) => {
       if (force) server.closeAllConnections();
-      server.close();
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => {
+          if (error) {
+            reject(error);
+            return;
+          }
+          resolve();
+        });
+      });
     },
   };
 }

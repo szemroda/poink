@@ -12,12 +12,12 @@ import {
 } from "../../types.js";
 import {
   CLIError,
-  runCommandWithContext,
+  runCommandWithLibraryContext,
   splitPositionalsAndFlags,
-  type CliLibrary,
   type CommandBodyOutput,
   type CommandExecutionContext,
-  type GlobalCLIOptions,
+  type GlobalCLIOptionsWithLibrary,
+  type SearchCliLibrary,
 } from "../runner.js";
 
 interface SearchCommandOptions extends Record<string, unknown> {
@@ -57,6 +57,9 @@ export type SearchDocumentOutput = {
 
 type DocumentRetrievalMode = "hybrid" | "fts";
 type RetrievalMode = DocumentRetrievalMode | "none";
+type DocumentSearchError =
+  | Effect.Effect.Error<ReturnType<SearchCliLibrary["ftsSearch"]>>
+  | Effect.Effect.Error<ReturnType<SearchCliLibrary["search"]>>;
 
 type CommonSearchOptions = {
   limit: number;
@@ -126,7 +129,9 @@ function searchModeLabel(conceptsOnly: boolean, docsOnly: boolean): string {
   return "";
 }
 
-function mapSemanticSearchFailure(error: unknown): unknown {
+function mapSemanticSearchFailure(
+  error: DocumentSearchError,
+): DocumentSearchError | CLIError {
   if (!(error instanceof SemanticSearchProviderError)) {
     return error;
   }
@@ -143,7 +148,7 @@ function mapSemanticSearchFailure(error: unknown): unknown {
 }
 
 function searchDocuments(
-  library: CliLibrary,
+  library: SearchCliLibrary,
   query: string,
   options: SearchOptions,
   retrievalMode: DocumentRetrievalMode,
@@ -286,7 +291,7 @@ function renderDocumentResults(
 }
 
 function runSingleSearch(
-  context: CommandExecutionContext,
+  context: CommandExecutionContext<SearchCliLibrary>,
   options: SearchCommandOptions,
 ) {
   return Effect.gen(function* () {
@@ -483,7 +488,7 @@ function mergeSearchResults(
 }
 
 function runSearchPack(
-  context: CommandExecutionContext,
+  context: CommandExecutionContext<SearchCliLibrary>,
   options: SearchCommandOptions,
 ) {
   return Effect.gen(function* () {
@@ -582,10 +587,10 @@ function runSearchPack(
 
 export function runSearchCommand(
   args: string[],
-  globals: GlobalCLIOptions,
+  globals: GlobalCLIOptionsWithLibrary<SearchCliLibrary>,
   options: SearchCommandOptions = {},
 ) {
-  return runCommandWithContext(
+  return runCommandWithLibraryContext(
     args,
     globals,
     (context) => {

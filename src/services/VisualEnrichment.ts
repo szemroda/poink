@@ -154,11 +154,14 @@ async function describeImage(
   config: Config,
   image: ExtractedDocumentImage,
   options: { title?: string },
+  abortSignal: AbortSignal,
 ): Promise<string> {
   const resolved = await getConfiguredLanguageModel(config, "enrichment");
   const result = await generateText({
     model: resolved.model,
     ...providerOptionsInput(resolved),
+    abortSignal,
+    maxRetries: 0,
     system: systemPrompt,
     messages: [
       {
@@ -176,6 +179,16 @@ async function describeImage(
   });
 
   return result.text;
+}
+
+function visualConcurrency(): number {
+  const configured = Number.parseInt(
+    process.env.POINK_VISUAL_CONCURRENCY ?? "",
+    10,
+  );
+  return Number.isFinite(configured) && configured > 0
+    ? Math.min(configured, 8)
+    : 3;
 }
 
 export function makeVisualEnrichment(config: Config) {
@@ -228,25 +241,38 @@ export function makeVisualEnrichment(config: Config) {
           })();
 
           const retained = filterVisualImages(extracted, visualsConfig);
-          const chunks: VisualDescriptionChunk[] = [];
-
-          for (const image of retained) {
-            const description = yield* Effect.tryPromise({
-              try: () => describeImage(config, image, { title: options.title }),
-              catch: (error) =>
-                visualError(
-                  `Visual enrichment requires a vision-capable models.enrichment model. Current visual description failed: ${describeLanguageModelError(error)}`,
-                  error,
-                ),
-            });
-            chunks.push({
-              page: image.page,
-              chunkIndex: chunks.length,
-              content: buildVisualChunkContent(image, description),
-            });
-          }
-
-          return chunks;
+          return yield* Effect.forEach(
+            retained,
+            (image, index) =>
+              Effect.tryPromise({
+                try: (signal) =>
+                  describeImage(
+                    config,
+                    image,
+                    { title: options.title },
+                    signal,
+                  ),
+                catch: (error) =>
+                  visualError(
+                    `Visual enrichment requires a vision-capable models.enrichment model. Current visual description failed: ${describeLanguageModelError(error)}`,
+                    error,
+                  ),
+              }).pipe(
+                Effect.timeoutFail({
+                  duration: "60 seconds",
+                  onTimeout: () =>
+                    visualError(
+                      "Visual description timed out after 60 seconds",
+                    ),
+                }),
+                Effect.map((description) => ({
+                  page: image.page,
+                  chunkIndex: index,
+                  content: buildVisualChunkContent(image, description),
+                })),
+              ),
+            { concurrency: visualConcurrency() },
+          );
         });
 
         if (options.mode === "config") {

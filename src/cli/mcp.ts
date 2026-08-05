@@ -5,6 +5,7 @@ import {
 } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
+import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import * as z from "zod/v4";
 import {
@@ -21,23 +22,23 @@ import {
 import { DocumentIngestion } from "../services/DocumentIngestion.js";
 import { LibraryStore } from "../services/LibraryStore.js";
 import { SemanticLibrary } from "../services/SemanticLibrary.js";
+import { DocumentIntegrityRepository } from "../services/StorageRepositories.js";
 import {
-  CLIError,
-  describeCliFailure,
   VERSION,
   type GlobalCLIOptions,
   type CliLibrary,
 } from "./runner.js";
-import { dispatchCommand } from "./commands.js";
+import { coerceCliError } from "./errors.js";
+import { waitForShutdownSignal } from "../runtime.js";
+import {
+  dispatchCommand,
+  type CommandServices,
+} from "./commands.js";
 import { withConfiguredLogging } from "./runtime.js";
 import {
   createInvocationTiming,
   type InvocationTiming,
 } from "./timing.js";
-
-type MCPTransport =
-  | StdioServerTransport
-  | WebStandardStreamableHTTPServerTransport;
 
 type CommandInvocation = {
   argv: string[];
@@ -57,10 +58,17 @@ function forceJsonGlobals(globals: GlobalCLIOptions): GlobalCLIOptions {
   };
 }
 
+export type McpServices =
+  | CommandServices
+  | LibraryStore
+  | SemanticLibrary
+  | DocumentIngestion
+  | DocumentIntegrityRepository;
+
 export async function connectMcpServer<E>(
-  appLayer: Layer.Layer<unknown, E, never>,
+  appLayer: Layer.Layer<McpServices, E, never>,
   globals: GlobalCLIOptions,
-  transport: MCPTransport,
+  transport: Transport,
 ): Promise<() => Promise<void>> {
   const NextActionSchema = z.object({
     kind: z.literal("shell"),
@@ -96,17 +104,25 @@ export async function connectMcpServer<E>(
     Logger.minimumLogLevel(toEffectLogLevel(globals.logLevel)),
   );
   const runtime = ManagedRuntime.make(runtimeLayer);
-
-  const coerceCliError = (e: unknown): CLIError => {
-    if (e instanceof CLIError) return e;
-    const tag =
-      e &&
-      typeof e === "object" &&
-      "_tag" in e &&
-      typeof (e as { _tag?: unknown })._tag === "string"
-        ? String((e as { _tag: string })._tag)
-        : "UNKNOWN_ERROR";
-    return new CLIError(tag, describeCliFailure(e), e);
+  let closed = false;
+  const close = async () => {
+    if (closed) return;
+    closed = true;
+    try {
+      await transport.close();
+    } catch {
+      // ignore
+    }
+    try {
+      await closeOpenAICodexProviderManager();
+    } catch {
+      // ignore
+    }
+    try {
+      await runtime.dispose();
+    } catch {
+      // ignore
+    }
   };
 
   type Envelope = z.infer<typeof EnvelopeSchema>;
@@ -123,6 +139,7 @@ export async function connectMcpServer<E>(
   const runCommand = async (
     invocation: CommandInvocation,
     timing: InvocationTiming,
+    signal: AbortSignal,
   ): Promise<Envelope> => {
     const cmdGlobals = { ...forceJsonGlobals(globals), timing };
     const { argv, options = {} } = invocation;
@@ -131,11 +148,19 @@ export async function connectMcpServer<E>(
       const store = yield* LibraryStore;
       const semantic = yield* SemanticLibrary;
       const ingestion = yield* DocumentIngestion;
+      const integrity = yield* DocumentIntegrityRepository;
+      const library = {
+        ...store,
+        ...semantic,
+        ...ingestion,
+        getWithSourceIdentity: integrity.getDocumentWithSourceIdentity,
+        listWithSourceIdentity: integrity.listDocumentsWithSourceIdentity,
+      } satisfies CliLibrary;
       return yield* dispatchCommand(
         argv,
         {
           ...cmdGlobals,
-          library: { ...store, ...semantic, ...ingestion } as CliLibrary,
+          library,
         },
         options,
       );
@@ -143,6 +168,7 @@ export async function connectMcpServer<E>(
     const outEither = await withOpenAICodexProviderScope(() =>
       runtime.runPromise(
         withConfiguredLogging(commandProgram, cmdGlobals.logLevel),
+        { signal },
       ),
     );
 
@@ -178,10 +204,17 @@ export async function connectMcpServer<E>(
     },
     toCommand: (input: z.infer<TInput>) => CommandInvocation,
   ) => {
-    const runTool = (async (input: unknown): Promise<CallToolResult> => {
+    const runTool = (async (
+      input: unknown,
+      extra: { signal: AbortSignal },
+    ): Promise<CallToolResult> => {
       const timing = createInvocationTiming();
       const parsed = config.inputSchema.parse(input);
-      const envelope = await runCommand(toCommand(parsed), timing);
+      const envelope = await runCommand(
+        toCommand(parsed),
+        timing,
+        extra.signal,
+      );
       return {
         content: [{ type: "text", text: JSON.stringify(envelope) }],
         structuredContent: envelope,
@@ -400,41 +433,27 @@ export async function connectMcpServer<E>(
     };
   });
 
-  await server.connect(transport);
+  try {
+    await runtime.runtime();
+    await server.connect(transport);
+  } catch (error) {
+    await close();
+    throw error;
+  }
 
-  return async () => {
-    try {
-      await transport.close();
-    } catch {
-      // ignore
-    }
-    try {
-      await closeOpenAICodexProviderManager();
-    } catch {
-      // ignore
-    }
-    try {
-      await runtime.dispose();
-    } catch {
-      // ignore
-    }
-  };
+  return close;
 }
 
 export async function runMcpServer<E>(
-  appLayer: Layer.Layer<unknown, E, never>,
+  appLayer: Layer.Layer<McpServices, E, never>,
   globals: GlobalCLIOptions,
 ): Promise<void> {
   const transport = new StdioServerTransport();
   const closeMcp = await connectMcpServer(appLayer, globals, transport);
 
-  const shutdown = async () => {
+  try {
+    await waitForShutdownSignal(globals.signal);
+  } finally {
     await closeMcp();
-    process.exit(0);
-  };
-
-  process.on("SIGINT", shutdown);
-  process.on("SIGTERM", shutdown);
-
-  await new Promise(() => {});
+  }
 }

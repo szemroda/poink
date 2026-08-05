@@ -24,8 +24,8 @@ import {
   VERSION,
   describeCliFailure,
   extractEnrichmentPreview,
-  runCommandWithContext,
-  type GlobalCLIOptions,
+  runCommandWithLibraryContext,
+  type GlobalCLIOptionsWithLibrary,
 } from "../runner.js";
 
 const DOCUMENT_TITLE_EXTENSION_RE = /\.(pdf|md|markdown|docx|odt|fodt|txt)$/i;
@@ -68,10 +68,10 @@ function toURLDownloadOptions(
 
 export function runAddCommand(
   args: string[],
-  globals: GlobalCLIOptions,
+  globals: GlobalCLIOptionsWithLibrary,
   options: AddCommandOptions = {},
 ) {
-  return runCommandWithContext(args, globals, ({ Console, library, globals }) =>
+  return runCommandWithLibraryContext(args, globals, ({ Console, library, globals }) =>
     Effect.gen(function* () {
       const pathOrUrl = args[1];
       if (!pathOrUrl) {

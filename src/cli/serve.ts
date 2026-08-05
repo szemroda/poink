@@ -9,14 +9,17 @@ import {
   type ServerConfigShape,
 } from "../agent/protocol.js";
 import { type Config, resolveConfigPath } from "../types.js";
-import { serveFetch } from "../runtime.js";
+import { serveFetch, waitForShutdownSignal } from "../runtime.js";
 import {
   CLIError,
   parseServeCommandOptions,
   type GlobalCLIOptions,
 } from "./runner.js";
 import { withConfiguredLogging } from "./runtime.js";
-import { connectMcpServer } from "./mcp.js";
+import {
+  connectMcpServer,
+  type McpServices,
+} from "./mcp.js";
 
 const JSON_HEADERS = { "content-type": "application/json" };
 
@@ -95,7 +98,7 @@ export function resolveServeSecurityConfig(
 }
 
 export async function runServeCommand<E>(
-  appLayer: Layer.Layer<unknown, E, never>,
+  appLayer: Layer.Layer<McpServices, E, never>,
   globals: GlobalCLIOptions,
   serveArgs: string[],
   config: Config,
@@ -108,42 +111,42 @@ export async function runServeCommand<E>(
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: () => crypto.randomUUID(),
   });
-  const closeMcp = await connectMcpServer(appLayer, globals, transport);
+  let closeMcp: (() => Promise<void>) | undefined;
+  let listener: Awaited<ReturnType<typeof serveFetch>> | undefined;
 
-  const listener = await serveFetch({
-    hostname: serverConfig.host,
-    port: serverConfig.port,
-    fetch: createServeRequestHandler(serverConfig, transport),
-  });
+  try {
+    closeMcp = await connectMcpServer(appLayer, globals, transport);
+    listener = await serveFetch({
+      hostname: serverConfig.host,
+      port: serverConfig.port,
+      fetch: createServeRequestHandler(serverConfig, transport),
+    });
 
-  await Effect.runPromise(
-    withConfiguredLogging(
-      Effect.gen(function* () {
-        yield* Effect.logInfo(
-          `[poink:serve] listening on http://${serverConfig.host}:${serverConfig.port}/mcp`,
-        );
-        yield* Effect.logInfo(
-          `[poink:serve] auth ${
-            serverConfig.auth.enabled ? "enabled (bearer token)" : "disabled"
-          }`,
-        );
-      }),
-      globals.logLevel,
-    ),
-  );
+    await Effect.runPromise(
+      withConfiguredLogging(
+        Effect.gen(function* () {
+          yield* Effect.logInfo(
+            `[poink:serve] listening on http://${serverConfig.host}:${serverConfig.port}/mcp`,
+          );
+          yield* Effect.logInfo(
+            `[poink:serve] auth ${
+              serverConfig.auth.enabled ? "enabled (bearer token)" : "disabled"
+            }`,
+          );
+        }),
+        globals.logLevel,
+      ),
+    );
 
-  const shutdown = async () => {
-    try {
-      listener.stop(true);
-    } catch {
-      // ignore
+    await waitForShutdownSignal(globals.signal);
+  } finally {
+    if (listener) {
+      try {
+        await listener.stop(true);
+      } catch {
+        // ignore
+      }
     }
-    await closeMcp();
-    process.exit(0);
-  };
-
-  process.on("SIGINT", shutdown);
-  process.on("SIGTERM", shutdown);
-
-  await new Promise(() => {});
+    if (closeMcp) await closeMcp();
+  }
 }

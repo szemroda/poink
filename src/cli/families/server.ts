@@ -1,5 +1,4 @@
 import { buildFullServerLayer } from "../runtime.js";
-import { toFamilyLayer } from "./shared.js";
 import type { FamilyRunner } from "./types.js";
 
 export const runFamily: FamilyRunner = async ({
@@ -8,7 +7,7 @@ export const runFamily: FamilyRunner = async ({
   config,
 }) => {
   const [command, ...commandArgs] = parsed.args;
-  const layer = toFamilyLayer(await buildFullServerLayer(config));
+  const layer = await buildFullServerLayer(config);
 
   if (command === "mcp") {
     const { runMcpServer } = await import("../mcp.js");

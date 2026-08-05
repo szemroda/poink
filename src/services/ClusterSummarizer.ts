@@ -57,7 +57,8 @@ const SummarySchema = z.object({
 
 async function generateSummary(
   chunks: Array<{ id: string; content: string }>,
-  options: SummarizeOptions
+  options: SummarizeOptions,
+  abortSignal: AbortSignal,
 ): Promise<ClusterSummary> {
   if (chunks.length === 0) {
     return {
@@ -78,6 +79,8 @@ async function generateSummary(
   const { output } = await generateText({
     model: resolvedModel.model,
     ...providerOptionsInput(resolvedModel),
+    abortSignal,
+    maxRetries: 0,
     output: Output.object({ schema: SummarySchema }),
     prompt: dedent`
       Analyze these document chunks from a knowledge library cluster and create an abstractive summary.
@@ -108,13 +111,21 @@ export class ClusterSummarizerImpl {
     ClusterSummarizerService.of({
       summarize: (chunks, options) =>
         Effect.tryPromise({
-          try: () => generateSummary(chunks, options),
+          try: (signal) => generateSummary(chunks, options, signal),
           catch: (error) =>
             new ClusterSummarizerError(
               describeLanguageModelError(error),
               error
             ),
-        }),
+        }).pipe(
+          Effect.timeoutFail({
+            duration: "60 seconds",
+            onTimeout: () =>
+              new ClusterSummarizerError(
+                "Cluster summarization timed out after 60 seconds",
+              ),
+          }),
+        ),
     })
   );
 }

@@ -26,9 +26,9 @@ import { shouldCheckpoint } from "../args.js";
 import {
   CLIError,
   extractEnrichmentPreview,
-  runCommandWithContext,
+  runCommandWithLibraryContext,
   type CommandExecutionContext,
-  type GlobalCLIOptions,
+  type GlobalCLIOptionsWithLibrary,
 } from "../runner.js";
 import {
   combineIngestDiscoveryResults,
@@ -385,10 +385,10 @@ function acceptProposalsAfterCommit(
 
 export function runIngestCommand(
   args: string[],
-  globals: GlobalCLIOptions,
+  globals: GlobalCLIOptionsWithLibrary,
   options: IngestCommandOptions = {},
 ) {
-  return runCommandWithContext(
+  return runCommandWithLibraryContext(
     args,
     globals,
     ({ Console, format, library, globals }) =>
