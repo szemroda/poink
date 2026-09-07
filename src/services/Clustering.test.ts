@@ -82,6 +82,30 @@ function generateTestEmbeddings(
 // ============================================================================
 
 describe("ClusteringService - K-Means", () => {
+  it("preserves seeded k-means++ centroid selection", async () => {
+    const embeddings = Array.from({ length: 12 }, (_, index) => ({
+      id: String(index),
+      vector: [index % 4, Math.floor(index / 4), index / 10],
+    }));
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const service = yield* ClusteringService;
+        return yield* service.cluster(embeddings, {
+          k: 4,
+          maxIterations: 0,
+          seed: 123,
+        });
+      }).pipe(Effect.provide(ClusteringServiceImpl.Default)),
+    );
+
+    expect(result.clusters.map((cluster) => cluster.centroid)).toEqual([
+      [1, 2, 0.9],
+      [1, 0, 0.1],
+      [2, 1, 0.6],
+      [3, 0, 0.3],
+    ]);
+  });
+
   it("should cluster embeddings into groups", async () => {
     const embeddings = [
       { id: "1", vector: [1, 0, 0] },

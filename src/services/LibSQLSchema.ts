@@ -145,8 +145,9 @@ async function initializeDocumentSchema(client: Client): Promise<void> {
   ]);
 
   await client.execute(
-    "CREATE INDEX IF NOT EXISTS idx_chunks_doc ON chunks(doc_id)",
+    "CREATE INDEX IF NOT EXISTS idx_chunks_doc_position ON chunks(doc_id, page, chunk_index)",
   );
+  await client.execute("DROP INDEX IF EXISTS idx_chunks_doc");
   await client.execute(
     "CREATE INDEX IF NOT EXISTS idx_docs_path ON documents(path)",
   );

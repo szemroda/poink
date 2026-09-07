@@ -517,10 +517,10 @@ function makeSearchRepository(
             sql: `SELECT page, chunk_index, content
                   FROM chunks
                   WHERE doc_id = ?
-                    AND (page < ? OR (page = ? AND chunk_index < ?))
+                    AND (page, chunk_index) < (?, ?)
                   ORDER BY page DESC, chunk_index DESC
                   LIMIT ${CONTEXT_QUERY_LIMIT}`,
-            args: [docId, page, page, chunkIndex],
+            args: [docId, page, chunkIndex],
           });
           for (const row of beforeResult.rows) {
             const previous = decodeContextRow(row, "expand chunk context");
@@ -541,10 +541,10 @@ function makeSearchRepository(
             sql: `SELECT page, chunk_index, content
                   FROM chunks
                   WHERE doc_id = ?
-                    AND (page > ? OR (page = ? AND chunk_index > ?))
+                    AND (page, chunk_index) > (?, ?)
                   ORDER BY page ASC, chunk_index ASC
                   LIMIT ${CONTEXT_QUERY_LIMIT}`,
-            args: [docId, page, page, chunkIndex],
+            args: [docId, page, chunkIndex],
           });
           for (const row of afterResult.rows) {
             const next = decodeContextRow(row, "expand chunk context");

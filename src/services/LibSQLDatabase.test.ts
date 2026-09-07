@@ -355,6 +355,40 @@ describe("libSQL storage", () => {
     );
   });
 
+  test("expands context in document order across page boundaries", async () => {
+    await runStorage(
+      makeConfig(),
+      Effect.gen(function* () {
+        const documents = yield* DocumentRepository;
+        const search = yield* SearchRepository;
+        yield* documents.addDocument(makeDocument());
+        yield* documents.addDocument(makeDocument("other"));
+        yield* documents.addChunks([
+          { id: "e", docId: "doc-1", page: 3, chunkIndex: 0, content: "E" },
+          { id: "b", docId: "doc-1", page: 1, chunkIndex: 1, content: "B" },
+          { id: "c", docId: "doc-1", page: 2, chunkIndex: 0, content: "C" },
+          { id: "a", docId: "doc-1", page: 1, chunkIndex: 0, content: "A" },
+          { id: "d", docId: "doc-1", page: 2, chunkIndex: 1, content: "D" },
+          { id: "other", docId: "other", page: 2, chunkIndex: 0, content: "Other" },
+        ]);
+
+        for (const [direction, content, startChunk, endChunk] of [
+          ["before", "A\nB\nC", "p1c0", "p2c0"],
+          ["after", "C\nD\nE", "p2c0", "p3c0"],
+          ["both", "A\nB\nC\nD\nE", "p1c0", "p3c0"],
+        ] as const) {
+          expect(yield* search.getExpandedContext("doc-1", 2, 0, {
+            direction,
+            maxChars: 100,
+          })).toEqual({ content, startChunk, endChunk });
+        }
+        expect(yield* search.getExpandedContext("doc-1", 2, 0, {
+          maxChars: 1,
+        })).toEqual({ content: "C", startChunk: "p2c0", endChunk: "p2c0" });
+      }),
+    );
+  });
+
   test("upgrades supported legacy columns during centralized startup", async () => {
     const directory = mkdtempSync(join(tmpdir(), "poink-schema-"));
     tempDirs.push(directory);
@@ -388,6 +422,7 @@ describe("libSQL storage", () => {
         content TEXT NOT NULL
       )
     `);
+    await client.execute("CREATE INDEX idx_chunks_doc ON chunks(doc_id)");
     client.close();
 
     await runStorage(
@@ -405,6 +440,14 @@ describe("libSQL storage", () => {
     );
 
     const verification = createClient({ url });
+    const positionIndex = await verification.execute(
+      "PRAGMA index_info(idx_chunks_doc_position)",
+    );
+    expect(positionIndex.rows.map((row) => row.name)).toEqual([
+      "doc_id", "page", "chunk_index",
+    ]);
+    const indexes = await verification.execute("PRAGMA index_list(chunks)");
+    expect(indexes.rows.some((row) => row.name === "idx_chunks_doc")).toBe(false);
     const documentColumns = await verification.execute(
       "PRAGMA table_info(documents)",
     );

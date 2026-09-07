@@ -336,15 +336,16 @@ function kMeansPlusPlusInit(
   // First centroid: random
   const firstIdx = Math.floor(rng() * vectors.length);
   centroids.push([...vectors[firstIdx]]);
+  const distances = new Array<number>(vectors.length).fill(Infinity);
 
   // Remaining centroids: weighted by distance squared
   for (let i = 1; i < k; i++) {
-    const distances = vectors.map((v) => {
-      const minDist = Math.min(
-        ...centroids.map((c) => euclideanDistance(v, c))
-      );
-      return minDist * minDist;
-    });
+    // Earlier centroids are unchanged, so only compare with the newest one.
+    const newestCentroid = centroids[i - 1];
+    for (let j = 0; j < vectors.length; j++) {
+      const distance = euclideanDistance(vectors[j], newestCentroid);
+      distances[j] = Math.min(distances[j], distance * distance);
+    }
 
     const totalDist = distances.reduce((a, b) => a + b, 0);
     let threshold = rng() * totalDist;
