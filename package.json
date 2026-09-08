@@ -1,6 +1,6 @@
 {
   "name": "poink-cli",
-  "version": "0.5.2",
+  "version": "0.6.0",
   "description": "Local document knowledge base with semantic search, enrichment, and MCP support.",
   "license": "MIT",
   "type": "module",
