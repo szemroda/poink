@@ -755,7 +755,28 @@ poink config set models.embedding.model text-embedding-3-small
 
 ### OpenAI Codex
 
-OpenAI Codex can be configured for enrichment and judge language-model calls. It uses the managed Codex runtime installed with poink and authenticates through Codex, not through an OpenAI API key. It is not an embedding provider.
+OpenAI Codex can be configured for enrichment and judge language-model calls. Poink uses your installed Codex CLI on Linux, Windows, and macOS, with your existing Codex authentication and `CODEX_HOME` environment setting. It is not an embedding provider.
+
+Poink selects the Codex file in this order:
+
+1. `providers.openai-codex.codexPath` in the Poink config file.
+2. The `POINK_CODEX_PATH` environment variable.
+3. The first Codex installation on `PATH` outside Poink's dependencies.
+
+Empty strings and whitespace-only values are skipped. A nonempty setting that points to an invalid or incompatible installation fails with its path and setting source; Poink does not fall back to another installation.
+
+Both settings accept an absolute file path or a path starting with `~/` or `~\`. Relative paths, shell commands, arguments, `$HOME`, `%USERPROFILE%`, and `~other-user` are not supported. Spaces within a path are supported. Store the path without extra quote characters. On Windows, standard npm `codex.cmd` and `codex.ps1` launchers are supported, as are the Codex executable and its `bin/codex.js` entry point.
+
+```bash
+# Optional override. Otherwise Poink searches PATH.
+poink config set providers.openai-codex.codexPath '~/.local/bin/codex'
+# Or, with the config setting absent or empty:
+export POINK_CODEX_PATH=/absolute/path/to/codex
+```
+
+The provider adapter may still install its own Codex dependency. Poink skips that copy during automatic discovery, including when launched through `npx`. An explicit path can select any installation.
+
+Missing or incompatible Codex installations only block operations that need Codex. Login checks that the program can be launched. Model calls and `poink doctor` let the adapter check its required minimum version. If the adapter rejects the version, update the selected Codex installation or point Poink to a compatible one.
 
 ```bash
 poink config set models.enrichment.provider openai-codex

@@ -149,7 +149,7 @@ function runShowConfig(
         anthropicApiKeyConfigured: Boolean(hasAnthropicKey),
         openAICodex: {
           roles: openAICodexRoles,
-          runtime: "bundled",
+          runtime: "local",
         },
         cli: {
           defaultFormat: config.cli.globalFlags.format,

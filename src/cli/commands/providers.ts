@@ -1,4 +1,5 @@
 import { Effect } from "effect";
+import { loadConfig, OpenAICodexError, type Config } from "../../types.js";
 import { runOpenAICodexLogin } from "../../services/OpenAICodexProvider.js";
 import { CLIError, describeCliFailure } from "../runner.js";
 import type { OutputFormat } from "../../agent/protocol.js";
@@ -86,8 +87,11 @@ function invalidOptionsError(error: unknown): CLIError {
     : new CLIError("INVALID_ARGS", describeCliFailure(error));
 }
 
-function authenticationError(error: unknown): CLIError {
-  return new CLIError("AUTH_FAILED", describeCliFailure(error), {
+export function codexLoginError(error: unknown): CLIError {
+  const code = error instanceof OpenAICodexError && error.kind === "runtime"
+    ? "CODEX_RUNTIME_ERROR"
+    : "AUTH_FAILED";
+  return new CLIError(code, describeCliFailure(error), {
     cause: error,
   });
 }
@@ -97,6 +101,7 @@ export function runProvidersCommand(
   format: OutputFormat,
   Console: CliConsole,
   options: ProvidersCommandOptions = {},
+  config?: Config,
 ): Effect.Effect<CliCommandOutput, CLIError> {
   return Effect.gen(function* () {
     const subcommand = args[1];
@@ -120,11 +125,11 @@ export function runProvidersCommand(
     yield* Console.log("Starting OpenAI Codex login...");
     yield* Effect.tryPromise({
       try: () =>
-        runOpenAICodexLogin({
+        runOpenAICodexLogin(config ?? loadConfig(), {
           stdio: "inherit",
           deviceAuth: opts.deviceAuth,
         }),
-      catch: authenticationError,
+      catch: codexLoginError,
     });
     yield* Console.log("OpenAI Codex login complete");
 

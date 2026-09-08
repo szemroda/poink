@@ -192,7 +192,7 @@ export function dispatchCommand(
       args,
       globals,
       ({ Console, format }) =>
-        runProvidersCommand(args, format, Console, options),
+        runProvidersCommand(args, format, Console, options, globals.config),
       options,
     );
   }

@@ -541,7 +541,7 @@ export async function resolveLanguageModel(
     return {
       provider,
       modelId,
-      model: getOpenAICodexProviderManager().getLanguageModel(modelId),
+      model: getOpenAICodexProviderManager(config).getLanguageModel(modelId),
       providerOptions,
     };
   }

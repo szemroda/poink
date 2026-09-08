@@ -40,7 +40,6 @@
     "@inquirer/prompts": "^8.5.2",
     "@libsql/client": "^0.17.4",
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "@openai/codex": "^0.142.5",
     "@openrouter/ai-sdk-provider": "^2.10.0",
     "@xmldom/xmldom": "^0.9.10",
     "ai": "^6.0.219",

@@ -20,6 +20,7 @@ import {
   type GlobalCLIOptions,
 } from "../runner.js";
 import { initializePoinkLibrary } from "./init.js";
+import { codexLoginError } from "./providers.js";
 import type { CliConsole } from "./types.js";
 
 const EMBEDDING_PROVIDERS = [
@@ -597,9 +598,9 @@ async function runSetupWizard(mode: SetupMode, dryRun: boolean): Promise<SetupPl
   }
 }
 
-async function runCodexAuth(action: CodexAuthAction | null): Promise<void> {
+async function runCodexAuth(config: Config, action: CodexAuthAction | null): Promise<void> {
   if (!action || action === "skip") return;
-  await runOpenAICodexLogin({
+  await runOpenAICodexLogin(config, {
     stdio: "inherit",
     deviceAuth: action === "device",
   });
@@ -662,9 +663,8 @@ function applySetupPlan(Console: CliConsole, plan: SetupPlan) {
     }
 
     yield* Effect.tryPromise({
-      try: () => runCodexAuth(plan.codexAuthAction),
-      catch: (error) =>
-        new CLIError("AUTH_FAILED", describeCliFailure(error), { cause: error }),
+      try: () => runCodexAuth(plan.config, plan.codexAuthAction),
+      catch: codexLoginError,
     });
   });
 }

@@ -262,13 +262,13 @@ describe("loadConfig path and database defaults", () => {
     expect(() => normalizeConfig(config)).toThrow();
   });
 
-  test("rejects OpenAI Codex provider configuration in bundled-only mode", () => {
+  test("accepts a Codex file path without requiring Codex to be installed", () => {
     const config = JSON.parse(JSON.stringify(Config.Default));
     config.providers["openai-codex"] = { codexPath: "C:\\tools\\codex.cmd" };
 
-    expect(() => normalizeConfig(config)).toThrow(
-      /does not accept configuration/,
-    );
+    expect(normalizeConfig(config).providers["openai-codex"]).toEqual({
+      codexPath: "C:\\tools\\codex.cmd",
+    });
   });
 
   test("accepts optional reasoning levels for language model roles", () => {

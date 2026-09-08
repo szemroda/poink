@@ -499,12 +499,9 @@ export class Config extends Schema.Class<Config>("Config")({
         baseUrl: DEFAULT_OPENAI_BASE_URL,
       }),
     }),
-    "openai-codex": Schema.optionalWith(Schema.Struct({}).pipe(
-      Schema.filter((value) => Object.keys(value).length === 0, {
-        message: () =>
-          "OpenAI Codex provider does not accept configuration in this release.",
-      }),
-    ), {
+    "openai-codex": Schema.optionalWith(Schema.Struct({
+      codexPath: Schema.optional(Schema.String),
+    }), {
       default: () => ({}),
     }),
     openrouter: Schema.optionalWith(Schema.Struct({
@@ -979,8 +976,17 @@ export class OpenAIError extends Schema.TaggedError<OpenAIError>()(
 
 export class OpenAICodexError extends Schema.TaggedError<OpenAICodexError>()(
   "OpenAICodexError",
-  { reason: Schema.String }
-) {}
+  {
+    reason: Schema.String,
+    kind: Schema.optionalWith(Schema.Literal("runtime", "authentication"), {
+      default: () => "runtime" as const,
+    }),
+  }
+) {
+  override get message(): string {
+    return this.reason;
+  }
+}
 
 export class OpenRouterError extends Schema.TaggedError<OpenRouterError>()(
   "OpenRouterError",

@@ -263,6 +263,7 @@ describe("AIProvider", () => {
 
   test("resolves OpenAI Codex language models through the app-server provider", async () => {
     const config = makeTestConfig({
+      providers: { "openai-codex": { codexPath: process.execPath } },
       models: {
         enrichment: {
           provider: "openai-codex",

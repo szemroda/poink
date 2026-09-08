@@ -30,15 +30,9 @@ import {
   type GlobalCLIOptionsWithLibrary,
 } from "../runner.js";
 
-type OpenAICodexRole = "enrichment" | "judge";
+import type { OpenAICodexRuntimeStatus } from "../../services/OpenAICodexProvider.js";
 
-type OpenAICodexRuntimeStatus = {
-  configured: boolean;
-  roles: OpenAICodexRole[];
-  canStart: boolean;
-  authenticated: boolean;
-  error?: string;
-};
+type OpenAICodexRole = "enrichment" | "judge";
 
 type OrphanedData = {
   chunks: number;
@@ -209,7 +203,7 @@ function buildOpenAICodexHealthCheck(
     severity: healthy ? "ok" : "error",
     details: [
       `configured for ${status.roles.join(", ")}`,
-      "bundled Codex runtime",
+      status.path ? `${status.path} (${status.source})` : null,
       status.error ?? null,
     ]
       .filter(Boolean)
