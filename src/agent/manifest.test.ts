@@ -16,4 +16,13 @@ describe("renderHelp", () => {
     expect(help).toContain("poink taxonomy tree [id]");
     expect(help).not.toContain("poink taxonomy list [--tree]");
   });
+
+  test("documents the ingest glob base", () => {
+    const help = renderHelp();
+
+    expect(help).toContain("[--include <glob>] [--exclude <glob>]");
+    expect(help).toContain(
+      "Ingest globs match paths relative to the working directory.",
+    );
+  });
 });

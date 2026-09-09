@@ -301,6 +301,7 @@ function renderScopePatterns(label: string, patterns: string[]): string[] {
 
 function discoverTargetFiles(
   targetDirs: string[],
+  filterBasePath: string,
   selectionFilters: IngestSelectionFilters,
   recursive: boolean,
   Console: CliConsole,
@@ -321,7 +322,12 @@ function discoverTargetFiles(
 
     const discoveryResults: IngestDiscoveryResult[] = [];
     for (const dir of targetDirs) {
-      const found = discoverIngestFiles(dir, selectionFilters, recursive);
+      const found = discoverIngestFiles(
+        dir,
+        filterBasePath,
+        selectionFilters,
+        recursive,
+      );
       yield* Console.log(
         `  ${basename(dir)}: ${found.selection.discovered} files`,
       );
@@ -426,10 +432,10 @@ export function runIngestCommand(
           yield* Console.error("  --tags a,b,c   Manual tags for all files");
           yield* Console.error("  --sample N     Process only first N files");
           yield* Console.error(
-            "  --include GLOB Include matching paths (overrides config include)",
+            "  --include GLOB Include working-directory-relative paths (overrides config include)",
           );
           yield* Console.error(
-            "  --exclude GLOB Exclude matching paths (adds to config exclude)",
+            "  --exclude GLOB Exclude working-directory-relative paths (adds to config exclude)",
           );
           yield* Console.error("  --no-progress  Disable line progress output");
           return yield* Effect.fail(
@@ -460,6 +466,7 @@ export function runIngestCommand(
           ingestConfig.ingest,
           options,
         );
+        const filterBasePath = process.cwd();
         const visualsExplicit = options.visuals === true;
         const visualsEnabled =
           visualsExplicit || resolveVisualsConfig(ingestConfig).enabled;
@@ -477,6 +484,7 @@ export function runIngestCommand(
 
         const discovery = yield* discoverTargetFiles(
           targetDirs,
+          filterBasePath,
           selectionFilters,
           recursive,
           Console,
@@ -485,7 +493,19 @@ export function runIngestCommand(
         let selection = discovery.selection;
 
         if (files.length === 0) {
-          yield* Console.log("No supported document files found");
+          if (selection.discovered === 0) {
+            yield* Console.log("No supported document files found");
+          } else if (selection.included === 0) {
+            yield* Console.log("No files matched the include filters");
+            yield* Console.log(
+              `Filter paths are relative to the working directory: ${filterBasePath}`,
+            );
+          } else {
+            yield* Console.log("All included files were excluded");
+            yield* Console.log(
+              `Filter paths are relative to the working directory: ${filterBasePath}`,
+            );
+          }
           return {
             resultPayload: createEarlyResultPayload(
               0,

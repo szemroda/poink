@@ -50,7 +50,8 @@ const AGENT_HELP_TEXT = dedent`
     poink add <url> [--max-file-size 100mb] [--download-timeout 30s] [--max-redirects 5]
     poink remove "<id|title>"
     poink tag "<id|title>" "tag1,tag2"
-    poink ingest <dir> [--enrich] [--auto-tag] [--recursive] [--no-progress]
+    poink ingest <dir1> [dir2...] [--include <glob>] [--exclude <glob>] [--enrich] [--auto-tag] [--recursive] [--no-progress]
+    # Ingest globs match paths relative to the working directory.
 
   ### Maintenance
     poink setup

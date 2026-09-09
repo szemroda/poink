@@ -12,7 +12,7 @@ import {
 } from "fs";
 import { createServer } from "net";
 import { tmpdir } from "os";
-import { join, relative } from "path";
+import { join, relative, resolve } from "path";
 import { Client } from "@modelcontextprotocol/sdk/client";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { createClient } from "@libsql/client";
@@ -20,7 +20,7 @@ import { PDFDocument } from "pdf-lib";
 import { removeDirWithRetries } from "./testUtils.js";
 
 function nodeTsxArgs(args: string[]): string[] {
-  return ["--import", "tsx", "src/cli.ts", ...args];
+  return ["--import", import.meta.resolve("tsx"), resolve("src/cli.ts"), ...args];
 }
 
 function npmCommand(): string {
@@ -272,9 +272,10 @@ function insertStoredMarkdownDocumentInChild(
 
 function runCli(
   argv: string[],
-  opts?: { env?: Record<string, string | undefined> },
+  opts?: { cwd?: string; env?: Record<string, string | undefined> },
 ): { exitCode: number; stdout: string; stderr: string } {
   const proc = spawnSync(process.execPath, nodeTsxArgs(argv), {
+    cwd: opts?.cwd,
     env: childEnv(opts?.env),
     encoding: "utf-8",
   });
@@ -2105,6 +2106,30 @@ describe("CLI JSON Envelope Contract", () => {
       });
     }));
 
+  test("ingest explains cwd-relative filters rejecting an external directory", () =>
+    withTempLibraryPath((libraryRoot) => {
+      const projectRoot = join(libraryRoot, "project");
+      const libraryPath = join(libraryRoot, "library");
+      const docs = join(libraryRoot, "external-docs");
+      const configPath = join(libraryRoot, "config.json");
+      writeTestConfig(configPath, libraryPath);
+      mkdirSync(projectRoot);
+      mkdirSync(docs);
+      writeFileSync(join(docs, "paper.pdf"), "%PDF-1.7", "utf-8");
+
+      const res = runCli(["ingest", docs, "--include", "**/*.pdf"], {
+        cwd: projectRoot,
+        env: envForConfig(configPath),
+      });
+
+      expect(res.exitCode).toBe(0);
+      expect(res.stdout).toContain("No files matched the include filters");
+      expect(res.stdout).toContain(
+        `Filter paths are relative to the working directory: ${projectRoot}`,
+      );
+      expect(res.stdout).not.toContain("No supported document files found");
+    }));
+
   test("ingest uses config include and exclude when CLI filters are absent", () =>
     withTempLibraryPath((libraryRoot) => {
       const libraryPath = join(libraryRoot, "library");
@@ -2117,7 +2142,8 @@ describe("CLI JSON Envelope Contract", () => {
       mkdirSync(docs);
       writeFileSync(join(docs, "note.md"), "# Note", "utf-8");
 
-      const res = runCli(["ingest", docs, "--format", "json"], {
+      const res = runCli(["ingest", ".", "--format", "json"], {
+        cwd: docs,
         env: envForConfig(configPath),
       });
 
@@ -2130,6 +2156,52 @@ describe("CLI JSON Envelope Contract", () => {
         discovered: 1,
         included: 1,
         excluded: 1,
+        selected: 0,
+        sampled: 0,
+      });
+    }));
+
+  test("ingest matches configured filters relative to the working directory", () =>
+    withTempLibraryPath((libraryRoot) => {
+      const projectRoot = join(libraryRoot, "project");
+      const libraryPath = join(libraryRoot, "library");
+      const configPath = join(libraryRoot, "config.json");
+      const reportDirectories = [
+        "companies/kruk/sources/2026/2026-h1/reports",
+        "companies/synektik/sources/2025/2025-q3/reports",
+        "companies/xtb/sources/2026/2026-h1/reports",
+      ];
+      writeTestConfigWithIngestSelection(configPath, libraryPath, {
+        include: ["companies/*/sources/**/*"],
+        exclude: ["companies/*/sources/**/*"],
+      });
+      for (const [index, reportDirectory] of reportDirectories.entries()) {
+        const absoluteDirectory = join(projectRoot, reportDirectory);
+        mkdirSync(absoluteDirectory, { recursive: true });
+        writeFileSync(
+          join(absoluteDirectory, `report-${index + 1}.md`),
+          `# Report ${index + 1}`,
+          "utf-8",
+        );
+      }
+
+      const res = runCli(
+        ["ingest", ...reportDirectories, "--format", "json"],
+        {
+          cwd: projectRoot,
+          env: envForConfig(configPath),
+        },
+      );
+
+      expect(res.exitCode).toBe(0);
+      const obj = JSON.parse(res.stdout);
+      expect(obj.ok).toBe(true);
+      expect(obj.result.selection).toEqual({
+        include: ["companies/*/sources/**/*"],
+        exclude: ["companies/*/sources/**/*"],
+        discovered: 3,
+        included: 3,
+        excluded: 3,
         selected: 0,
         sampled: 0,
       });
@@ -2151,7 +2223,7 @@ describe("CLI JSON Envelope Contract", () => {
       const res = runCli(
         [
           "ingest",
-          docs,
+          ".",
           "--include",
           "**/*.md",
           "--exclude",
@@ -2159,7 +2231,7 @@ describe("CLI JSON Envelope Contract", () => {
           "--format",
           "json",
         ],
-        { env: envForConfig(configPath) },
+        { cwd: docs, env: envForConfig(configPath) },
       );
 
       expect(res.exitCode).toBe(0);
@@ -2188,13 +2260,13 @@ describe("CLI JSON Envelope Contract", () => {
       const res = runCli(
         [
           "ingest",
-          docs,
+          ".",
           "--include",
           "**/*.md",
           "--exclude",
           "**/archive/**",
         ],
-        { env: envForConfig(configPath) },
+        { cwd: docs, env: envForConfig(configPath) },
       );
 
       expect(res.exitCode).toBe(0);

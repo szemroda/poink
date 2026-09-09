@@ -289,8 +289,18 @@ function registerMaintenanceCommands(
       .option("--auto-tag")
       .option("--tags <tags>")
       .option("--sample <n>", "", parseIntegerOption("--sample", 1))
-      .option("--include <glob>", "", collectRepeatedOption, [])
-      .option("--exclude <glob>", "", collectRepeatedOption, [])
+      .option(
+        "--include <glob>",
+        "include working-directory-relative paths; overrides config",
+        collectRepeatedOption,
+        [],
+      )
+      .option(
+        "--exclude <glob>",
+        "exclude working-directory-relative paths; extends config",
+        collectRepeatedOption,
+        [],
+      )
       .option("--no-progress")
       .option("--recursive")
       .option("--no-recursive"),

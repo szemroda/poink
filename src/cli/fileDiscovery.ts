@@ -97,8 +97,8 @@ function isDiscoveryCandidate(filename: string): boolean {
 }
 
 function discoverCandidates(
-  root: string,
   directory: string,
+  filterBasePath: string,
   recursive: boolean,
 ): DiscoveryCandidate[] {
   const candidates: DiscoveryCandidate[] = [];
@@ -110,14 +110,16 @@ function discoverCandidates(
         const stat = statSync(fullPath);
         if (stat.isDirectory()) {
           if (recursive) {
-            candidates.push(...discoverCandidates(root, fullPath, recursive));
+            candidates.push(
+              ...discoverCandidates(fullPath, filterBasePath, recursive),
+            );
           }
           continue;
         }
         if (stat.isFile() && isDiscoveryCandidate(entry)) {
           candidates.push({
             absolutePath: fullPath,
-            relativePath: normalizeGlobPath(relative(root, fullPath)),
+            relativePath: normalizeGlobPath(relative(filterBasePath, fullPath)),
           });
         }
       } catch {
@@ -173,10 +175,11 @@ function createDiscoveryResult(
 
 export function discoverIngestFiles(
   root: string,
+  filterBasePath: string,
   filters: IngestSelectionFilters,
   recursive: boolean,
 ): IngestDiscoveryResult {
-  const candidates = discoverCandidates(root, root, recursive);
+  const candidates = discoverCandidates(root, filterBasePath, recursive);
   const includeMatcher = createMatcher(filters.include);
   const excludeMatcher = createMatcher(filters.exclude);
 

@@ -36,6 +36,7 @@ describe("ingest file discovery", () => {
 
       const result = discoverIngestFiles(
         root,
+        root,
         {
           include: ["**/*.md"],
           exclude: ["**/archive/**"],
@@ -69,8 +70,8 @@ describe("ingest file discovery", () => {
       };
       const combined = combineIngestDiscoveryResults(
         [
-          discoverIngestFiles(root, filters, true),
-          discoverIngestFiles(nested, filters, true),
+          discoverIngestFiles(root, root, filters, true),
+          discoverIngestFiles(nested, root, filters, true),
         ],
         filters,
       );
@@ -88,7 +89,7 @@ describe("ingest file discovery", () => {
     });
   });
 
-  test("keeps excluded paths out when overlapping roots disagree", () => {
+  test("uses one filter path when combining overlapping roots", () => {
     withTempDirectory((root) => {
       const nested = join(root, "nested");
       mkdirSync(join(nested, "archive"), { recursive: true });
@@ -96,12 +97,12 @@ describe("ingest file discovery", () => {
 
       const filters = {
         include: ["**/*.md"],
-        exclude: ["archive/**"],
+        exclude: ["nested/archive/**"],
       };
       const combined = combineIngestDiscoveryResults(
         [
-          discoverIngestFiles(root, filters, true),
-          discoverIngestFiles(nested, filters, true),
+          discoverIngestFiles(root, root, filters, true),
+          discoverIngestFiles(nested, root, filters, true),
         ],
         filters,
       );
@@ -109,7 +110,7 @@ describe("ingest file discovery", () => {
       expect(combined.files).toEqual([]);
       expect(combined.selection).toEqual({
         include: ["**/*.md"],
-        exclude: ["archive/**"],
+        exclude: ["nested/archive/**"],
         discovered: 1,
         included: 1,
         excluded: 1,

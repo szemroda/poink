@@ -348,8 +348,8 @@ poink ingest ~/papers --enrich --sample 10
 # Disable line progress output
 poink ingest ~/papers --enrich --no-progress
 
-# Limit a run to matching files
-poink ingest ~/docs --include "**/*.md" --exclude "**/archive/**"
+# Limit a run from the current project root to matching files
+poink ingest docs --include "docs/**/*.md" --exclude "docs/archive/**"
 ```
 
 Bulk ingest can also read reusable file selection rules from config:
@@ -361,6 +361,12 @@ poink config set ingest.exclude "**/archive/**,**/drafts/**"
 
 When `--include` is passed, it replaces configured `ingest.include` for that
 run. When `--exclude` is passed, it is added to configured `ingest.exclude`.
+Poink matches both kinds of glob against paths relative to the working directory
+where the command was started. Positional directories restrict which trees are
+scanned, but do not change the glob base. For example, from a repository root,
+`poink ingest companies/acme/sources --include "companies/*/sources/**/*"`
+matches the same paths as scanning `.` with that filter. A target outside the
+working directory has a `../` prefix in its filter path.
 
 **Supported formats:**
 
