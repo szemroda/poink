@@ -271,15 +271,23 @@ describe("loadConfig path and database defaults", () => {
     });
   });
 
-  test("accepts optional reasoning levels for language model roles", () => {
+  test("accepts AI SDK reasoning levels for language model roles", () => {
     const config = JSON.parse(JSON.stringify(Config.Default));
-    config.models.enrichment.reasoning = "high";
-    config.models.judge.reasoning = "none";
+    const levels = [
+      "provider-default",
+      "none",
+      "minimal",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+    ];
 
-    const normalized = normalizeConfig(config);
+    for (const level of levels) {
+      config.models.enrichment.reasoning = level;
 
-    expect(normalized.models.enrichment.reasoning).toBe("high");
-    expect(normalized.models.judge.reasoning).toBe("none");
+      expect(normalizeConfig(config).models.enrichment.reasoning).toBe(level);
+    }
   });
 
   test("normalizes legacy configs without CLI settings to text output", () => {

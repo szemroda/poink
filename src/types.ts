@@ -348,7 +348,16 @@ export type EmbeddingProviderName = Exclude<
   ProviderName,
   "anthropic" | "openai-codex"
 >;
-export type ReasoningLevel = "low" | "medium" | "high" | "none";
+const REASONING_LEVELS = [
+  "provider-default",
+  "none",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+] as const;
+export type ReasoningLevel = (typeof REASONING_LEVELS)[number];
 export type CLIOutputFormat = OutputFormat;
 
 const EmbeddingProviderNameSchema = Schema.Literal(
@@ -369,7 +378,7 @@ const LanguageProviderNameSchema = Schema.Literal(
   "anthropic",
 );
 
-const ReasoningLevelSchema = Schema.Literal("low", "medium", "high", "none");
+const ReasoningLevelSchema = Schema.Literal(...REASONING_LEVELS);
 const CLIOutputFormatSchema = Schema.Literal(...OUTPUT_FORMATS);
 
 const EmbeddingModelRefSchema = Schema.Struct({

@@ -1,13 +1,7 @@
 import type {
   EmbeddingModelV4,
   LanguageModelV4,
-  LanguageModelV4CallOptions,
 } from "@ai-sdk/provider";
-import type { AnthropicLanguageModelOptions } from "@ai-sdk/anthropic";
-import type { GoogleLanguageModelOptions } from "@ai-sdk/google";
-import type { OpenAILanguageModelResponsesOptions } from "@ai-sdk/openai";
-import type { OpenRouterProviderOptions } from "@openrouter/ai-sdk-provider";
-import type { OllamaCompletionProviderOptions } from "ollama-ai-provider-v2";
 import {
   AnthropicError,
   GatewayError,
@@ -38,13 +32,6 @@ export type ProviderError =
   | OpenAICodexError
   | OpenRouterError;
 export type ConfiguredLanguageRole = "enrichment" | "judge";
-type ReasoningTargetProvider = Exclude<SupportedProvider, "gateway">;
-export type ProviderOptions = NonNullable<
-  LanguageModelV4CallOptions["providerOptions"]
->;
-export type ProviderOptionsInput = {
-  readonly providerOptions?: ProviderOptions;
-};
 
 export interface ResolvedEmbeddingModel {
   readonly provider: SupportedProvider;
@@ -56,7 +43,7 @@ export interface ResolvedLanguageModel {
   readonly provider: SupportedProvider;
   readonly modelId: string;
   readonly model: LanguageModelV4;
-  readonly providerOptions?: ProviderOptions;
+  readonly reasoning?: ReasoningLevel;
 }
 
 type GatewayProvider = ReturnType<(typeof import("ai"))["createGateway"]>;
@@ -326,100 +313,6 @@ function getModelCacheKey(
     .join(":");
 }
 
-function inferGatewayTargetProvider(
-  modelId: string,
-): ReasoningTargetProvider | undefined {
-  const prefix = normalizeModelId(modelId).split("/")[0];
-  if (
-    prefix === "openai" ||
-    prefix === "anthropic" ||
-    prefix === "google" ||
-    prefix === "openrouter" ||
-    prefix === "ollama" ||
-    prefix === "openai-codex"
-  ) {
-    return prefix;
-  }
-  return undefined;
-}
-
-export function getReasoningProviderOptions(
-  provider: SupportedProvider,
-  modelId: string,
-  reasoning: ReasoningLevel | null | undefined,
-): ProviderOptions | undefined {
-  if (reasoning == null) return undefined;
-
-  const targetProvider =
-    provider === "gateway" ? inferGatewayTargetProvider(modelId) : provider;
-
-  if (targetProvider === "openai") {
-    const openai = {
-      reasoningEffort: reasoning,
-    } satisfies OpenAILanguageModelResponsesOptions;
-    return {
-      openai,
-    };
-  }
-
-  if (targetProvider === "openrouter") {
-    const openrouter = {
-      reasoning: {
-        effort: reasoning,
-      },
-    } satisfies OpenRouterProviderOptions;
-    return {
-      openrouter,
-    };
-  }
-
-  if (targetProvider === "google") {
-    const google = (
-      reasoning === "none"
-        ? { thinkingConfig: { thinkingBudget: 0 } }
-        : { thinkingConfig: { thinkingLevel: reasoning } }
-    ) satisfies GoogleLanguageModelOptions;
-    return {
-      google,
-    };
-  }
-
-  if (targetProvider === "anthropic") {
-    const anthropic = (
-      reasoning === "none"
-        ? { thinking: { type: "disabled" } }
-        : { effort: reasoning }
-    ) satisfies AnthropicLanguageModelOptions;
-    return {
-      anthropic,
-    };
-  }
-
-  if (targetProvider === "ollama") {
-    const ollama = {
-      think: reasoning !== "none",
-    } satisfies OllamaCompletionProviderOptions;
-    return { ollama };
-  }
-
-  if (targetProvider === "openai-codex") {
-    return {
-      "codex-app-server": {
-        effort: reasoning,
-      },
-    };
-  }
-
-  return undefined;
-}
-
-export function providerOptionsInput(
-  resolved: Pick<ResolvedLanguageModel, "providerOptions">,
-): ProviderOptionsInput {
-  if (!resolved.providerOptions) return {};
-  return { providerOptions: resolved.providerOptions };
-}
-
 async function createEmbeddingModel(
   config: Config,
   provider: SupportedProvider,
@@ -530,11 +423,6 @@ export async function resolveLanguageModel(
   reasoning?: ReasoningLevel | null,
 ): Promise<ResolvedLanguageModel> {
   if (provider === "openai-codex") {
-    const providerOptions = getReasoningProviderOptions(
-      provider,
-      modelId,
-      reasoning,
-    );
     const { getOpenAICodexProviderManager } = await import(
       "./OpenAICodexProvider.js"
     );
@@ -542,7 +430,7 @@ export async function resolveLanguageModel(
       provider,
       modelId,
       model: getOpenAICodexProviderManager(config).getLanguageModel(modelId),
-      providerOptions,
+      reasoning: reasoning ?? undefined,
     };
   }
 
@@ -553,17 +441,11 @@ export async function resolveLanguageModel(
   );
 
   return cachedMapValue(languageModels, config, cacheKey, async () => {
-    const providerOptions = getReasoningProviderOptions(
-      provider,
-      modelId,
-      reasoning,
-    );
-
     return {
       provider,
       modelId,
       model: await createLanguageModel(config, provider, modelId),
-      providerOptions,
+      reasoning: reasoning ?? undefined,
     };
   });
 }

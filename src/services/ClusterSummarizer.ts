@@ -5,7 +5,6 @@ import { z } from "zod";
 import {
   describeLanguageModelError,
   getConfiguredLanguageModel,
-  providerOptionsInput,
 } from "./AIProvider.js";
 import { loadConfig } from "../types.js";
 
@@ -78,7 +77,7 @@ async function generateSummary(
 
   const { output } = await generateText({
     model: resolvedModel.model,
-    ...providerOptionsInput(resolvedModel),
+    reasoning: resolvedModel.reasoning,
     abortSignal,
     maxRetries: 0,
     output: Output.object({ schema: SummarySchema }),

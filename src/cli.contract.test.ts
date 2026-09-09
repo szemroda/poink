@@ -1698,18 +1698,18 @@ describe("CLI JSON Envelope Contract", () => {
       const configPath = join(libraryRoot, "config.json");
       writeTestConfig(configPath, libraryPath);
 
-      const highRes = runCli(
-        ["config", "set", "models.enrichment.reasoning", "high", "--format", "json"],
+      const xhighRes = runCli(
+        ["config", "set", "models.enrichment.reasoning", "xhigh", "--format", "json"],
         {
           env: envForConfig(configPath),
         },
       );
 
-      expect(highRes.exitCode).toBe(0);
-      const highObj = JSON.parse(highRes.stdout);
-      expect(highObj.ok).toBe(true);
-      expect(highObj.result.path).toBe("models.enrichment.reasoning");
-      expect(highObj.result.value).toBe("high");
+      expect(xhighRes.exitCode).toBe(0);
+      const xhighObj = JSON.parse(xhighRes.stdout);
+      expect(xhighObj.ok).toBe(true);
+      expect(xhighObj.result.path).toBe("models.enrichment.reasoning");
+      expect(xhighObj.result.value).toBe("xhigh");
 
       const nullRes = runCli(
         ["config", "set", "models.judge.reasoning", "null", "--format", "json"],
@@ -1725,7 +1725,7 @@ describe("CLI JSON Envelope Contract", () => {
       expect(nullObj.result.value).toBeNull();
 
       const saved = JSON.parse(readFileSync(configPath, "utf-8"));
-      expect(saved.models.enrichment.reasoning).toBe("high");
+      expect(saved.models.enrichment.reasoning).toBe("xhigh");
       expect(saved.models.judge.reasoning).toBeNull();
     }));
 

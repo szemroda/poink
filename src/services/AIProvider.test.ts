@@ -5,7 +5,6 @@ import {
   describeLanguageModelError,
   getConfiguredLanguageModel,
   getConfiguredEmbeddingModel,
-  getReasoningProviderOptions,
   normalizeOllamaBaseUrl,
   resolveLanguageModel,
 } from "./AIProvider.js";
@@ -217,34 +216,13 @@ describe("AIProvider", () => {
     expect(resolved.model.modelId).toBe("claude-3-5-haiku-20241022");
   });
 
-  test("omits reasoning provider options when reasoning is not configured", () => {
-    expect(getReasoningProviderOptions("openai", "gpt-5.2", null)).toBeUndefined();
-    expect(
-      getReasoningProviderOptions("openai", "gpt-5.2", undefined),
-    ).toBeUndefined();
-  });
-
-  test("maps reasoning levels to provider-specific options", () => {
-    expect(getReasoningProviderOptions("openai", "gpt-5.2", "high")).toEqual({
-      openai: { reasoningEffort: "high" },
-    });
-    expect(getReasoningProviderOptions("openrouter", "openai/gpt-5", "low")).toEqual({
-      openrouter: { reasoning: { effort: "low" } },
-    });
-    expect(
-      getReasoningProviderOptions("google", "gemini-3-pro-preview", "medium"),
-    ).toEqual({
-      google: { thinkingConfig: { thinkingLevel: "medium" } },
-    });
-  });
-
-  test("passes configured language model reasoning through resolved provider options", async () => {
+  test("passes configured reasoning through the resolved language model", async () => {
     const config = makeTestConfig({
       models: {
         enrichment: {
           provider: "openai",
           model: "gpt-5.2",
-          reasoning: "high",
+          reasoning: "xhigh",
         },
       },
       providers: {
@@ -256,9 +234,7 @@ describe("AIProvider", () => {
 
     const resolved = await getConfiguredLanguageModel(config, "enrichment");
 
-    expect(resolved.providerOptions).toEqual({
-      openai: { reasoningEffort: "high" },
-    });
+    expect(resolved.reasoning).toBe("xhigh");
   });
 
   test("resolves OpenAI Codex language models through the app-server provider", async () => {
@@ -278,46 +254,6 @@ describe("AIProvider", () => {
     expect(resolved.modelId).toBe("gpt-5.5");
     expect(resolved.model.provider).toBe("codex-app-server");
     expect(resolved.model.modelId).toBe("gpt-5.5");
-  });
-
-  test("maps reasoning none to instant or non-thinking provider options", () => {
-    expect(getReasoningProviderOptions("openai", "gpt-5.2", "none")).toEqual({
-      openai: { reasoningEffort: "none" },
-    });
-    expect(getReasoningProviderOptions("openrouter", "openai/gpt-5", "none")).toEqual({
-      openrouter: { reasoning: { effort: "none" } },
-    });
-    expect(getReasoningProviderOptions("ollama", "qwen3:8b", "none")).toEqual({
-      ollama: { think: false },
-    });
-    expect(getReasoningProviderOptions("openai-codex", "gpt-5.5", "high")).toEqual({
-      "codex-app-server": { effort: "high" },
-    });
-  });
-
-  test("does not block reasoning options for any configured model id", () => {
-    expect(getReasoningProviderOptions("openai", "gpt-4o-mini", "high")).toEqual({
-      openai: { reasoningEffort: "high" },
-    });
-    expect(
-      getReasoningProviderOptions("anthropic", "claude-3-5-haiku-20241022", "high"),
-    ).toEqual({
-      anthropic: { effort: "high" },
-    });
-    expect(getReasoningProviderOptions("ollama", "llama3.2:3b", "medium")).toEqual({
-      ollama: { think: true },
-    });
-  });
-
-  test("uses the gateway target provider when mapping reasoning options", () => {
-    expect(getReasoningProviderOptions("gateway", "openai/gpt-5.2", "high")).toEqual({
-      openai: { reasoningEffort: "high" },
-    });
-    expect(
-      getReasoningProviderOptions("gateway", "anthropic/claude-opus-4-6", "low"),
-    ).toEqual({
-      anthropic: { effort: "low" },
-    });
   });
 
 });

@@ -22,7 +22,6 @@ import type { Config } from "../types.js";
 import {
   describeLanguageModelError,
   getConfiguredLanguageModel,
-  providerOptionsInput,
   resolveLanguageModel,
   type SupportedProvider,
 } from "./AIProvider.js";
@@ -640,7 +639,7 @@ async function llmJudgeDuplicate(
 
   const result = await generateText({
     model: resolved.model,
-    ...providerOptionsInput(resolved),
+    reasoning: resolved.reasoning,
     abortSignal,
     maxRetries: 0,
     prompt,
@@ -804,7 +803,7 @@ async function enrichWithLLM(
   if (provider !== "ollama") {
     const { output } = await generateText({
       model: resolvedModel.model,
-      ...providerOptionsInput(resolvedModel),
+      reasoning: resolvedModel.reasoning,
       abortSignal,
       maxRetries: 0,
       output: Output.object({ schema: EnrichmentSchema }),
@@ -852,7 +851,7 @@ async function enrichWithLLM(
   // Ollama remains on prompted JSON because local structured output is less reliable.
   const { text } = await generateText({
     model: resolvedModel.model,
-    ...providerOptionsInput(resolvedModel),
+    reasoning: resolvedModel.reasoning,
     abortSignal,
     maxRetries: 0,
     prompt: dedent`
@@ -1028,7 +1027,7 @@ async function tagWithLLM(
   if (provider !== "ollama") {
     const { output } = await generateText({
       model: resolvedModel.model,
-      ...providerOptionsInput(resolvedModel),
+      reasoning: resolvedModel.reasoning,
       abortSignal,
       maxRetries: 0,
       output: Output.object({ schema: TagSchema }),
@@ -1052,7 +1051,7 @@ async function tagWithLLM(
   // Ollama remains on prompted JSON because local structured output is less reliable.
   const { text } = await generateText({
     model: resolvedModel.model,
-    ...providerOptionsInput(resolvedModel),
+    reasoning: resolvedModel.reasoning,
     abortSignal,
     maxRetries: 0,
     prompt: dedent`

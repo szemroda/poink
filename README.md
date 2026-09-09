@@ -643,10 +643,10 @@ poink config set models.enrichment.model anthropic/claude-haiku-4-5
 | `models.embedding.model`                         | `mxbai-embed-large`                                | Embedding model                                                                           |
 | `models.enrichment.provider`                     | `ollama`                                           | LLM provider                                                                              |
 | `models.enrichment.model`                        | `llama3.2:3b`                                      | Model for document enrichment                                                             |
-| `models.enrichment.reasoning`                    | -                                                  | Optional reasoning level: `low`, `medium`, `high`, `none`, or `null` for provider default |
+| `models.enrichment.reasoning`                    | -                                                  | Optional AI SDK reasoning level, or `null` for provider default                           |
 | `models.judge.provider`                          | `ollama`                                           | Provider for concept deduplication                                                        |
 | `models.judge.model`                             | `llama3.2:3b`                                      | Model for judging duplicate concepts                                                      |
-| `models.judge.reasoning`                         | -                                                  | Optional reasoning level: `low`, `medium`, `high`, `none`, or `null` for provider default |
+| `models.judge.reasoning`                         | -                                                  | Optional AI SDK reasoning level, or `null` for provider default                           |
 | `providers.ollama.baseUrl`                       | `http://localhost:11434`                           | Ollama API endpoint                                                                       |
 | `providers.ollama.autoPull`                      | `true`                                             | Auto-pull missing Ollama models when supported                                            |
 | `providers.gateway.apiKey`                       | -                                                  | AI Gateway API key                                                                        |
@@ -685,11 +685,11 @@ For a remote database, configure both its URL and token source:
 ```
 
 For language models that support configurable reasoning or thinking, set
-`models.enrichment.reasoning` or `models.judge.reasoning` to `low`, `medium`, or
-`high`. Set it to `none` to request an instant/non-reasoning mode when the
-provider supports one. Leave it unset or set it to `null` to use the provider's
-default. poink passes configured reasoning through to the selected provider;
-unsupported combinations are left for the provider to accept, ignore, or reject.
+`models.enrichment.reasoning` or `models.judge.reasoning` to `none`, `minimal`,
+`low`, `medium`, `high`, or `xhigh`. Set it to `provider-default`, leave it
+unset, or set it to `null` to use the provider's default. poink passes the value
+through the AI SDK's global reasoning option. Unsupported provider and model
+combinations are left for the provider to accept, ignore, or reject.
 
 ### Environment Variables
 
