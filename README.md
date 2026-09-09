@@ -726,7 +726,7 @@ poink config set models.enrichment.model anthropic/claude-haiku-4-5
 
 ### OpenRouter
 
-For OpenRouter, switch the provider and use an OpenRouter model ID. `poink` uses the official `@openrouter/ai-sdk-provider` integration for AI SDK v6.
+For OpenRouter, switch the provider and use an OpenRouter model ID. `poink` uses the official `@openrouter/ai-sdk-provider` integration for AI SDK v7.
 
 ```bash
 poink config set providers.openrouter.apiKey your-key

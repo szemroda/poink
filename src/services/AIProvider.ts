@@ -1,7 +1,7 @@
 import type {
-  EmbeddingModelV3,
-  LanguageModelV3,
-  LanguageModelV3CallOptions,
+  EmbeddingModelV4,
+  LanguageModelV4,
+  LanguageModelV4CallOptions,
 } from "@ai-sdk/provider";
 import type { AnthropicLanguageModelOptions } from "@ai-sdk/anthropic";
 import type { GoogleLanguageModelOptions } from "@ai-sdk/google";
@@ -40,7 +40,7 @@ export type ProviderError =
 export type ConfiguredLanguageRole = "enrichment" | "judge";
 type ReasoningTargetProvider = Exclude<SupportedProvider, "gateway">;
 export type ProviderOptions = NonNullable<
-  LanguageModelV3CallOptions["providerOptions"]
+  LanguageModelV4CallOptions["providerOptions"]
 >;
 export type ProviderOptionsInput = {
   readonly providerOptions?: ProviderOptions;
@@ -49,13 +49,13 @@ export type ProviderOptionsInput = {
 export interface ResolvedEmbeddingModel {
   readonly provider: SupportedProvider;
   readonly modelId: string;
-  readonly model: EmbeddingModelV3;
+  readonly model: EmbeddingModelV4;
 }
 
 export interface ResolvedLanguageModel {
   readonly provider: SupportedProvider;
   readonly modelId: string;
-  readonly model: LanguageModelV3;
+  readonly model: LanguageModelV4;
   readonly providerOptions?: ProviderOptions;
 }
 
@@ -424,7 +424,7 @@ async function createEmbeddingModel(
   config: Config,
   provider: SupportedProvider,
   modelId: string,
-): Promise<EmbeddingModelV3> {
+): Promise<EmbeddingModelV4> {
   if (provider === "gateway") {
     return (await createConfiguredGatewayProvider(config)).embeddingModel(
       modelId,
@@ -463,7 +463,7 @@ async function createLanguageModel(
   config: Config,
   provider: Exclude<SupportedProvider, "openai-codex">,
   modelId: string,
-): Promise<LanguageModelV3> {
+): Promise<LanguageModelV4> {
   if (provider === "gateway") {
     return (await createConfiguredGatewayProvider(config)).languageModel(
       modelId,

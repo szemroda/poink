@@ -162,7 +162,7 @@ async function describeImage(
     ...providerOptionsInput(resolved),
     abortSignal,
     maxRetries: 0,
-    system: systemPrompt,
+    instructions: systemPrompt,
     messages: [
       {
         role: "user",

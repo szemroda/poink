@@ -7,7 +7,7 @@ import {
 import {
   basename, delimiter, dirname, extname, isAbsolute, join, relative, resolve, sep,
 } from "node:path";
-import type { LanguageModelV3 } from "@ai-sdk/provider";
+import type { LanguageModelV4 } from "@ai-sdk/provider";
 import { wrapLanguageModel } from "ai";
 import {
   createCodexAppServer,
@@ -23,7 +23,7 @@ const AUTHENTICATION_ERROR =
   "Codex authentication is missing or expired. Run: poink providers login --provider openai-codex";
 
 export type CodexProviderManager = {
-  getLanguageModel(modelId: string): LanguageModelV3;
+  getLanguageModel(modelId: string): LanguageModelV4;
   close(): Promise<void>;
 };
 
@@ -124,9 +124,9 @@ function resolveLauncher(path: string): string {
 
 function codexDependencyDirectories(): string[] {
   const require = createRequire(import.meta.url);
-  const adapterEntry = require.resolve("ai-sdk-provider-codex-cli");
-  const adapterRequire = createRequire(adapterEntry);
-  let dependencyRoot = dirname(adapterEntry);
+  const adapterManifest = require.resolve("ai-sdk-provider-codex-cli/package.json");
+  const adapterRequire = createRequire(adapterManifest);
+  let dependencyRoot = dirname(adapterManifest);
   while (basename(dependencyRoot) !== "node_modules") {
     const parent = dirname(dependencyRoot);
     if (parent === dependencyRoot) return [];
@@ -275,7 +275,7 @@ function createManager(runtime: CodexRuntime): CodexProviderManager {
         return wrapLanguageModel({
           model: getProvider().languageModel(modelId),
           middleware: {
-            specificationVersion: "v3",
+            specificationVersion: "v4",
             wrapGenerate: async ({ doGenerate }) => {
               try {
                 return await doGenerate();
