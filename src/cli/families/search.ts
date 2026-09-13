@@ -30,8 +30,6 @@ const COMMAND_HANDLERS = commandHandlers<
   SearchServices,
   GlobalCLIOptionsWithLibrary<SearchCliLibrary>
 >([
-  ["search", runSearchCommand],
-  ["search-pack", runSearchCommand],
   ["taxonomy", runTaxonomyCommand],
 ]);
 
@@ -51,6 +49,9 @@ export const runFamily: FamilyRunner = async ({
         ...semantic,
       } satisfies SearchCliLibrary,
     };
+    if (parsed.search) {
+      return yield* runSearchCommand(parsed.search, commandGlobals);
+    }
     return yield* runResolvedFamilyCommand(
       "search",
       COMMAND_HANDLERS,

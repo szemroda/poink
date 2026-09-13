@@ -246,30 +246,6 @@ export function runCommandWithLibraryContext<
   );
 }
 
-export function splitPositionalsAndFlags(args: string[]): {
-  positionals: string[];
-  flagArgs: string[];
-} {
-  const positionals: string[] = [];
-  const flagArgs: string[] = [];
-  for (let index = 0; index < args.length; index++) {
-    const arg = args[index]!;
-    if (!arg.startsWith("--")) {
-      positionals.push(arg);
-      continue;
-    }
-    flagArgs.push(arg);
-    if (!arg.includes("=")) {
-      const next = args[index + 1];
-      if (next && !next.startsWith("--")) {
-        flagArgs.push(next);
-        index++;
-      }
-    }
-  }
-  return { positionals, flagArgs };
-}
-
 type PreviewPDFExtractor = {
   extract: (
     path: string,

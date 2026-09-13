@@ -61,6 +61,7 @@ export function outputOptionsFromRawArgs(rawArgs: string[]): CommandOutputOption
 
   for (let index = 1; index < rawArgs.length; index++) {
     const arg = rawArgs[index]!;
+    if (arg === "--") break;
     if (arg === "--pretty") {
       options.pretty = true;
       continue;

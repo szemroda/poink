@@ -35,15 +35,20 @@ import {
   type CommandServices,
 } from "./commands.js";
 import { withConfiguredLogging } from "./runtime.js";
+import { runSearchCommand } from "./commands/search.js";
+import {
+  SearchInputSchema,
+  SearchPackInputSchema,
+  type SearchRequest,
+} from "./searchInput.js";
 import {
   createInvocationTiming,
   type InvocationTiming,
 } from "./timing.js";
 
-type CommandInvocation = {
-  argv: string[];
-  options?: Record<string, unknown>;
-};
+type CommandInvocation =
+  | { search: SearchRequest }
+  | { argv: string[]; options?: Record<string, unknown> };
 
 type CommandOutput = {
   command: string;
@@ -142,7 +147,10 @@ export async function connectMcpServer<E>(
     signal: AbortSignal,
   ): Promise<Envelope> => {
     const cmdGlobals = { ...forceJsonGlobals(globals), timing };
-    const { argv, options = {} } = invocation;
+    const command =
+      "search" in invocation
+        ? invocation.search.command
+        : invocation.argv[0] ?? "cli";
 
     const commandProgram = Effect.gen(function* () {
       const store = yield* LibraryStore;
@@ -156,13 +164,14 @@ export async function connectMcpServer<E>(
         getWithSourceIdentity: integrity.getDocumentWithSourceIdentity,
         listWithSourceIdentity: integrity.listDocumentsWithSourceIdentity,
       } satisfies CliLibrary;
+      const commandGlobals = { ...cmdGlobals, library };
+      if ("search" in invocation) {
+        return yield* runSearchCommand(invocation.search, commandGlobals);
+      }
       return yield* dispatchCommand(
-        argv,
-        {
-          ...cmdGlobals,
-          library,
-        },
-        options,
+        invocation.argv,
+        commandGlobals,
+        invocation.options,
       );
     }).pipe(Effect.either);
     const outEither = await withOpenAICodexProviderScope(() =>
@@ -185,7 +194,7 @@ export async function connectMcpServer<E>(
       outEither._tag === "Right" ? outEither.right : outEither.left,
     );
     return makeErrorEnvelope(
-      argv[0] ?? "cli",
+      command,
       { code: err.code, message: err.message, details: err.details },
       {
         verbose: cmdGlobals.verbose,
@@ -262,34 +271,9 @@ export async function connectMcpServer<E>(
     {
       description:
         "Search documents and optionally concepts. Document search is hybrid by default and fails if embeddings are unavailable; set fts=true for explicit full-text search.",
-      inputSchema: z.object({
-        query: z.string(),
-        limit: z.number().int().positive().optional(),
-        tag: z.string().optional(),
-        fts: z.boolean().optional(),
-        expand: z.number().int().min(0).max(4000).optional(),
-        docsOnly: z.boolean().optional(),
-        conceptsOnly: z.boolean().optional(),
-        includeClusters: z.boolean().optional(),
-      }),
+      inputSchema: SearchInputSchema,
     },
-    (input) => {
-      return {
-        argv: ["search", input.query],
-        options: {
-          limit: input.limit,
-          tag: input.tag,
-          fts: input.fts,
-          expand: input.expand,
-          docsOnly: input.docsOnly,
-          "docs-only": input.docsOnly,
-          conceptsOnly: input.conceptsOnly,
-          "concepts-only": input.conceptsOnly,
-          includeClusters: input.includeClusters,
-          "include-clusters": input.includeClusters,
-        },
-      };
-    },
+    (input) => ({ search: { command: "search", input } }),
   );
 
   tool(
@@ -297,31 +281,9 @@ export async function connectMcpServer<E>(
     {
       description:
         "Run multiple hybrid searches and aggregate results. Fails if embeddings are unavailable unless fts=true. Uses progressive disclosure: chunk IDs first, content optional.",
-      inputSchema: z.object({
-        queries: z.array(z.string()).min(1),
-        limit: z.number().int().positive().optional(),
-        tag: z.string().optional(),
-        fts: z.boolean().optional(),
-        expand: z.number().int().min(0).max(4000).optional(),
-        withContent: z.boolean().optional(),
-        globalLimit: z.number().int().positive().optional(),
-      }),
+      inputSchema: SearchPackInputSchema,
     },
-    (input) => {
-      return {
-        argv: ["search-pack", ...input.queries],
-        options: {
-          limit: input.limit,
-          tag: input.tag,
-          fts: input.fts,
-          expand: input.expand,
-          withContent: input.withContent,
-          "with-content": input.withContent,
-          globalLimit: input.globalLimit,
-          "global-limit": input.globalLimit,
-        },
-      };
-    },
+    (input) => ({ search: { command: "search-pack", input } }),
   );
 
   tool("read", {

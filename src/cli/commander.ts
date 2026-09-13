@@ -4,6 +4,11 @@ import { getLogLevel } from "../logger.js";
 import { CLIError } from "./runner.js";
 import { mapCommanderError } from "./errors.js";
 import {
+  SearchInputSchema,
+  SearchPackInputSchema,
+  type SearchRequest,
+} from "./searchInput.js";
+import {
   addOutputOptions,
   outputOptionsFromRawArgs,
   parseIntegerOption,
@@ -13,6 +18,7 @@ import {
 export type ParsedCommandLine = {
   args: string[];
   options: Record<string, unknown>;
+  search?: SearchRequest;
   globals: {
     format: OutputFormat;
     configuredDefaultFormat: OutputFormat;
@@ -23,10 +29,12 @@ export type ParsedCommandLine = {
 };
 
 type SetParsedCommandLine = (result: ParsedCommandLine) => void;
-type MapCommandArgs = (args: string[]) => string[];
+type MapCommandInput = (
+  args: string[],
+) => Pick<ParsedCommandLine, "args" | "search">;
 type RegisterExecutable = (
   command: Command,
-  mapArgs?: MapCommandArgs,
+  mapInput?: MapCommandInput,
 ) => Command;
 
 function collectRepeatedOption(value: string, previous: string[]): string[] {
@@ -85,16 +93,16 @@ function executable(
   rawArgs: string[],
   configuredDefaultFormat: OutputFormat,
   setResult: SetParsedCommandLine,
-  mapArgs: MapCommandArgs = (args) => args,
+  mapInput: MapCommandInput = (args) => ({ args }),
 ): Command {
   addOutputOptions(command);
   return command.action(() => {
-    const options = {
-      ...commandOptions(command),
-      ...outputOptionsFromRawArgs(rawArgs),
-    };
+    const input = mapInput(stripOutputOptions(rawArgs));
+    const options = input.search
+      ? command.opts<CommandOutputOptions & Record<string, unknown>>()
+      : { ...commandOptions(command), ...outputOptionsFromRawArgs(rawArgs) };
     setResult({
-      args: mapArgs(stripOutputOptions(rawArgs)),
+      ...input,
       options,
       globals: commandGlobals(options, configuredDefaultFormat),
     });
@@ -106,8 +114,8 @@ function createExecutableRegistrar(
   configuredDefaultFormat: OutputFormat,
   setResult: SetParsedCommandLine,
 ): RegisterExecutable {
-  return (command, mapArgs) =>
-    executable(command, rawArgs, configuredDefaultFormat, setResult, mapArgs);
+  return (command, mapInput) =>
+    executable(command, rawArgs, configuredDefaultFormat, setResult, mapInput);
 }
 
 function addDocumentDownloadOptions(command: Command): Command {
@@ -125,12 +133,21 @@ function addDocumentDownloadOptions(command: Command): Command {
     .option("--allowed-private-network-hosts <hosts>");
 }
 
+function parseSearchIntegerOption(
+  name: string,
+  minimum: number,
+  maximum?: number,
+) {
+  const parse = parseIntegerOption(name, minimum, maximum);
+  return (value: string): number => Number(parse(value));
+}
+
 function addSearchOptions(command: Command): Command {
   return command
-    .option("--limit <n>", "", parseIntegerOption("--limit", 1))
+    .option("--limit <n>", "", parseSearchIntegerOption("--limit", 1))
     .option("--tag <tag>")
     .option("--fts")
-    .option("--expand <chars>", "", parseIntegerOption("--expand", 0, 4000))
+    .option("--expand <chars>", "", parseSearchIntegerOption("--expand", 0, 4000))
     .option("--docs-only")
     .option("--concepts-only")
     .option("--include-clusters");
@@ -165,8 +182,10 @@ function registerUtilityCommands(
   program: Command,
   register: RegisterExecutable,
 ): void {
-  register(program.command("help"), () => ["--help"]).description("Show help");
-  register(program.command("version"), () => ["--version"]).description(
+  register(program.command("help"), () => ({ args: ["--help"] })).description(
+    "Show help",
+  );
+  register(program.command("version"), () => ({ args: ["--version"] })).description(
     "Show version",
   );
   register(program.command("capabilities"));
@@ -176,15 +195,38 @@ function registerSearchCommands(
   program: Command,
   register: RegisterExecutable,
 ): void {
-  register(addSearchOptions(program.command("search <query>")));
-  register(
-    addSearchOptions(
-      program
-        .command("search-pack <queries...>")
-        .option("--with-content")
-        .option("--global-limit <n>", "", parseIntegerOption("--global-limit", 1)),
-    ),
+  const search = addSearchOptions(program.command("search <query>"));
+  register(search, () => {
+    const options = search.opts<Record<string, unknown>>();
+    if (options.help === true) return { args: ["search", "--help"] };
+    return {
+      args: ["search"],
+      search: {
+        command: "search",
+        input: SearchInputSchema.parse({ ...options, query: search.args[0] }),
+      },
+    };
+  });
+  const searchPack = addSearchOptions(
+    program
+      .command("search-pack <queries...>")
+      .option("--with-content")
+      .option("--global-limit <n>", "", parseSearchIntegerOption("--global-limit", 1)),
   );
+  register(searchPack, () => {
+    const options = searchPack.opts<Record<string, unknown>>();
+    if (options.help === true) return { args: ["search-pack", "--help"] };
+    return {
+      args: ["search-pack"],
+      search: {
+        command: "search-pack",
+        input: SearchPackInputSchema.parse({
+          ...options,
+          queries: searchPack.args,
+        }),
+      },
+    };
+  });
 
   const taxonomy = program.command("taxonomy");
   register(taxonomy);

@@ -48,6 +48,10 @@ export function extractConfigFlag(rawArgs: string[]): ConfigFlagSelection {
 
   for (let index = 0; index < rawArgs.length; index++) {
     const arg = rawArgs[index]!;
+    if (arg === "--") {
+      strippedArgs.push(...rawArgs.slice(index));
+      break;
+    }
     if (arg.startsWith(CONFIG_FLAG_ASSIGNMENT_PREFIX)) {
       const value = arg.slice(CONFIG_FLAG_ASSIGNMENT_PREFIX.length);
       if (value.length === 0) {

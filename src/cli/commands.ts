@@ -17,7 +17,6 @@ import { runProvidersCommand } from "./commands/providers.js";
 import { runRechunkCommand } from "./commands/rechunk.js";
 import { runReindexCommand } from "./commands/reindex.js";
 import { runRepairCommand } from "./commands/repair.js";
-import { runSearchCommand } from "./commands/search.js";
 import { runSetupCommand } from "./commands/setup.js";
 import { runTaxonomyCommand } from "./commands/taxonomy.js";
 import {
@@ -42,13 +41,11 @@ export {
   runRechunkCommand,
   runReindexCommand,
   runRepairCommand,
-  runSearchCommand,
   runSetupCommand,
   runTaxonomyCommand,
 };
 export type { CliCommandOutput, CliConsole } from "./commands/types.js";
 
-const SEARCH_COMMANDS = new Set(["search", "search-pack"]);
 const DOCTOR_COMMANDS = new Set(["doctor", "check"]);
 const LIBRARY_COMMANDS = new Set([
   "chunk",
@@ -88,7 +85,6 @@ type DerivedCommandError = CommandEffectError<
   | typeof runRechunkCommand
   | typeof runReindexCommand
   | typeof runRepairCommand
-  | typeof runSearchCommand
   | typeof runSetupCommand
   | typeof runTaxonomyCommand
 >;
@@ -172,9 +168,6 @@ export function dispatchCommand(
   const directCommand = DIRECT_COMMANDS.get(command);
   if (directCommand) {
     return directCommand(args, globals, options);
-  }
-  if (SEARCH_COMMANDS.has(command)) {
-    return runSearchCommand(args, globals, options);
   }
   if (DOCTOR_COMMANDS.has(command)) {
     return runDoctorCommand(args, globals, options);

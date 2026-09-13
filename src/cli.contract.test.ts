@@ -736,6 +736,64 @@ describe("CLI JSON Envelope Contract", () => {
       expect(String(obj.error.message)).toContain("query");
     }));
 
+  test.each([
+    ["search", "--limit", "invalid", "--", "--help"],
+    ["search", "--limit", "invalid", "--tag", "--help", "alpha"],
+    ["search-pack", "--limit", "invalid", "--", "--version"],
+  ])("literal help text does not bypass malformed config: %j", (...args) =>
+    withTempLibraryPath((libraryPath) => {
+      const configPath = join(libraryPath, "config.json");
+      writeFileSync(configPath, "{invalid");
+
+      // An invalid limit prevents a failing implementation from opening the default library.
+      const response = runCli(
+        [args[0]!, "--format", "json", ...args.slice(1)],
+        { env: envForConfig(configPath) },
+      );
+
+      expect(response.exitCode).toBe(1);
+      expect(JSON.parse(response.stdout).error).toMatchObject({
+        code: "UNKNOWN_ERROR",
+        message: expect.stringContaining("JSON"),
+      });
+    }));
+
+  test("search accepts options before its query", () =>
+    withTempLibraryPath((libraryPath) => {
+      const configPath = join(libraryPath, "config.json");
+      writeTestConfig(configPath, libraryPath);
+
+      const response = runCli(
+        ["search", "--fts", "alpha", "--docs-only", "--format", "json", "--verbose"],
+        { env: envForConfig(configPath) },
+      );
+
+      expect(response.exitCode).toBe(0);
+      expect(JSON.parse(response.stdout).result).toMatchObject({
+        query: "alpha",
+        retrievalMode: "fts",
+        documents: [],
+      });
+    }));
+
+  test("search keeps flag-like option values out of output settings", () =>
+    withTempLibraryPath((libraryPath) => {
+      const configPath = join(libraryPath, "config.json");
+      writeTestConfig(configPath, libraryPath);
+
+      const response = runCli(
+        ["search", "--fts", "--docs-only", "--tag", "--verbose", "alpha", "--format", "json"],
+        { env: envForConfig(configPath) },
+      );
+
+      expect(response.exitCode).toBe(0);
+      expect(JSON.parse(response.stdout)).toEqual({
+        ok: true,
+        command: "search",
+        result: { retrievalMode: "fts", concepts: [], documents: [] },
+      });
+    }));
+
   test("search omits echoed input by default and restores it in verbose mode", () =>
     withTempLibraryPath((libraryPath) => {
       const configPath = join(libraryPath, "config.json");
@@ -764,6 +822,24 @@ describe("CLI JSON Envelope Contract", () => {
       expect(result.options.ftsOnly).toBe(true);
       expect(result.concepts).toEqual([]);
       expect(result.documents).toEqual([]);
+    }));
+
+  test("search-pack preserves queries around options and after the option terminator", () =>
+    withTempLibraryPath((libraryPath) => {
+      const configPath = join(libraryPath, "config.json");
+      writeTestConfig(configPath, libraryPath);
+
+      const response = runCli(
+        ["search-pack", "alpha", "--fts", "beta", "--limit=2", "--format", "json", "--", "--draft"],
+        { env: envForConfig(configPath) },
+      );
+
+      expect(response.exitCode).toBe(0);
+      expect(JSON.parse(response.stdout).result.perQuery).toEqual([
+        { query: "alpha", documents: [] },
+        { query: "beta", documents: [] },
+        { query: "--draft", documents: [] },
+      ]);
     }));
 
   test("search-pack omits echoed top-level input by default", () =>
@@ -2393,6 +2469,44 @@ describe("MCP Tool Output Contract", () => {
             retrievalMode: "fts",
             documents: [],
           });
+
+          const packCall = await client.callTool({
+            name: "search_pack",
+            arguments: {
+              queries: ["alpha", "--help", "--format", "text", "--verbose", "--config"],
+              fts: true,
+              limit: 2,
+              withContent: true,
+              globalLimit: 3,
+            },
+          });
+          expect(packCall.structuredContent).toMatchObject({
+            ok: true,
+            command: "search-pack",
+            result: {
+              retrievalMode: "fts",
+              perQuery: [
+                { query: "alpha", documents: [] },
+                { query: "--help", documents: [] },
+                { query: "--format", documents: [] },
+                { query: "text", documents: [] },
+                { query: "--verbose", documents: [] },
+                { query: "--config", documents: [] },
+              ],
+              deduped: [],
+            },
+          });
+
+          const cliPack = runCli(
+            [
+              "search-pack", "--fts", "--limit", "2", "--with-content",
+              "--global-limit", "3", "--format", "json", "--",
+              "alpha", "--help", "--format", "text", "--verbose", "--config",
+            ],
+            { env: envForConfig(configPath) },
+          );
+          expect(cliPack.exitCode).toBe(0);
+          expect(JSON.parse(cliPack.stdout)).toEqual(packCall.structuredContent);
 
           const semanticSearchCall = await client.callTool({
             name: "search",

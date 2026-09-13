@@ -72,6 +72,13 @@ export const COMMAND_FAMILIES: Readonly<Record<string, CommandFamily>> = {
 };
 
 function isHelpOrVersionInvocation(rawArgs: string[]): boolean {
+  if (rawArgs[0] === "search" || rawArgs[0] === "search-pack") {
+    try {
+      return parseCommandLine(rawArgs).options.help === true;
+    } catch {
+      return false;
+    }
+  }
   return (
     rawArgs[0] === "help" ||
     rawArgs[0] === "version" ||
@@ -203,13 +210,12 @@ async function runCliWithNormalizedArgs(
   signal?: AbortSignal,
 ): Promise<number> {
   const bootstrapCommand = normalizedArgs[0] ?? "--help";
-  const malformedConfigIsNonFatal = isHelpOrVersionInvocation(normalizedArgs);
 
   let config: Config;
   try {
     config = loadConfig();
   } catch (error) {
-    if (!malformedConfigIsNonFatal) {
+    if (!isHelpOrVersionInvocation(normalizedArgs)) {
       const globals = {
         ...configuredGlobals("text", normalizedArgs),
         timing,

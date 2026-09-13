@@ -239,6 +239,12 @@ poink search "query" --expand 500
 
 # Include cluster summaries when available
 poink search "query" --include-clusters
+
+# Options can appear before or between search queries
+poink search-pack "context engineering" --fts "retrieval patterns"
+
+# Use -- before queries that start with a dash
+poink search --fts --docs-only -- "--help"
 ```
 
 ### Managing Documents

@@ -13,29 +13,16 @@ import {
 import {
   CLIError,
   runCommandWithLibraryContext,
-  splitPositionalsAndFlags,
   type CommandBodyOutput,
   type CommandExecutionContext,
   type GlobalCLIOptionsWithLibrary,
   type SearchCliLibrary,
 } from "../runner.js";
-
-interface SearchCommandOptions extends Record<string, unknown> {
-  limit?: string | number;
-  tag?: string;
-  fts?: boolean;
-  expand?: string | number;
-  "docs-only"?: boolean;
-  docsOnly?: boolean;
-  "concepts-only"?: boolean;
-  conceptsOnly?: boolean;
-  "include-clusters"?: boolean;
-  includeClusters?: boolean;
-  "with-content"?: boolean;
-  withContent?: boolean;
-  "global-limit"?: string | number;
-  globalLimit?: string | number;
-}
+import type {
+  SearchInput,
+  SearchPackInput,
+  SearchRequest,
+} from "../searchInput.js";
 
 export type SearchDocumentOutput = {
   chunkId: string;
@@ -61,13 +48,6 @@ type DocumentSearchError =
   | Effect.Effect.Error<ReturnType<SearchCliLibrary["ftsSearch"]>>
   | Effect.Effect.Error<ReturnType<SearchCliLibrary["search"]>>;
 
-type CommonSearchOptions = {
-  limit: number;
-  tags: string[] | undefined;
-  ftsOnly: boolean;
-  expandChars: number;
-};
-
 type ChunkHandle = {
   chunkId: string;
   docId: string;
@@ -82,42 +62,6 @@ type ChunkHandle = {
 type DedupedChunkHandle = ChunkHandle & {
   matchedQueries: string[];
 };
-
-type SearchFlag =
-  | readonly ["concepts-only", "conceptsOnly"]
-  | readonly ["docs-only", "docsOnly"]
-  | readonly ["include-clusters", "includeClusters"]
-  | readonly ["with-content", "withContent"];
-
-const SEARCH_FLAGS = {
-  conceptsOnly: ["concepts-only", "conceptsOnly"],
-  docsOnly: ["docs-only", "docsOnly"],
-  includeClusters: ["include-clusters", "includeClusters"],
-  withContent: ["with-content", "withContent"],
-} as const satisfies Record<string, SearchFlag>;
-
-function parseCommonSearchOptions(
-  options: SearchCommandOptions,
-): CommonSearchOptions {
-  return {
-    limit: options.limit ? Number.parseInt(String(options.limit), 10) : 10,
-    tags: options.tag ? [String(options.tag)] : undefined,
-    ftsOnly: options.fts === true,
-    expandChars: options.expand
-      ? Math.min(
-          4000,
-          Math.max(0, Number.parseInt(String(options.expand), 10)),
-        )
-      : 0,
-  };
-}
-
-function isEnabled(
-  options: SearchCommandOptions,
-  [dashedName, camelName]: SearchFlag,
-): boolean {
-  return options[dashedName] === true || options[camelName] === true;
-}
 
 function documentRetrievalMode(ftsOnly: boolean): DocumentRetrievalMode {
   return ftsOnly ? "fts" : "hybrid";
@@ -292,11 +236,21 @@ function renderDocumentResults(
 
 function runSingleSearch(
   context: CommandExecutionContext<SearchCliLibrary>,
-  options: SearchCommandOptions,
+  input: SearchInput,
 ) {
   return Effect.gen(function* () {
     const { Console, globals, library } = context;
-    const query = context.args[1];
+    const {
+      query,
+      limit,
+      tag,
+      fts: ftsOnly,
+      expand: expandChars,
+      conceptsOnly,
+      docsOnly,
+      includeClusters,
+    } = input;
+    const tags = tag ? [tag] : undefined;
     if (!query) {
       yield* Console.error("Error: Query required");
       return yield* Effect.fail(
@@ -304,11 +258,6 @@ function runSingleSearch(
       );
     }
 
-    const { limit, tags, ftsOnly, expandChars } =
-      parseCommonSearchOptions(options);
-    const conceptsOnly = isEnabled(options, SEARCH_FLAGS.conceptsOnly);
-    const docsOnly = isEnabled(options, SEARCH_FLAGS.docsOnly);
-    const includeClusters = isEnabled(options, SEARCH_FLAGS.includeClusters);
     const searchDocs = !conceptsOnly;
     const searchConcepts = !docsOnly;
     const documentMode = documentRetrievalMode(ftsOnly);
@@ -397,36 +346,6 @@ function runSingleSearch(
   });
 }
 
-function readStdin() {
-  return Effect.tryPromise({
-    try: () =>
-      new Promise<string>((resolve, reject) => {
-        let data = "";
-        try {
-          process.stdin.setEncoding("utf8");
-        } catch {
-          // Keep reading if the stream encoding was already configured.
-        }
-        process.stdin.on("data", (chunk) => {
-          data += String(chunk);
-        });
-        process.stdin.on("end", () => resolve(data));
-        process.stdin.on("error", reject);
-      }),
-    catch: (error) =>
-      new CLIError("IO_ERROR", "Failed to read stdin", {
-        reason: String(error),
-      }),
-  });
-}
-
-function parseStdinQueries(input: string): string[] {
-  return input
-    .split(/\r?\n/g)
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0 && !line.startsWith("#"));
-}
-
 function toChunkHandle(
   result: DocumentSearchResult,
   expandChars: number,
@@ -489,44 +408,21 @@ function mergeSearchResults(
 
 function runSearchPack(
   context: CommandExecutionContext<SearchCliLibrary>,
-  options: SearchCommandOptions,
+  input: SearchPackInput,
 ) {
   return Effect.gen(function* () {
     const { globals, library } = context;
-    const { limit, tags, ftsOnly, expandChars } =
-      parseCommonSearchOptions(options);
+    const {
+      queries,
+      limit,
+      tag,
+      fts: ftsOnly,
+      expand: expandChars,
+      withContent,
+    } = input;
+    const tags = tag ? [tag] : undefined;
     const retrievalMode = documentRetrievalMode(ftsOnly);
-    const withContent = isEnabled(options, SEARCH_FLAGS.withContent);
-    const globalLimitRaw = options["global-limit"] ?? options.globalLimit;
-    const globalLimit =
-      globalLimitRaw !== undefined
-        ? Math.max(1, Number.parseInt(String(globalLimitRaw), 10))
-        : null;
-
-    let queries = splitPositionalsAndFlags(context.args.slice(1)).positionals;
-    if (queries.length === 0) {
-      if (process.stdin.isTTY) {
-        return yield* Effect.fail(
-          new CLIError(
-            "INVALID_ARGS",
-            "search-pack requires queries as args or via stdin",
-            {
-              command: "search-pack",
-              hint: 'poink search-pack "query one" "query two"',
-            },
-          ),
-        );
-      }
-      queries = parseStdinQueries(yield* readStdin());
-    }
-
-    if (queries.length === 0) {
-      return yield* Effect.fail(
-        new CLIError("INVALID_ARGS", "No queries provided", {
-          command: "search-pack",
-        }),
-      );
-    }
+    const globalLimit = input.globalLimit ?? null;
 
     const perQuery: Array<{ query: string; documents: ChunkHandle[] }> = [];
     for (const query of queries) {
@@ -586,28 +482,17 @@ function runSearchPack(
 }
 
 export function runSearchCommand(
-  args: string[],
+  request: SearchRequest,
   globals: GlobalCLIOptionsWithLibrary<SearchCliLibrary>,
-  options: SearchCommandOptions = {},
 ) {
   return runCommandWithLibraryContext(
-    args,
+    [request.command],
     globals,
     (context) => {
-      if (context.command === "search") {
-        return runSingleSearch(context, options);
+      if (request.command === "search") {
+        return runSingleSearch(context, request.input);
       }
-      if (context.command === "search-pack") {
-        return runSearchPack(context, options);
-      }
-      return Effect.fail(
-        new CLIError(
-          "UNKNOWN_COMMAND",
-          `Unknown search command: ${context.command}`,
-          { command: context.command },
-        ),
-      );
+      return runSearchPack(context, request.input);
     },
-    options,
   );
 }
