@@ -1,16 +1,12 @@
-import { afterEach, describe, expect, test } from "vitest";
-import { Effect } from "effect";
-import {
-  mkdtempSync,
-  rmSync,
-  truncateSync,
-  writeFileSync,
-} from "node:fs";
+import { afterEach, expect, test } from "vitest";
+import { Effect, Either } from "effect";
+import { mkdtempSync, rmSync, truncateSync, writeFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import JSZip from "jszip";
 import {
+  type DetectedSourceType,
   makeSourceFileTypeDetector,
   SourceFileTypeDetector,
   SourceFileTypeDetectorLive,
@@ -19,6 +15,20 @@ import {
   MAX_ODT_XML_BYTES,
   MAX_TEXT_SOURCE_BYTES,
 } from "./SourceFileLimits.js";
+
+const UNSUPPORTED = "UNSUPPORTED_SOURCE_FILE_TYPE";
+const UNDETERMINED = "SOURCE_FILE_TYPE_UNDETERMINED";
+type DetectionOutcome = DetectedSourceType | typeof UNSUPPORTED | typeof UNDETERMINED;
+
+const PDF = { sourceFormat: "pdf", fileType: "pdf" } as const;
+const MARKDOWN = { sourceFormat: "markdown-text", fileType: "markdown" } as const;
+const TXT = { sourceFormat: "plain-text", fileType: "txt" } as const;
+const FLAT_ODT = { sourceFormat: "odt-flat-xml", fileType: "odt" } as const;
+
+const PNG_BYTES = Buffer.from(
+  "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000049454e44ae426082",
+  "hex",
+);
 
 const tempDirs: string[] = [];
 
@@ -34,329 +44,225 @@ function tempPath(name: string): string {
   return join(directory, name);
 }
 
-function detectWith(
+/** Resolves to the detected type, or to the error tag when detection fails. */
+async function detect(
   path: string,
   layer = SourceFileTypeDetectorLive,
-) {
-  return Effect.runPromise(
-    Effect.gen(function* () {
-      const detector = yield* SourceFileTypeDetector;
-      return yield* detector.detect(path);
-    }).pipe(Effect.provide(layer)),
+): Promise<DetectionOutcome> {
+  const result = await Effect.runPromise(
+    SourceFileTypeDetector.pipe(
+      Effect.flatMap((detector) => Effect.either(detector.detect(path))),
+      Effect.provide(layer),
+    ),
   );
+  return Either.isRight(result) ? result.right : result.left._tag;
 }
 
-function detect(path: string) {
-  return detectWith(path);
-}
-
-function detectEither(
+async function writeZip(
   path: string,
-  layer = SourceFileTypeDetectorLive,
-) {
-  return Effect.runPromise(
-    Effect.gen(function* () {
-      const detector = yield* SourceFileTypeDetector;
-      return yield* Effect.either(detector.detect(path));
-    }).pipe(Effect.provide(layer)),
-  );
-}
-
-async function writeDocx(path: string): Promise<void> {
+  entries: Record<string, string>,
+): Promise<void> {
   const zip = new JSZip();
-  zip.file(
-    "[Content_Types].xml",
-    `<?xml version="1.0"?>
-<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
-  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
-</Types>`,
-  );
-  zip.file("word/document.xml", "<w:document/>");
-  await writeFile(path, await zip.generateAsync({ type: "uint8array" }));
-}
-
-async function writeOdt(path: string): Promise<void> {
-  const zip = new JSZip();
-  zip.file("mimetype", "application/vnd.oasis.opendocument.text", {
-    compression: "STORE",
-  });
-  zip.file("content.xml", "<office:document-content/>");
+  for (const [name, content] of Object.entries(entries)) {
+    // ODF requires an uncompressed leading mimetype entry.
+    zip.file(name, content, name === "mimetype" ? { compression: "STORE" } : {});
+  }
   await writeFile(
     path,
     await zip.generateAsync({ type: "uint8array", compression: "DEFLATE" }),
   );
 }
 
-async function writeZip(
-  path: string,
-  entries: ReadonlyArray<readonly [string, string]>,
-): Promise<void> {
-  const zip = new JSZip();
-  for (const [name, content] of entries) {
-    zip.file(name, content);
-  }
-  await writeFile(path, await zip.generateAsync({ type: "uint8array" }));
+function openXmlContentTypes(partName: string, contentType: string): string {
+  return `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Override PartName="${partName}" ContentType="${contentType}"/>
+</Types>`;
 }
 
-test("detects supported binary content independently of extension", async () => {
-  const pdf = tempPath("report.docx");
-  writeFileSync(pdf, "%PDF-1.7\n");
-
-  const docx = tempPath("document");
-  await writeDocx(docx);
-
-  const odt = tempPath("notes.bin");
-  await writeOdt(odt);
-
-  await expect(detect(pdf)).resolves.toEqual({
-    sourceFormat: "pdf",
-    fileType: "pdf",
-  });
-  await expect(detect(docx)).resolves.toEqual({
-    sourceFormat: "docx-package",
-    fileType: "docx",
-  });
-  await expect(detect(odt)).resolves.toEqual({
-    sourceFormat: "odt-package",
-    fileType: "odt",
-  });
-});
-
-test("accepts a PDF marker after leading bytes within the compatibility window", async () => {
-  const path = tempPath("leading.bin");
-  writeFileSync(path, `${"x".repeat(1023)}%PDF-1.7\n`);
-
-  await expect(detect(path)).resolves.toEqual({
-    sourceFormat: "pdf",
-    fileType: "pdf",
-  });
-});
-
-test("does not classify arbitrary PDF marker text as a PDF header", async () => {
-  const path = tempPath("marker.md");
-  writeFileSync(path, "# Notes\n\nThe marker %PDF- appears in prose.\n");
-
-  await expect(detect(path)).resolves.toEqual({
-    sourceFormat: "markdown-text",
-    fileType: "markdown",
-  });
-});
-
-test("detects valid flat ODT XML independently of extension", async () => {
-  const path = tempPath("flat.data");
-  writeFileSync(
-    path,
-    `\uFEFF<?xml version="1.0" encoding="UTF-8"?>
+test.each<{
+  name: string;
+  file: string;
+  content: string | Buffer;
+  size?: number;
+  expected: DetectionOutcome;
+}>([
+  { name: "a PDF header despite a .docx extension", file: "report.docx", content: "%PDF-1.7\n", expected: PDF },
+  {
+    name: "a PDF header after leading bytes within the compatibility window",
+    file: "leading.bin",
+    content: `${"x".repeat(1023)}%PDF-1.7\n`,
+    expected: PDF,
+  },
+  {
+    name: "a PDF marker in prose as Markdown",
+    file: "marker.md",
+    content: "# Notes\n\nThe marker %PDF- appears in prose.\n",
+    expected: MARKDOWN,
+  },
+  {
+    name: "flat ODT XML with a BOM regardless of extension",
+    file: "flat.data",
+    content: `\uFEFF<?xml version="1.0" encoding="UTF-8"?>
 <office:document
  xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
  office:mimetype="application/vnd.oasis.opendocument.text">
  <office:body><office:text/></office:body>
 </office:document>`,
-    "utf8",
-  );
-
-  await expect(detect(path)).resolves.toEqual({
-    sourceFormat: "odt-flat-xml",
-    fileType: "odt",
-  });
-});
-
-test("detects flat ODT with comments and an arbitrary namespace prefix", async () => {
-  const path = tempPath("flat.data");
-  writeFileSync(
-    path,
-    `<!-- generated document -->
+    expected: FLAT_ODT,
+  },
+  {
+    name: "flat ODT XML with comments and an arbitrary namespace prefix",
+    file: "flat.data",
+    content: `<!-- generated document -->
 <odf:document
  xmlns:odf="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
  odf:mimetype="application/vnd.oasis.opendocument.text">
  <odf:body><odf:text/></odf:body>
 </odf:document>`,
-    "utf8",
-  );
-
-  await expect(detect(path)).resolves.toEqual({
-    sourceFormat: "odt-flat-xml",
-    fileType: "odt",
-  });
-});
-
-test("rejects oversized XML candidates without extension fallback", async () => {
-  const path = tempPath("oversized.markdown");
-  writeFileSync(path, "<office:document");
-  truncateSync(path, MAX_ODT_XML_BYTES + 1);
-
-  await expect(detectEither(path)).resolves.toMatchObject({
-    _tag: "Left",
-    left: { _tag: "SOURCE_FILE_TYPE_UNDETERMINED" },
-  });
-});
-
-test("validates oversized Markdown as UTF-8 without DOM parsing", async () => {
-  const path = tempPath("oversized.md");
-  writeFileSync(path, "# Large document\n");
-  truncateSync(path, MAX_ODT_XML_BYTES + 1);
-
-  await expect(detect(path)).resolves.toEqual({
-    sourceFormat: "markdown-text",
-    fileType: "markdown",
-  });
-});
-
-test("uses Markdown extension fallback only for valid UTF-8", async () => {
-  const markdown = tempPath("notes.markdown");
-  writeFileSync(markdown, Buffer.from([0xef, 0xbb, 0xbf, 0x23, 0x20, 0x44]));
-  await expect(detect(markdown)).resolves.toEqual({
-    sourceFormat: "markdown-text",
-    fileType: "markdown",
-  });
-
-  const invalid = tempPath("invalid.md");
-  writeFileSync(invalid, Buffer.from([0xc3, 0x28]));
-  await expect(detectEither(invalid)).resolves.toMatchObject({
-    _tag: "Left",
-    left: { _tag: "SOURCE_FILE_TYPE_UNDETERMINED" },
-  });
-});
-
-test("detects valid plain text only for .txt extensions", async () => {
-  const text = tempPath("notes.TXT");
-  writeFileSync(text, "Plain text note\n\nSecond paragraph.", "utf8");
-  await expect(detect(text)).resolves.toEqual({
-    sourceFormat: "plain-text",
-    fileType: "txt",
-  });
-
-  const empty = tempPath("empty.txt");
-  writeFileSync(empty, "", "utf8");
-  await expect(detect(empty)).resolves.toEqual({
-    sourceFormat: "plain-text",
-    fileType: "txt",
-  });
-});
-
-test("rejects invalid UTF-8 and binary-looking .txt files", async () => {
-  const invalid = tempPath("invalid.txt");
-  writeFileSync(invalid, Buffer.from([0xc3, 0x28]));
-  await expect(detectEither(invalid)).resolves.toMatchObject({
-    _tag: "Left",
-    left: { _tag: "UNSUPPORTED_SOURCE_FILE_TYPE" },
-  });
-
-  const binary = tempPath("image.txt");
-  writeFileSync(
-    binary,
-    Buffer.from(
-      "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000049454e44ae426082",
-      "hex",
-    ),
-  );
-  await expect(detectEither(binary)).resolves.toMatchObject({
-    _tag: "Left",
-    left: { _tag: "UNSUPPORTED_SOURCE_FILE_TYPE" },
-  });
-
-  const nullBytes = tempPath("null-bytes.txt");
-  writeFileSync(nullBytes, "Header\u0000\u0000\u0000payload", "utf8");
-  await expect(detectEither(nullBytes)).resolves.toMatchObject({
-    _tag: "Left",
-    left: { _tag: "UNSUPPORTED_SOURCE_FILE_TYPE" },
-  });
-
-  const controlChars = tempPath("control-chars.txt");
-  writeFileSync(controlChars, "abc\u0001\u0002\u0003\u0004def", "utf8");
-  await expect(detectEither(controlChars)).resolves.toMatchObject({
-    _tag: "Left",
-    left: { _tag: "UNSUPPORTED_SOURCE_FILE_TYPE" },
-  });
-});
-
-test("rejects XML-looking .txt files that are not flat ODT", async () => {
-  const xml = tempPath("data.txt");
-  writeFileSync(xml, "<root><item>plain XML</item></root>", "utf8");
-
-  await expect(detectEither(xml)).resolves.toMatchObject({
-    _tag: "Left",
-    left: { _tag: "UNSUPPORTED_SOURCE_FILE_TYPE" },
-  });
-});
-
-test("does not accept .txt files above the TXT source limit", async () => {
-  const path = tempPath("oversized.txt");
-  writeFileSync(path, "Large text document\n", "utf8");
-  truncateSync(path, MAX_TEXT_SOURCE_BYTES + 1);
-
-  await expect(detectEither(path)).resolves.toMatchObject({
-    _tag: "Left",
-    left: { _tag: "SOURCE_FILE_TYPE_UNDETERMINED" },
-  });
-});
-
-test("distinguishes known unsupported content from undetermined content", async () => {
-  const png = tempPath("image.pdf");
-  writeFileSync(
-    png,
-    Buffer.from(
-      "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000049454e44ae426082",
-      "hex",
-    ),
-  );
-  await expect(detectEither(png)).resolves.toMatchObject({
-    _tag: "Left",
-    left: { _tag: "UNSUPPORTED_SOURCE_FILE_TYPE" },
-  });
-
-  const unknown = tempPath("unknown");
-  writeFileSync(unknown, "plain text", "utf8");
-  await expect(detectEither(unknown)).resolves.toMatchObject({
-    _tag: "Left",
-    left: { _tag: "SOURCE_FILE_TYPE_UNDETERMINED" },
-  });
-});
-
-test.each([
-  {
-    name: "XLSX",
-    entries: [
-      [
-        "[Content_Types].xml",
-        `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
-          <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
-        </Types>`,
-      ],
-      ["xl/workbook.xml", "<workbook/>"],
-    ] as const,
+    expected: FLAT_ODT,
   },
   {
-    name: "PPTX",
-    entries: [
-      [
-        "[Content_Types].xml",
-        `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
-          <Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/>
-        </Types>`,
-      ],
-      ["ppt/presentation.xml", "<presentation/>"],
-    ] as const,
+    name: "UTF-8 Markdown with a BOM",
+    file: "notes.markdown",
+    content: Buffer.from([0xef, 0xbb, 0xbf, 0x23, 0x20, 0x44]),
+    expected: MARKDOWN,
   },
   {
-    name: "generic ZIP",
-    entries: [["hello.txt", "hello"]] as const,
+    name: "oversized Markdown via streamed UTF-8 validation",
+    file: "oversized.md",
+    content: "# Large document\n",
+    size: MAX_ODT_XML_BYTES + 1,
+    expected: MARKDOWN,
   },
   {
-    name: "non-text ODF package",
-    entries: [
-      ["mimetype", "application/vnd.oasis.opendocument.spreadsheet"],
-      ["content.xml", "<office:document/>"],
-    ] as const,
+    name: "plain text with an upper-case .TXT extension",
+    file: "notes.TXT",
+    content: "Plain text note\n\nSecond paragraph.",
+    expected: TXT,
   },
-])("rejects known unsupported $name content", async ({ entries }) => {
-  const path = tempPath("misleading.md");
+  { name: "an empty .txt file", file: "empty.txt", content: "", expected: TXT },
+  {
+    name: "an oversized XML candidate without extension fallback",
+    file: "oversized.markdown",
+    content: "<office:document",
+    size: MAX_ODT_XML_BYTES + 1,
+    expected: UNDETERMINED,
+  },
+  { name: "invalid UTF-8 Markdown", file: "invalid.md", content: Buffer.from([0xc3, 0x28]), expected: UNDETERMINED },
+  { name: "invalid UTF-8 .txt", file: "invalid.txt", content: Buffer.from([0xc3, 0x28]), expected: UNSUPPORTED },
+  { name: "PNG bytes in a .txt file", file: "image.txt", content: PNG_BYTES, expected: UNSUPPORTED },
+  {
+    name: "a .txt file with null bytes",
+    file: "null-bytes.txt",
+    content: "Header\u0000\u0000\u0000payload",
+    expected: UNSUPPORTED,
+  },
+  {
+    name: "a .txt file with control characters",
+    file: "control-chars.txt",
+    content: "abc\u0001\u0002\u0003\u0004def",
+    expected: UNSUPPORTED,
+  },
+  {
+    name: "a .txt file containing non-ODT XML",
+    file: "data.txt",
+    content: "<root><item>plain XML</item></root>",
+    expected: UNSUPPORTED,
+  },
+  {
+    name: "a .txt file above the TXT source limit",
+    file: "oversized.txt",
+    content: "Large text document\n",
+    size: MAX_TEXT_SOURCE_BYTES + 1,
+    expected: UNDETERMINED,
+  },
+  { name: "PNG bytes in a .pdf file", file: "image.pdf", content: PNG_BYTES, expected: UNSUPPORTED },
+  { name: "text without a known extension", file: "unknown", content: "plain text", expected: UNDETERMINED },
+  {
+    name: "a malformed ZIP without extension fallback",
+    file: "hostile.md",
+    content: Buffer.concat([Buffer.from("504b0304", "hex"), Buffer.alloc(256, 0xff)]),
+    expected: UNSUPPORTED,
+  },
+])("classifies $name", async ({ file, content, size, expected }) => {
+  const path = tempPath(file);
+  writeFileSync(path, content);
+  if (size !== undefined) truncateSync(path, size);
+
+  await expect(detect(path)).resolves.toEqual(expected);
+});
+
+test.each<{
+  name: string;
+  file: string;
+  entries: Record<string, string>;
+  expected: DetectionOutcome;
+}>([
+  {
+    name: "DOCX without an extension",
+    file: "document",
+    entries: {
+      "[Content_Types].xml": openXmlContentTypes(
+        "/word/document.xml",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml",
+      ),
+      "word/document.xml": "<w:document/>",
+    },
+    expected: { sourceFormat: "docx-package", fileType: "docx" },
+  },
+  {
+    name: "an ODT package with a misleading extension",
+    file: "notes.bin",
+    entries: {
+      mimetype: "application/vnd.oasis.opendocument.text",
+      "content.xml": "<office:document-content/>",
+    },
+    expected: { sourceFormat: "odt-package", fileType: "odt" },
+  },
+  {
+    name: "XLSX named .md",
+    file: "misleading.md",
+    entries: {
+      "[Content_Types].xml": openXmlContentTypes(
+        "/xl/workbook.xml",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml",
+      ),
+      "xl/workbook.xml": "<workbook/>",
+    },
+    expected: UNSUPPORTED,
+  },
+  {
+    name: "PPTX named .md",
+    file: "misleading.md",
+    entries: {
+      "[Content_Types].xml": openXmlContentTypes(
+        "/ppt/presentation.xml",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml",
+      ),
+      "ppt/presentation.xml": "<presentation/>",
+    },
+    expected: UNSUPPORTED,
+  },
+  {
+    name: "a generic ZIP named .md",
+    file: "misleading.md",
+    entries: { "hello.txt": "hello" },
+    expected: UNSUPPORTED,
+  },
+  {
+    name: "a non-text ODF package named .md",
+    file: "misleading.md",
+    entries: {
+      mimetype: "application/vnd.oasis.opendocument.spreadsheet",
+      "content.xml": "<office:document/>",
+    },
+    expected: UNSUPPORTED,
+  },
+])("classifies ZIP content: $name", async ({ file, entries, expected }) => {
+  const path = tempPath(file);
   await writeZip(path, entries);
 
-  await expect(detectEither(path)).resolves.toMatchObject({
-    _tag: "Left",
-    left: { _tag: "UNSUPPORTED_SOURCE_FILE_TYPE" },
-  });
+  await expect(detect(path)).resolves.toEqual(expected);
 });
 
 test("does not use extension fallback after primary detection throws", async () => {
@@ -366,21 +272,5 @@ test("does not use extension fallback after primary detection throws", async () 
     throw new Error("simulated detector safety failure");
   });
 
-  await expect(detectEither(path, failingDetector)).resolves.toMatchObject({
-    _tag: "Left",
-    left: { _tag: "SOURCE_FILE_TYPE_UNDETERMINED" },
-  });
-});
-
-test("rejects malformed ZIP content without extension fallback", async () => {
-  const path = tempPath("hostile.md");
-  writeFileSync(
-    path,
-    Buffer.concat([Buffer.from("504b0304", "hex"), Buffer.alloc(256, 0xff)]),
-  );
-
-  await expect(detectEither(path)).resolves.toMatchObject({
-    _tag: "Left",
-    left: { _tag: "UNSUPPORTED_SOURCE_FILE_TYPE" },
-  });
+  await expect(detect(path, failingDetector)).resolves.toBe(UNDETERMINED);
 });

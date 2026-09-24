@@ -1,17 +1,14 @@
-import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
-import { Effect, Layer } from "effect";
-import { mkdtempSync, rmSync, writeFileSync } from "fs";
-import { tmpdir } from "os";
-import { join } from "path";
+import { afterEach, beforeAll, describe, it, expect, vi } from "vitest";
+import { Effect } from "effect";
+import { Config, saveConfig } from "../types.js";
 import {
   ClusterSummarizerService,
   ClusterSummarizerImpl,
 } from "./ClusterSummarizer.js";
 
 type MockGenerateTextInput = {
-  readonly model?: {
-    readonly modelId?: string;
-  };
+  readonly prompt: string;
+  readonly model: { readonly modelId: string };
 };
 type MockGenerateTextOutput = {
   readonly output: {
@@ -20,18 +17,13 @@ type MockGenerateTextOutput = {
     readonly representativeQuote?: string;
   };
 };
-type MockGenerateText = (
-  input: MockGenerateTextInput,
-) => Promise<MockGenerateTextOutput>;
 
-// Mock the AI SDK
 const mockGenerateText = vi.hoisted(() =>
-  vi.fn<MockGenerateText>(() =>
+  vi.fn<(input: MockGenerateTextInput) => Promise<MockGenerateTextOutput>>(() =>
     Promise.resolve({
       output: {
-        summary:
-          "This cluster explores React hooks, focusing on useState and useEffect patterns, along with best practices for creating custom hooks.",
-        keyTopics: ["React hooks", "useState", "useEffect", "custom hooks"],
+        summary: "React hooks bring state to functional components.",
+        keyTopics: ["React hooks", "useState"],
         representativeQuote: "React hooks enable state in functional components",
       },
     }),
@@ -45,227 +37,77 @@ vi.mock("ai", () => ({
   generateText: mockGenerateText,
 }));
 
-describe("ClusterSummarizerService - LLM Abstractive Summarization", () => {
-  let originalConfigPath: string | undefined;
-  let tempDir: string | undefined;
+function summarize(
+  chunks: Array<{ id: string; content: string }>,
+  options: { clusterId: number; maxChunks?: number },
+) {
+  return Effect.runPromise(
+    Effect.flatMap(ClusterSummarizerService, (service) =>
+      service.summarize(chunks, options),
+    ).pipe(Effect.provide(ClusterSummarizerImpl.Default)),
+  );
+}
 
-  beforeEach(() => {
-    originalConfigPath = process.env.POINK_CONFIG;
-    tempDir = mkdtempSync(join(tmpdir(), "poink-cluster-summarizer-"));
-    const configPath = join(tempDir, "config.json");
+const chunks = [1, 2, 3, 4, 5].map((n) => ({
+  id: String(n),
+  content: `Chunk content number ${n}.`,
+}));
 
-    writeFileSync(
-      configPath,
-      JSON.stringify({
-        version: 1,
-        library: { path: join(tempDir, "library") },
-        chunking: { strategy: "text", size: 2000, overlap: 200 },
-        models: {
-          embedding: { provider: "ollama", model: "mxbai-embed-large" },
-          enrichment: { provider: "ollama", model: "llama3.2:3b" },
-          judge: { provider: "ollama", model: "llama3.2:3b" },
-        },
-        providers: {
-          ollama: { baseUrl: "http://127.0.0.1:1", autoPull: true },
-          gateway: { apiKeyEnv: "AI_GATEWAY_API_KEY" },
-          openai: {
-            apiKeyEnv: "OPENAI_API_KEY",
-            baseUrl: "https://api.openai.com/v1",
-          },
-          openrouter: {
-            apiKeyEnv: "OPENROUTER_API_KEY",
-            baseUrl: "https://openrouter.ai/api/v1",
-          },
-        },
-        storage: {
-          libsql: { url: `file:${join(tempDir, "library", "library.db")}` },
-        },
-        server: {
-          host: "127.0.0.1",
-          port: 3838,
-          auth: { enabled: false, tokenEnv: "POINK_SERVER_TOKEN" },
-        },
-      }),
-      "utf-8",
-    );
+beforeAll(() => {
+  // testSetup points POINK_CONFIG at a per-file temp path.
+  saveConfig(
+    new Config({
+      ...Config.Default,
+      models: {
+        ...Config.Default.models,
+        enrichment: { provider: "ollama", model: "summary-model:1b" },
+      },
+    }),
+  );
+});
 
-    process.env.POINK_CONFIG = configPath;
+afterEach(() => {
+  mockGenerateText.mockClear();
+});
+
+describe("ClusterSummarizerService", () => {
+  it("summarizes chunks with the configured enrichment model", async () => {
+    const result = await summarize(chunks.slice(0, 3), { clusterId: 1 });
+
+    expect(result).toEqual({
+      clusterId: 1,
+      summary: "React hooks bring state to functional components.",
+      chunkCount: 3,
+      keyTopics: ["React hooks", "useState"],
+      representativeQuote: "React hooks enable state in functional components",
+    });
+    expect(mockGenerateText).toHaveBeenCalledOnce();
+    expect(mockGenerateText.mock.calls[0][0].model.modelId).toBe("summary-model:1b");
   });
 
-  afterEach(() => {
-    if (originalConfigPath === undefined) {
-      delete process.env.POINK_CONFIG;
-    } else {
-      process.env.POINK_CONFIG = originalConfigPath;
-    }
-
-    if (tempDir) {
-      rmSync(tempDir, { recursive: true, force: true });
-      tempDir = undefined;
-    }
+  it("summarizes an empty cluster without invoking the LLM", async () => {
+    expect(await summarize([], { clusterId: 2 })).toEqual({
+      clusterId: 2,
+      summary: "Empty cluster with no documents.",
+      chunkCount: 0,
+    });
+    expect(mockGenerateText).not.toHaveBeenCalled();
   });
 
-  it("should generate LLM-based abstractive summary with key topics", async () => {
-    const chunks = [
-      {
-        id: "1",
-        content:
-          "React hooks enable state in functional components. This revolutionary feature changed how we write React components.",
-      },
-      {
-        id: "2",
-        content:
-          "useState and useEffect are the most common hooks. They handle state and side effects respectively.",
-      },
-      {
-        id: "3",
-        content:
-          "Custom hooks allow reusable stateful logic. You can extract component logic into reusable functions.",
-      },
-    ];
+  it("prompts with at most maxChunks chunks but counts all of them", async () => {
+    const result = await summarize(chunks, { clusterId: 3, maxChunks: 3 });
 
-    const result = await Effect.runPromise(
-      Effect.gen(function* () {
-        const service = yield* ClusterSummarizerService;
-        return yield* service.summarize(chunks, { clusterId: 1 });
-      }).pipe(Effect.provide(ClusterSummarizerImpl.Default))
-    );
-
-    expect(result.clusterId).toBe(1);
-    expect(result.summary).toBeDefined();
-    expect(result.summary.length).toBeGreaterThan(20);
-    expect(result.chunkCount).toBe(3);
-
-    // LLM-based summary should have key topics
-    expect(result.keyTopics).toBeDefined();
-    expect(result.keyTopics!.length).toBeGreaterThan(0);
-    expect(result.keyTopics).toContain("React hooks");
-
-    // Representative quote is optional
-    if (result.representativeQuote) {
-      expect(result.representativeQuote.length).toBeGreaterThan(0);
-    }
+    expect(result.chunkCount).toBe(5);
+    const { prompt } = mockGenerateText.mock.calls[0][0];
+    expect(prompt).toContain("Chunk content number 3.");
+    expect(prompt).not.toContain("Chunk content number 4.");
   });
 
-  it("should include representative quote when LLM provides one", async () => {
-    mockGenerateText.mockImplementationOnce(() =>
-      Promise.resolve({
-        output: {
-          summary:
-            "Comprehensive guide to TypeScript generics and type inference.",
-          keyTopics: ["TypeScript", "generics", "type inference"],
-          representativeQuote:
-            "Generics provide a way to make components work with any data type",
-        },
-      })
+  it("fails when LLM summarization fails", async () => {
+    mockGenerateText.mockRejectedValueOnce(new Error("API unavailable"));
+
+    await expect(summarize(chunks, { clusterId: 4 })).rejects.toThrow(
+      "API unavailable",
     );
-
-    const chunks = [
-      {
-        id: "1",
-        content:
-          "Generics provide a way to make components work with any data type. They are fundamental to TypeScript.",
-      },
-    ];
-
-    const result = await Effect.runPromise(
-      Effect.gen(function* () {
-        const service = yield* ClusterSummarizerService;
-        return yield* service.summarize(chunks, { clusterId: 2 });
-      }).pipe(Effect.provide(ClusterSummarizerImpl.Default))
-    );
-
-    expect(result.representativeQuote).toBeDefined();
-    expect(result.representativeQuote).toBe(
-      "Generics provide a way to make components work with any data type"
-    );
-  });
-
-  it("should handle empty chunks array without invoking the LLM", async () => {
-    const chunks: Array<{ id: string; content: string }> = [];
-
-    const result = await Effect.runPromise(
-      Effect.gen(function* () {
-        const service = yield* ClusterSummarizerService;
-        return yield* service.summarize(chunks, { clusterId: 2 });
-      }).pipe(Effect.provide(ClusterSummarizerImpl.Default))
-    );
-
-    expect(result.clusterId).toBe(2);
-    expect(result.chunkCount).toBe(0);
-    expect(result.summary).toBeDefined();
-    expect(result.summary).toBe("Empty cluster with no documents.");
-  });
-
-  it("should limit chunks based on maxChunks option", async () => {
-    const chunks = [
-      {
-        id: "1",
-        content: "First chunk about React hooks and their usage patterns.",
-      },
-      { id: "2", content: "Second chunk about useState for state management." },
-      { id: "3", content: "Third chunk about useEffect for side effects." },
-      { id: "4", content: "Fourth chunk about useContext for prop drilling." },
-      { id: "5", content: "Fifth chunk about custom hooks for reusability." },
-    ];
-
-    const result = await Effect.runPromise(
-      Effect.gen(function* () {
-        const service = yield* ClusterSummarizerService;
-        return yield* service.summarize(chunks, {
-          clusterId: 3,
-          maxChunks: 3,
-        });
-      }).pipe(Effect.provide(ClusterSummarizerImpl.Default))
-    );
-
-    expect(result.clusterId).toBe(3);
-    expect(result.chunkCount).toBe(5); // Total count, not limited
-  });
-
-  it("should fail fast when LLM summarization fails", async () => {
-    mockGenerateText.mockImplementationOnce(() =>
-      Promise.reject(new Error("API unavailable"))
-    );
-
-    const chunks = [
-      {
-        id: "1",
-        content:
-          "React hooks enable state in functional components. This is important.",
-      },
-      {
-        id: "2",
-        content: "useState is the most basic hook. It manages component state.",
-      },
-    ];
-
-    await expect(
-      Effect.runPromise(
-        Effect.gen(function* () {
-          const service = yield* ClusterSummarizerService;
-          return yield* service.summarize(chunks, { clusterId: 4 });
-        }).pipe(Effect.provide(ClusterSummarizerImpl.Default))
-      )
-    ).rejects.toThrow("API unavailable");
-  });
-
-  it("should use the configured enrichment model via AI SDK", async () => {
-    const chunks = [
-      { id: "1", content: "Test content for model verification." },
-    ];
-
-    await Effect.runPromise(
-      Effect.gen(function* () {
-        const service = yield* ClusterSummarizerService;
-        return yield* service.summarize(chunks, { clusterId: 5 });
-      }).pipe(Effect.provide(ClusterSummarizerImpl.Default))
-    );
-
-    // Verify generateText was called with correct model
-    expect(mockGenerateText).toHaveBeenCalled();
-    const calls = mockGenerateText.mock.calls;
-    expect(calls.length).toBeGreaterThan(0);
-    expect(calls[calls.length - 1][0]?.model?.modelId).toBe("llama3.2:3b");
   });
 });

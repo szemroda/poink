@@ -1,51 +1,38 @@
-/**
- * TaxonomyService Tests
- *
- * Tests for SKOS taxonomy operations using TDD approach.
- */
-
-import { afterAll, describe, expect, test } from "vitest";
-import { mkdtempSync } from "fs";
-import { tmpdir } from "os";
-import { join } from "path";
+import { describe, expect, test } from "vitest";
 import { Effect } from "effect";
-import { Config } from "../types.js";
-import { TaxonomyService } from "./TaxonomyService.js";
+import { Config, Document } from "../types.js";
+import { type Concept, TaxonomyService } from "./TaxonomyService.js";
+import { DocumentRepository } from "./StorageRepositories.js";
 import { makeStorageLayer } from "./StorageLayer.js";
-import { removeDirWithRetries } from "../testUtils.js";
 
-const tempDir = mkdtempSync(join(tmpdir(), "poink-taxonomy-"));
-let testDbCounter = 0;
+/** Runs `effect` against a fresh in-memory library. */
+function runTest<A, E>(
+  effect: Effect.Effect<A, E, TaxonomyService | DocumentRepository>,
+): Promise<A> {
+  const layer = makeStorageLayer(
+    new Config({ ...Config.Default, storage: { libsql: { url: ":memory:" } } }),
+  );
+  return Effect.runPromise(Effect.scoped(Effect.provide(effect, layer)));
+}
 
-afterAll(async () => {
-  await removeDirWithRetries(tempDir, 200, 50);
-});
+function sortedIds(concepts: Concept[]): string[] {
+  return concepts.map((concept) => concept.id).sort();
+}
 
-const makeTestLayer = () => {
-  // Use a unique file-backed DB per test for isolation, but clean up the temp
-  // directory once per suite so Windows file-handle release latency does not
-  // count against individual test timeouts.
-  const testDbPath = `file:${join(tempDir, `library-${testDbCounter++}.db`)}`;
-  return {
-    layer: makeStorageLayer(
-      new Config({
-        ...Config.Default,
-        storage: { libsql: { url: testDbPath } },
-      }),
-    ),
-    cleanup: () => Promise.resolve(),
-  };
-};
-
-const runTest = <A, E>(effect: Effect.Effect<A, E, TaxonomyService>) => {
-  const { layer, cleanup } = makeTestLayer();
-  return Effect.scoped(Effect.provide(effect, layer))
-    .pipe(Effect.runPromise)
-    .finally(cleanup);
-};
+/** Adds concepts labelled by their ids plus `[concept, broader]` edges. */
+const addHierarchy = (ids: string[], edges: Array<[string, string]>) =>
+  Effect.gen(function* () {
+    const svc = yield* TaxonomyService;
+    for (const id of ids) {
+      yield* svc.addConcept({ id, prefLabel: id });
+    }
+    for (const [conceptId, broaderId] of edges) {
+      yield* svc.addBroader(conceptId, broaderId);
+    }
+  });
 
 describe("TaxonomyService - Concept CRUD", () => {
-  test("addConcept creates a new concept", async () => {
+  test("getConcept returns stored concepts and null for unknown ids", async () => {
     await runTest(
       Effect.gen(function* () {
         const svc = yield* TaxonomyService;
@@ -56,63 +43,38 @@ describe("TaxonomyService - Concept CRUD", () => {
           altLabels: ["ML", "statistical learning"],
           definition: "Algorithms that learn from data",
         });
+        yield* svc.addConcept({ id: "typescript", prefLabel: "TypeScript" });
 
-        const concept = yield* svc.getConcept("machine-learning");
-        expect(concept).not.toBeNull();
-        expect(concept?.prefLabel).toBe("Machine Learning");
-        expect(concept?.altLabels).toEqual(["ML", "statistical learning"]);
-      })
-    );
-  });
-
-  test("addConcept with minimal fields", async () => {
-    await runTest(
-      Effect.gen(function* () {
-        const svc = yield* TaxonomyService;
-
-        yield* svc.addConcept({
-          id: "typescript",
-          prefLabel: "TypeScript",
+        expect(yield* svc.getConcept("machine-learning")).toMatchObject({
+          id: "machine-learning",
+          prefLabel: "Machine Learning",
+          altLabels: ["ML", "statistical learning"],
+          definition: "Algorithms that learn from data",
         });
-
-        const concept = yield* svc.getConcept("typescript");
-        expect(concept).not.toBeNull();
-        expect(concept?.prefLabel).toBe("TypeScript");
-        expect(concept?.altLabels).toEqual([]);
-        expect(concept?.definition).toBeUndefined();
-      })
+        const minimal = yield* svc.getConcept("typescript");
+        expect(minimal).toMatchObject({ prefLabel: "TypeScript", altLabels: [] });
+        expect(minimal?.definition).toBeUndefined();
+        expect(yield* svc.getConcept("non-existent")).toBeNull();
+      }),
     );
   });
 
-  test("getConcept returns null for non-existent concept", async () => {
-    await runTest(
-      Effect.gen(function* () {
-        const svc = yield* TaxonomyService;
-        const concept = yield* svc.getConcept("non-existent");
-        expect(concept).toBeNull();
-      })
-    );
-  });
-
-  test("listConcepts returns all concepts", async () => {
+  test("listConcepts returns all concepts ordered by label", async () => {
     await runTest(
       Effect.gen(function* () {
         const svc = yield* TaxonomyService;
 
-        yield* svc.addConcept({ id: "js", prefLabel: "JavaScript" });
         yield* svc.addConcept({ id: "ts", prefLabel: "TypeScript" });
+        yield* svc.addConcept({ id: "js", prefLabel: "JavaScript" });
         yield* svc.addConcept({ id: "rust", prefLabel: "Rust" });
 
         const concepts = yield* svc.listConcepts();
-        expect(concepts).toHaveLength(3);
-        expect(concepts.map((c) => c.id)).toContain("js");
-        expect(concepts.map((c) => c.id)).toContain("ts");
-        expect(concepts.map((c) => c.id)).toContain("rust");
-      })
+        expect(concepts.map((c) => c.id)).toEqual(["js", "rust", "ts"]);
+      }),
     );
   });
 
-  test("updateConcept modifies existing concept", async () => {
+  test("updateConcept modifies an existing concept", async () => {
     await runTest(
       Effect.gen(function* () {
         const svc = yield* TaxonomyService;
@@ -124,300 +86,141 @@ describe("TaxonomyService - Concept CRUD", () => {
           definition: "Simulation of human intelligence",
         });
 
-        const concept = yield* svc.getConcept("ai");
-        expect(concept?.prefLabel).toBe("Artificial Intelligence");
-        expect(concept?.altLabels).toEqual(["AI", "machine intelligence"]);
-        expect(concept?.definition).toBe("Simulation of human intelligence");
-      })
+        expect(yield* svc.getConcept("ai")).toMatchObject({
+          prefLabel: "Artificial Intelligence",
+          altLabels: ["AI", "machine intelligence"],
+          definition: "Simulation of human intelligence",
+        });
+      }),
     );
   });
 });
 
-describe("TaxonomyService - Hierarchy (Polyhierarchy)", () => {
-  test("addBroader creates parent relationship", async () => {
+describe("TaxonomyService - Hierarchy", () => {
+  // cs <- ai <- ml <- dl, and nlp under both ml and linguistics.
+  const concepts = ["cs", "ai", "ml", "dl", "nlp", "linguistics"];
+  const edges: Array<[string, string]> = [
+    ["ai", "cs"],
+    ["ml", "ai"],
+    ["dl", "ml"],
+    ["nlp", "ml"],
+    ["nlp", "linguistics"],
+  ];
+
+  test("getBroader and getNarrower return direct neighbours, including multiple parents", async () => {
     await runTest(
       Effect.gen(function* () {
         const svc = yield* TaxonomyService;
+        yield* addHierarchy(concepts, edges);
 
-        yield* svc.addConcept({ id: "ml", prefLabel: "Machine Learning" });
-        yield* svc.addConcept({
-          id: "ai",
-          prefLabel: "Artificial Intelligence",
-        });
-
-        yield* svc.addBroader("ml", "ai");
-
-        const parents = yield* svc.getBroader("ml");
-        expect(parents).toHaveLength(1);
-        expect(parents[0].id).toBe("ai");
-      })
+        expect(sortedIds(yield* svc.getBroader("ml"))).toEqual(["ai"]);
+        expect(sortedIds(yield* svc.getBroader("nlp"))).toEqual(["linguistics", "ml"]);
+        expect(sortedIds(yield* svc.getNarrower("ml"))).toEqual(["dl", "nlp"]);
+      }),
     );
   });
 
-  test("getNarrower returns children", async () => {
+  test("getAncestors and getDescendants are transitive", async () => {
     await runTest(
       Effect.gen(function* () {
         const svc = yield* TaxonomyService;
+        yield* addHierarchy(concepts, edges);
 
-        yield* svc.addConcept({ id: "ml", prefLabel: "Machine Learning" });
-        yield* svc.addConcept({ id: "dl", prefLabel: "Deep Learning" });
-        yield* svc.addConcept({
-          id: "ai",
-          prefLabel: "Artificial Intelligence",
-        });
-
-        yield* svc.addBroader("ml", "ai");
-        yield* svc.addBroader("dl", "ml");
-
-        const children = yield* svc.getNarrower("ml");
-        expect(children).toHaveLength(1);
-        expect(children[0].id).toBe("dl");
-      })
+        expect(sortedIds(yield* svc.getAncestors("dl"))).toEqual(["ai", "cs", "ml"]);
+        expect(sortedIds(yield* svc.getAncestors("nlp"))).toEqual(["ai", "cs", "linguistics", "ml"]);
+        expect(sortedIds(yield* svc.getDescendants("cs"))).toEqual(["ai", "dl", "ml", "nlp"]);
+      }),
     );
   });
 
-  test("polyhierarchy: concept can have multiple parents", async () => {
+  test("removeBroader deletes only that parent relationship", async () => {
     await runTest(
       Effect.gen(function* () {
         const svc = yield* TaxonomyService;
-
-        yield* svc.addConcept({
-          id: "nlp",
-          prefLabel: "Natural Language Processing",
-        });
-        yield* svc.addConcept({ id: "ml", prefLabel: "Machine Learning" });
-        yield* svc.addConcept({ id: "linguistics", prefLabel: "Linguistics" });
-
-        // NLP is a child of both ML and Linguistics
-        yield* svc.addBroader("nlp", "ml");
-        yield* svc.addBroader("nlp", "linguistics");
-
-        const parents = yield* svc.getBroader("nlp");
-        expect(parents).toHaveLength(2);
-        expect(parents.map((p) => p.id).sort()).toEqual(["linguistics", "ml"]);
-      })
-    );
-  });
-
-  test("removeBroader deletes parent relationship", async () => {
-    await runTest(
-      Effect.gen(function* () {
-        const svc = yield* TaxonomyService;
-
-        yield* svc.addConcept({ id: "nlp", prefLabel: "NLP" });
-        yield* svc.addConcept({ id: "ml", prefLabel: "ML" });
-        yield* svc.addConcept({ id: "linguistics", prefLabel: "Linguistics" });
-
-        yield* svc.addBroader("nlp", "ml");
-        yield* svc.addBroader("nlp", "linguistics");
+        yield* addHierarchy(concepts, edges);
 
         yield* svc.removeBroader("nlp", "linguistics");
 
-        const parents = yield* svc.getBroader("nlp");
-        expect(parents).toHaveLength(1);
-        expect(parents[0].id).toBe("ml");
-      })
-    );
-  });
-
-  test("getAncestors returns transitive broader concepts", async () => {
-    await runTest(
-      Effect.gen(function* () {
-        const svc = yield* TaxonomyService;
-
-        // Create hierarchy: DL -> ML -> AI -> CS
-        yield* svc.addConcept({ id: "dl", prefLabel: "Deep Learning" });
-        yield* svc.addConcept({ id: "ml", prefLabel: "Machine Learning" });
-        yield* svc.addConcept({
-          id: "ai",
-          prefLabel: "Artificial Intelligence",
-        });
-        yield* svc.addConcept({ id: "cs", prefLabel: "Computer Science" });
-
-        yield* svc.addBroader("dl", "ml");
-        yield* svc.addBroader("ml", "ai");
-        yield* svc.addBroader("ai", "cs");
-
-        const ancestors = yield* svc.getAncestors("dl");
-        expect(ancestors).toHaveLength(3);
-        expect(ancestors.map((a) => a.id).sort()).toEqual(["ai", "cs", "ml"]);
-      })
-    );
-  });
-
-  test("getDescendants returns transitive narrower concepts", async () => {
-    await runTest(
-      Effect.gen(function* () {
-        const svc = yield* TaxonomyService;
-
-        // Create hierarchy: CS -> AI -> ML -> DL
-        yield* svc.addConcept({ id: "cs", prefLabel: "Computer Science" });
-        yield* svc.addConcept({
-          id: "ai",
-          prefLabel: "Artificial Intelligence",
-        });
-        yield* svc.addConcept({ id: "ml", prefLabel: "Machine Learning" });
-        yield* svc.addConcept({ id: "dl", prefLabel: "Deep Learning" });
-
-        yield* svc.addBroader("dl", "ml");
-        yield* svc.addBroader("ml", "ai");
-        yield* svc.addBroader("ai", "cs");
-
-        const descendants = yield* svc.getDescendants("cs");
-        expect(descendants).toHaveLength(3);
-        expect(descendants.map((d) => d.id).sort()).toEqual(["ai", "dl", "ml"]);
-      })
+        expect(sortedIds(yield* svc.getBroader("nlp"))).toEqual(["ml"]);
+        expect(yield* svc.getNarrower("linguistics")).toEqual([]);
+      }),
     );
   });
 });
 
-describe("TaxonomyService - Relations (Associative)", () => {
-  test("addRelated creates symmetric relationship", async () => {
+describe("TaxonomyService - Relations", () => {
+  test("addRelated and removeRelated act on both directions", async () => {
     await runTest(
       Effect.gen(function* () {
         const svc = yield* TaxonomyService;
-
-        yield* svc.addConcept({ id: "js", prefLabel: "JavaScript" });
-        yield* svc.addConcept({ id: "ts", prefLabel: "TypeScript" });
+        yield* addHierarchy(["js", "ts"], []);
 
         yield* svc.addRelated("js", "ts");
+        expect(sortedIds(yield* svc.getRelated("js"))).toEqual(["ts"]);
+        expect(sortedIds(yield* svc.getRelated("ts"))).toEqual(["js"]);
 
-        const jsRelated = yield* svc.getRelated("js");
-        const tsRelated = yield* svc.getRelated("ts");
-
-        expect(jsRelated).toHaveLength(1);
-        expect(jsRelated[0].id).toBe("ts");
-        expect(tsRelated).toHaveLength(1);
-        expect(tsRelated[0].id).toBe("js");
-      })
-    );
-  });
-
-  test("addRelated with custom relation type", async () => {
-    await runTest(
-      Effect.gen(function* () {
-        const svc = yield* TaxonomyService;
-
-        yield* svc.addConcept({ id: "react", prefLabel: "React" });
-        yield* svc.addConcept({ id: "vue", prefLabel: "Vue" });
-
-        yield* svc.addRelated("react", "vue", "alternative");
-
-        const related = yield* svc.getRelated("react");
-        expect(related).toHaveLength(1);
-        expect(related[0].id).toBe("vue");
-      })
-    );
-  });
-
-  test("removeRelated deletes symmetric relationship", async () => {
-    await runTest(
-      Effect.gen(function* () {
-        const svc = yield* TaxonomyService;
-
-        yield* svc.addConcept({ id: "js", prefLabel: "JavaScript" });
-        yield* svc.addConcept({ id: "ts", prefLabel: "TypeScript" });
-
-        yield* svc.addRelated("js", "ts");
-        yield* svc.removeRelated("js", "ts");
-
-        const jsRelated = yield* svc.getRelated("js");
-        const tsRelated = yield* svc.getRelated("ts");
-
-        expect(jsRelated).toHaveLength(0);
-        expect(tsRelated).toHaveLength(0);
-      })
+        yield* svc.removeRelated("ts", "js");
+        expect(yield* svc.getRelated("js")).toEqual([]);
+        expect(yield* svc.getRelated("ts")).toEqual([]);
+      }),
     );
   });
 });
 
 describe("TaxonomyService - Document Mappings", () => {
-  test("assignToDocument links concept to document (without FK check)", async () => {
+  test("assigns, upserts, looks up, and removes document concepts", async () => {
     await runTest(
       Effect.gen(function* () {
         const svc = yield* TaxonomyService;
+        const documents = yield* DocumentRepository;
+        yield* documents.addDocument(
+          new Document({
+            id: "doc-1",
+            title: "Document",
+            path: "/documents/doc-1.md",
+            addedAt: new Date("2026-01-01T00:00:00.000Z"),
+            pageCount: 1,
+            sizeBytes: 100,
+            tags: [],
+            fileType: "markdown",
+            metadata: {},
+          }),
+        );
+        yield* addHierarchy(["ml"], []);
 
-        yield* svc.addConcept({ id: "ml", prefLabel: "Machine Learning" });
+        yield* svc.assignToDocument("doc-1", "ml", 0.5, "llm");
+        yield* svc.assignToDocument("doc-1", "ml", 0.95, "manual");
 
-        // Note: In real usage, doc_id must exist in documents table (FK constraint)
-        // This test verifies the assignment would fail with FK constraint
-        // In integration tests with real DB, create actual documents
+        const assignment = { docId: "doc-1", conceptId: "ml", confidence: 0.95, source: "manual" };
+        expect(yield* svc.getDocumentConcepts("doc-1")).toEqual([assignment]);
+        expect(yield* svc.getConceptDocuments("ml")).toEqual([assignment]);
 
-        const result = yield* svc
-          .assignToDocument("doc-123", "ml", 0.95, "llm")
-          .pipe(Effect.either);
-
-        // Should fail due to FK constraint (no document exists)
-        expect(result._tag).toBe("Left");
-
-        // Test that we can query (returns empty array)
-        const concepts = yield* svc.getDocumentConcepts("doc-123");
-        expect(concepts).toBeInstanceOf(Array);
-        expect(concepts).toHaveLength(0);
-      })
-    );
-  });
-
-  test("assignToDocument with defaults", async () => {
-    await runTest(
-      Effect.gen(function* () {
-        const svc = yield* TaxonomyService;
-
-        yield* svc.addConcept({ id: "ai", prefLabel: "AI" });
-
-        const result = yield* svc
-          .assignToDocument("doc-456", "ai")
-          .pipe(Effect.either);
-
-        // Should fail due to FK constraint
-        expect(result._tag).toBe("Left");
-
-        const concepts = yield* svc.getDocumentConcepts("doc-456");
-        expect(concepts).toBeInstanceOf(Array);
-        expect(concepts).toHaveLength(0);
-      })
-    );
-  });
-
-  test("getConceptDocuments returns documents for concept", async () => {
-    await runTest(
-      Effect.gen(function* () {
-        const svc = yield* TaxonomyService;
-
-        yield* svc.addConcept({ id: "ml", prefLabel: "ML" });
-
-        // FK constraints prevent insertion without real documents
-        // Test the query logic instead
-        const assignments = yield* svc.getConceptDocuments("ml");
-        expect(assignments).toBeInstanceOf(Array);
-        expect(assignments).toHaveLength(0); // No assignments without documents
-      })
-    );
-  });
-
-  test("removeFromDocument unlinks concept", async () => {
-    await runTest(
-      Effect.gen(function* () {
-        const svc = yield* TaxonomyService;
-
-        yield* svc.addConcept({ id: "ml", prefLabel: "ML" });
-
-        // Can't test without real document, but verify method works
         yield* svc.removeFromDocument("doc-1", "ml");
+        expect(yield* svc.getDocumentConcepts("doc-1")).toEqual([]);
+      }),
+    );
+  });
 
-        const concepts = yield* svc.getDocumentConcepts("doc-1");
-        expect(concepts).toHaveLength(0);
-      })
+  test("rejects assignments to unknown documents", async () => {
+    await runTest(
+      Effect.gen(function* () {
+        const svc = yield* TaxonomyService;
+        yield* addHierarchy(["ml"], []);
+
+        const error = yield* Effect.flip(svc.assignToDocument("doc-404", "ml"));
+
+        expect(error._tag).toBe("TaxonomyError");
+        expect(yield* svc.getConceptDocuments("ml")).toEqual([]);
+      }),
     );
   });
 });
 
 describe("TaxonomyService - Bulk Operations", () => {
-  test("seedFromJSON loads taxonomy", async () => {
+  test("seedFromJSON loads concepts, hierarchy, and symmetric relations idempotently", async () => {
     await runTest(
       Effect.gen(function* () {
         const svc = yield* TaxonomyService;
-
         const taxonomy = {
           concepts: [
             { id: "cs", prefLabel: "Computer Science" },
@@ -428,20 +231,16 @@ describe("TaxonomyService - Bulk Operations", () => {
             { conceptId: "ai", broaderId: "cs" },
             { conceptId: "ml", broaderId: "ai" },
           ],
-          relations: [
-            { conceptId: "ml", relatedId: "ai", relationType: "related" },
-          ],
+          relations: [{ conceptId: "ml", relatedId: "cs" }],
         };
 
         yield* svc.seedFromJSON(taxonomy);
+        yield* svc.seedFromJSON(taxonomy);
 
-        const concepts = yield* svc.listConcepts();
-        expect(concepts).toHaveLength(3);
-
-        const mlParents = yield* svc.getBroader("ml");
-        expect(mlParents).toHaveLength(1);
-        expect(mlParents[0].id).toBe("ai");
-      })
+        expect(sortedIds(yield* svc.listConcepts())).toEqual(["ai", "cs", "ml"]);
+        expect(sortedIds(yield* svc.getAncestors("ml"))).toEqual(["ai", "cs"]);
+        expect(sortedIds(yield* svc.getRelated("cs"))).toEqual(["ml"]);
+      }),
     );
   });
 });
@@ -451,24 +250,20 @@ describe("TaxonomyService - Concept Embeddings", () => {
     const result = await runTest(
       Effect.gen(function* () {
         const svc = yield* TaxonomyService;
-        yield* svc.addConcept({
-          id: "concept-vector",
-          prefLabel: "Vector Concept",
-        });
+        yield* addHierarchy(["concept-vector"], []);
         yield* svc.storeConceptEmbedding("concept-vector", [1, 0, 0]);
         return yield* svc.findSimilarConcepts([1, 0, 0], 0.1, 5);
       }),
     );
 
-    expect(result.map((concept) => concept.id)).toContain("concept-vector");
+    expect(sortedIds(result)).toEqual(["concept-vector"]);
   });
 
   test("findSimilarConcepts returns empty results before vector schema exists", async () => {
     const result = await runTest(
-      Effect.gen(function* () {
-        const svc = yield* TaxonomyService;
-        return yield* svc.findSimilarConcepts([1, 0, 0], 0.1, 5);
-      }),
+      Effect.flatMap(TaxonomyService, (svc) =>
+        svc.findSimilarConcepts([1, 0, 0], 0.1, 5),
+      ),
     );
 
     expect(result).toEqual([]);

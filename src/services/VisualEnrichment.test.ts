@@ -1,20 +1,17 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
-import { Context, Effect, Layer } from "effect";
+import { Context, Effect, Either, Layer } from "effect";
 import { Config } from "../types.js";
+import { restoreEnvSnapshot, snapshotEnv } from "../testUtils.js";
 import { OfficeExtractor } from "./OfficeExtractor.js";
 import { PDFExtractor } from "./PDFExtractor.js";
-import type { DetectedSourceType } from "./SourceFileType.js";
 import {
   buildVisualChunkContent,
   filterVisualImages,
   type ExtractedDocumentImage,
-  VisualEnrichment,
   makeVisualEnrichment,
+  VisualEnrichment,
+  type VisualEnrichmentOptions,
 } from "./VisualEnrichment.js";
-import { loadConfig } from "../types.js";
 
 vi.mock("ai", () => ({
   generateText: vi.fn(async () => ({ text: "A concise visual description." })),
@@ -23,50 +20,21 @@ vi.mock("ai", () => ({
 const { generateText } = await import("ai");
 const mockedGenerateText = vi.mocked(generateText);
 
-const ORIGINAL_POINK_CONFIG = process.env.POINK_CONFIG;
-const ORIGINAL_VISUAL_CONCURRENCY = process.env.POINK_VISUAL_CONCURRENCY;
-const DETECTED_PDF = {
-  sourceFormat: "pdf",
-  fileType: "pdf",
-} satisfies DetectedSourceType;
-type PDFExtractorService = Context.Tag.Service<typeof PDFExtractor>;
-type OfficeExtractorService = Context.Tag.Service<typeof OfficeExtractor>;
+const envSnapshot = snapshotEnv(["POINK_VISUAL_CONCURRENCY"]);
 
 afterEach(() => {
-  vi.clearAllMocks();
-  if (ORIGINAL_POINK_CONFIG === undefined) {
-    delete process.env.POINK_CONFIG;
-  } else {
-    process.env.POINK_CONFIG = ORIGINAL_POINK_CONFIG;
-  }
-  if (ORIGINAL_VISUAL_CONCURRENCY === undefined) {
-    delete process.env.POINK_VISUAL_CONCURRENCY;
-  } else {
-    process.env.POINK_VISUAL_CONCURRENCY = ORIGINAL_VISUAL_CONCURRENCY;
-  }
+  // Restores the default mock implementation as well as clearing calls.
+  vi.resetAllMocks();
+  restoreEnvSnapshot(envSnapshot);
 });
 
-function configureVisuals(
-  overrides: Partial<{
-    enabled: boolean;
-    maxImageBytes: string;
-    maxImagesPerDocument: number;
-  }> = {},
-): string {
-  const dir = mkdtempSync(join(tmpdir(), "poink-visuals-"));
-  const configPath = join(dir, "config.json");
-  const config = JSON.parse(JSON.stringify(Config.Default));
-  config.library.path = join(dir, "library");
-  config.ingest.visuals = {
-    enabled: true,
-    maxImageBytes: "5mb",
-    maxImagesPerDocument: 100,
-    ...overrides,
-  };
-  process.env.POINK_CONFIG = configPath;
-  writeFileSync(configPath, JSON.stringify(config), "utf-8");
-  return dir;
-}
+const VISUALS_CONFIG = new Config({
+  ...Config.Default,
+  ingest: {
+    ...Config.Default.ingest,
+    visuals: { enabled: true, maxImageBytes: "5mb", maxImagesPerDocument: 100 },
+  },
+});
 
 function image(
   overrides: Partial<ExtractedDocumentImage> = {},
@@ -86,110 +54,124 @@ function image(
   };
 }
 
-describe("visual filtering", () => {
-  test("dedupes hashes, skips oversized images, and caps per document", () => {
+/** Runs enrichment for a PDF whose extractor yields `images`. */
+function enrichPdf(
+  images: ExtractedDocumentImage[],
+  options: VisualEnrichmentOptions,
+) {
+  const unused = () => Effect.die("unused");
+  const pdfExtractor: Context.Tag.Service<typeof PDFExtractor> = {
+    extract: unused,
+    extractImages: () => Effect.succeed(images),
+    process: unused,
+  };
+  const officeExtractor: Context.Tag.Service<typeof OfficeExtractor> = {
+    extract: unused,
+    extractImages: unused,
+    process: unused,
+  };
+  const layer = makeVisualEnrichment(VISUALS_CONFIG).pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        Layer.succeed(PDFExtractor, pdfExtractor),
+        Layer.succeed(OfficeExtractor, officeExtractor),
+      ),
+    ),
+  );
+
+  return Effect.runPromise(
+    VisualEnrichment.pipe(
+      Effect.flatMap((visuals) =>
+        visuals.enrichDocument(
+          "doc.pdf",
+          { sourceFormat: "pdf", fileType: "pdf" },
+          options,
+        ),
+      ),
+      Effect.either,
+      Effect.provide(layer),
+    ),
+  );
+}
+
+describe("visual helpers", () => {
+  test("filterVisualImages dedupes hashes, skips oversized images, and caps per document", () => {
     const retained = filterVisualImages(
       [
         image({ hash: "a", byteSize: 100 }),
-        image({ hash: "a", byteSize: 100, visualIndex: 2 }),
-        image({ hash: "b", byteSize: 2_000, visualIndex: 3 }),
-        image({ hash: "c", byteSize: 100, visualIndex: 4 }),
+        image({ hash: "a", byteSize: 100 }),
+        image({ hash: "b", byteSize: 2_000 }),
+        image({ hash: "c", byteSize: 100 }),
+        image({ hash: "d", byteSize: 100 }),
       ],
-      { maxImageBytes: 1_000, maxImagesPerDocument: 1 },
+      { maxImageBytes: 1_000, maxImagesPerDocument: 2 },
     );
 
-    expect(retained.map((item) => item.hash)).toEqual(["a"]);
+    expect(retained.map((item) => item.hash)).toEqual(["a", "c"]);
   });
 
-  test("renders searchable visual chunk content", () => {
+  test("buildVisualChunkContent renders searchable visual metadata", () => {
     const content = buildVisualChunkContent(
       image({ altText: "Revenue by segment" }),
       "A bar chart compares segment revenue.",
     );
 
-    expect(content).toContain("Visual: Page 2, image 1");
-    expect(content).toContain("Alt text: Revenue by segment");
-    expect(content).toContain("Dimensions: 100x80");
-    expect(content).toContain("Description:");
+    expect(content).toBe(
+      [
+        "Visual: Page 2, image 1",
+        "Alt text: Revenue by segment",
+        "Content type: image/png",
+        "Dimensions: 100x80",
+        "",
+        "Description:",
+        "A bar chart compares segment revenue.",
+      ].join("\n"),
+    );
   });
 });
 
 describe("VisualEnrichment", () => {
   test("describes retained PDF images with a multimodal model message", async () => {
-    const dir = configureVisuals();
-    try {
-      const pdfExtractor: PDFExtractorService = {
-        extract: () => Effect.die("unused"),
-        extractImages: () => Effect.succeed([image({ altText: "Diagram" })]),
-        process: () => Effect.die("unused"),
-      };
-      const officeExtractor: OfficeExtractorService = {
-        extract: () => Effect.die("unused"),
-        extractImages: () => Effect.succeed([]),
-        process: () => Effect.die("unused"),
-      };
+    const result = await enrichPdf([image({ altText: "Diagram" })], {
+      mode: "explicit",
+      title: "Doc",
+    });
 
-      const program = Effect.gen(function* () {
-        const visuals = yield* VisualEnrichment;
-        return yield* visuals.enrichDocument("doc.pdf", DETECTED_PDF, {
-          mode: "explicit",
-          title: "Doc",
-        });
-      });
-
-      const chunks = await Effect.runPromise(
-        program.pipe(
-          Effect.provide(
-            makeVisualEnrichment(loadConfig()).pipe(
-              Layer.provide(
-                Layer.mergeAll(
-                  Layer.succeed(PDFExtractor, pdfExtractor),
-                  Layer.succeed(OfficeExtractor, officeExtractor),
-                ),
-              ),
-            ),
-          ),
-        ),
-      );
-
-      expect(chunks).toHaveLength(1);
-      expect(chunks[0]?.content).toContain("A concise visual description.");
-      const call = mockedGenerateText.mock.calls[0]?.[0];
-      expect(call).toBeDefined();
-      expect(call?.abortSignal).toBeInstanceOf(AbortSignal);
-      expect(call?.maxRetries).toBe(0);
-      const message = call?.messages?.[0];
-      expect(message?.role).toBe("user");
-      expect(Array.isArray(message?.content)).toBe(true);
-      const content = Array.isArray(message?.content) ? message.content : [];
-      expect(content[0]?.type).toBe("text");
-      expect(content[1]?.type).toBe("image");
-      if (content[1]?.type === "image") {
-        expect(content[1].mediaType).toBe("image/png");
-      }
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+    expect(Either.getOrThrow(result)).toEqual([
+      {
+        page: 2,
+        chunkIndex: 0,
+        content: expect.stringContaining("A concise visual description."),
+      },
+    ]);
+    expect(mockedGenerateText.mock.calls[0]?.[0]).toMatchObject({
+      abortSignal: expect.any(AbortSignal),
+      maxRetries: 0,
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: expect.stringContaining("Alt text: Diagram") },
+            { type: "image", mediaType: "image/png" },
+          ],
+        },
+      ],
+    });
   });
 
   test("describes images concurrently while preserving chunk order", async () => {
-    const dir = configureVisuals();
     process.env.POINK_VISUAL_CONCURRENCY = "2";
     let active = 0;
     let maxActive = 0;
     mockedGenerateText.mockImplementation(async (request) => {
       active++;
       maxActive = Math.max(maxActive, active);
-      const messages = request.messages ?? [];
-      const user = messages[0];
+      const user = request.messages?.[0];
       const content =
-        user?.role === "user" && Array.isArray(user.content)
-          ? user.content
-          : [];
+        user?.role === "user" && Array.isArray(user.content) ? user.content : [];
       const prompt = content[0]?.type === "text" ? content[0].text : "";
-      const visualIndex = Number(
-        prompt.match(/image (\d+)/)?.[1] ?? "0",
-      );
+      const visualIndex = Number(prompt.match(/image (\d+)/)?.[1] ?? "0");
+      // The first image finishes last, so ordering must not follow completion.
       await new Promise((resolve) =>
         setTimeout(resolve, visualIndex === 1 ? 20 : 5),
       );
@@ -197,142 +179,39 @@ describe("VisualEnrichment", () => {
       return { text: `Description ${visualIndex}` } as never;
     });
 
-    try {
-      const pdfExtractor: PDFExtractorService = {
-        extract: () => Effect.die("unused"),
-        extractImages: () =>
-          Effect.succeed([
-            image({ hash: "a", visualIndex: 1 }),
-            image({ hash: "b", visualIndex: 2 }),
-            image({ hash: "c", visualIndex: 3 }),
-          ]),
-        process: () => Effect.die("unused"),
-      };
-      const officeExtractor: OfficeExtractorService = {
-        extract: () => Effect.die("unused"),
-        extractImages: () => Effect.succeed([]),
-        process: () => Effect.die("unused"),
-      };
-      const program = Effect.gen(function* () {
-        const visuals = yield* VisualEnrichment;
-        return yield* visuals.enrichDocument("doc.pdf", DETECTED_PDF, {
-          mode: "explicit",
-        });
-      });
+    const result = await enrichPdf(
+      [
+        image({ hash: "a", visualIndex: 1 }),
+        image({ hash: "b", visualIndex: 2 }),
+        image({ hash: "c", visualIndex: 3 }),
+      ],
+      { mode: "explicit" },
+    );
 
-      const chunks = await Effect.runPromise(
-        program.pipe(
-          Effect.provide(
-            makeVisualEnrichment(loadConfig()).pipe(
-              Layer.provide(
-                Layer.mergeAll(
-                  Layer.succeed(PDFExtractor, pdfExtractor),
-                  Layer.succeed(OfficeExtractor, officeExtractor),
-                ),
-              ),
-            ),
-          ),
-        ),
-      );
-
-      expect(maxActive).toBe(2);
-      expect(chunks.map((chunk) => chunk.chunkIndex)).toEqual([0, 1, 2]);
-      expect(chunks.map((chunk) => chunk.content)).toEqual([
-        expect.stringContaining("Description 1"),
-        expect.stringContaining("Description 2"),
-        expect.stringContaining("Description 3"),
-      ]);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+    expect(maxActive).toBe(2);
+    expect(Either.getOrThrow(result)).toEqual([
+      { page: 2, chunkIndex: 0, content: expect.stringContaining("Description 1") },
+      { page: 2, chunkIndex: 1, content: expect.stringContaining("Description 2") },
+      { page: 2, chunkIndex: 2, content: expect.stringContaining("Description 3") },
+    ]);
   });
 
   test("config mode skips model failures without failing text ingest", async () => {
-    const dir = configureVisuals();
     mockedGenerateText.mockRejectedValueOnce(new Error("text-only model"));
-    try {
-      const pdfExtractor: PDFExtractorService = {
-        extract: () => Effect.die("unused"),
-        extractImages: () => Effect.succeed([image()]),
-        process: () => Effect.die("unused"),
-      };
-      const officeExtractor: OfficeExtractorService = {
-        extract: () => Effect.die("unused"),
-        extractImages: () => Effect.succeed([]),
-        process: () => Effect.die("unused"),
-      };
 
-      const program = Effect.gen(function* () {
-        const visuals = yield* VisualEnrichment;
-        return yield* visuals.enrichDocument("doc.pdf", DETECTED_PDF, {
-          mode: "config",
-        });
-      });
+    const result = await enrichPdf([image()], { mode: "config" });
 
-      const chunks = await Effect.runPromise(
-        program.pipe(
-          Effect.provide(
-            makeVisualEnrichment(loadConfig()).pipe(
-              Layer.provide(
-                Layer.mergeAll(
-                  Layer.succeed(PDFExtractor, pdfExtractor),
-                  Layer.succeed(OfficeExtractor, officeExtractor),
-                ),
-              ),
-            ),
-          ),
-        ),
-      );
-
-      expect(chunks).toEqual([]);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+    expect(Either.getOrThrow(result)).toEqual([]);
   });
 
   test("explicit mode fails on model failures", async () => {
-    const dir = configureVisuals();
     mockedGenerateText.mockRejectedValueOnce(new Error("text-only model"));
-    try {
-      const pdfExtractor: PDFExtractorService = {
-        extract: () => Effect.die("unused"),
-        extractImages: () => Effect.succeed([image()]),
-        process: () => Effect.die("unused"),
-      };
-      const officeExtractor: OfficeExtractorService = {
-        extract: () => Effect.die("unused"),
-        extractImages: () => Effect.succeed([]),
-        process: () => Effect.die("unused"),
-      };
 
-      const program = Effect.gen(function* () {
-        const visuals = yield* VisualEnrichment;
-        return yield* visuals.enrichDocument("doc.pdf", DETECTED_PDF, {
-          mode: "explicit",
-        });
-      });
+    const result = await enrichPdf([image()], { mode: "explicit" });
 
-      const result = await Effect.runPromise(
-        Effect.either(program).pipe(
-          Effect.provide(
-            makeVisualEnrichment(loadConfig()).pipe(
-              Layer.provide(
-                Layer.mergeAll(
-                  Layer.succeed(PDFExtractor, pdfExtractor),
-                  Layer.succeed(OfficeExtractor, officeExtractor),
-                ),
-              ),
-            ),
-          ),
-        ),
-      );
-
-      expect(result._tag).toBe("Left");
-      if (result._tag === "Left") {
-        expect(result.left.message).toContain("vision-capable");
-      }
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+    expect(result).toMatchObject({
+      _tag: "Left",
+      left: { message: expect.stringContaining("vision-capable") },
+    });
   });
 });

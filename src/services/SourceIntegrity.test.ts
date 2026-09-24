@@ -7,7 +7,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Effect } from "effect";
+import { Effect, Either } from "effect";
 import { afterEach, describe, expect, test } from "vitest";
 import {
   SourceFileUnavailableError,
@@ -24,50 +24,42 @@ afterEach(() => {
   }
 });
 
-describe("source integrity", () => {
-  test("streams SHA-256 while counting bytes", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "poink-source-"));
-    tempDirs.push(directory);
-    const path = join(directory, "source.bin");
+function makeTempDir(): string {
+  const directory = mkdtempSync(join(tmpdir(), "poink-source-"));
+  tempDirs.push(directory);
+  return directory;
+}
+
+const ABC_SHA256 =
+  "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+
+describe("fingerprintSource", () => {
+  test("hashes content with SHA-256 and counts bytes", async () => {
+    const path = join(makeTempDir(), "source.bin");
     writeFileSync(path, Buffer.from("abc"));
 
-    const fingerprint = await Effect.runPromise(fingerprintSource(path));
-
-    expect(fingerprint).toEqual({
-      identity: {
-        algorithm: "sha256",
-        hash: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
-      },
+    await expect(Effect.runPromise(fingerprintSource(path))).resolves.toEqual({
+      identity: { algorithm: "sha256", hash: ABC_SHA256 },
       sizeBytes: 3,
     });
   });
 
-  test("distinguishes unavailable and non-regular sources", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "poink-source-errors-"));
-    tempDirs.push(directory);
-    const nestedDirectory = join(directory, "nested");
-    mkdirSync(nestedDirectory);
+  test.each([
+    ["a missing path", "missing.pdf", SourceFileUnavailableError],
+    ["a directory", "nested", SourceFileUnreadableError],
+  ] as const)("rejects %s", async (_case, name, errorClass) => {
+    const directory = makeTempDir();
+    mkdirSync(join(directory, "nested"));
 
-    const missing = await Effect.runPromise(
-      Effect.either(fingerprintSource(join(directory, "missing.pdf"))),
-    );
-    const nonRegular = await Effect.runPromise(
-      Effect.either(fingerprintSource(nestedDirectory)),
+    const result = await Effect.runPromise(
+      Effect.either(fingerprintSource(join(directory, name))),
     );
 
-    expect(missing._tag).toBe("Left");
-    if (missing._tag === "Left") {
-      expect(missing.left).toBeInstanceOf(SourceFileUnavailableError);
-    }
-    expect(nonRegular._tag).toBe("Left");
-    if (nonRegular._tag === "Left") {
-      expect(nonRegular.left).toBeInstanceOf(SourceFileUnreadableError);
-    }
+    expect(Either.isLeft(result) && result.left).toBeInstanceOf(errorClass);
   });
 
   test("follows symlinks to regular files", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "poink-source-link-"));
-    tempDirs.push(directory);
+    const directory = makeTempDir();
     const target = join(directory, "target.md");
     const link = join(directory, "link.md");
     writeFileSync(target, "linked content");
@@ -75,6 +67,7 @@ describe("source integrity", () => {
     try {
       symlinkSync(target, link, "file");
     } catch {
+      // Creating symlinks needs extra privileges on Windows.
       return;
     }
 
@@ -84,16 +77,23 @@ describe("source integrity", () => {
       await Effect.runPromise(fingerprintSource(target)),
     );
   });
+});
 
-  test("validates stored identity without exposing it through documents", () => {
-    expect(decodeStoredSourceIdentity(null, null)).toEqual({
-      status: "missing",
-    });
-    expect(decodeStoredSourceIdentity("sha256", "g".repeat(64))).toEqual({
-      status: "invalid",
-    });
-    expect(decodeStoredSourceIdentity("SHA256", "a".repeat(64))).toEqual({
-      status: "invalid",
-    });
+describe("decodeStoredSourceIdentity", () => {
+  test.each([
+    ["both columns null", null, null, { status: "missing" }],
+    ["non-hex hash", "sha256", "g".repeat(64), { status: "invalid" }],
+    ["uppercase hash", "sha256", "A".repeat(64), { status: "invalid" }],
+    ["short hash", "sha256", "a".repeat(63), { status: "invalid" }],
+    ["unknown algorithm", "SHA256", "a".repeat(64), { status: "invalid" }],
+    ["half-null columns", "sha256", null, { status: "invalid" }],
+    [
+      "a well-formed identity",
+      "sha256",
+      ABC_SHA256,
+      { status: "valid", identity: { algorithm: "sha256", hash: ABC_SHA256 } },
+    ],
+  ] as const)("decodes %s", (_case, algorithm, hash, expected) => {
+    expect(decodeStoredSourceIdentity(algorithm, hash)).toEqual(expected);
   });
 });

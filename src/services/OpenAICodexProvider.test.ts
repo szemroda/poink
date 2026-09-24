@@ -41,6 +41,20 @@ function makeTestConfig(overrides: Record<string, unknown>) {
   });
 }
 
+/** Bin directories of Poink's own dependencies, which must never supply Codex. */
+const DEPENDENCY_BIN_DIRS = [
+  join(process.cwd(), "node_modules", ".bin"),
+  join(process.cwd(), "node_modules", "ai-sdk-provider-codex-cli", "node_modules", ".bin"),
+];
+const CODEX_EXECUTABLE = process.platform === "win32" ? "codex.exe" : "codex";
+const NPM_CMD_LAUNCHER = '@ECHO off\n"node" "%dp0%\\node_modules\\@openai\\codex\\bin\\codex.js" %*\n';
+
+function writeExecutable(path: string): string {
+  writeFileSync(path, "#!/bin/sh\nexit 0\n");
+  chmodSync(path, 0o755);
+  return path;
+}
+
 let tempDir: string;
 let config: Config;
 
@@ -124,34 +138,22 @@ describe("OpenAICodexProvider", () => {
   });
 
   test.each(["", " \t "])("finds a separate installation on PATH when both settings are empty (%j)", (empty) => {
-    const executable = join(tempDir, process.platform === "win32" ? "codex.exe" : "codex");
-    writeFileSync(executable, "#!/bin/sh\nexit 0\n");
-    chmodSync(executable, 0o755);
+    const executable = writeExecutable(join(tempDir, CODEX_EXECUTABLE));
     vi.stubEnv("POINK_CODEX_PATH", empty);
-    vi.stubEnv("PATH", [
-      join(process.cwd(), "node_modules", ".bin"),
-      join(process.cwd(), "node_modules", "ai-sdk-provider-codex-cli", "node_modules", ".bin"),
-      tempDir,
-    ].join(delimiter));
+    vi.stubEnv("PATH", [...DEPENDENCY_BIN_DIRS, tempDir].join(delimiter));
     const automatic = makeTestConfig({ providers: { "openai-codex": { codexPath: empty } } });
     expect(resolveOpenAICodexCommand(automatic)).toEqual({ command: executable, args: [] });
   });
 
   test("reports a missing installation when PATH contains only Poink's dependencies", () => {
-    vi.stubEnv("PATH", [
-      join(process.cwd(), "node_modules", ".bin"),
-      join(process.cwd(), "node_modules", "ai-sdk-provider-codex-cli", "node_modules", ".bin"),
-    ].join(delimiter));
+    vi.stubEnv("PATH", DEPENDENCY_BIN_DIRS.join(delimiter));
     expect(() => resolveOpenAICodexCommand(makeTestConfig({}))).toThrow(/Codex was not found on PATH/);
   });
 
   test("skips a directory named codex before a valid program on PATH", () => {
-    const name = process.platform === "win32" ? "codex.exe" : "codex";
     const unusable = join(tempDir, "unusable");
-    mkdirSync(join(unusable, name), { recursive: true });
-    const executable = join(tempDir, name);
-    writeFileSync(executable, "#!/bin/sh\nexit 0\n");
-    chmodSync(executable, 0o755);
+    mkdirSync(join(unusable, CODEX_EXECUTABLE), { recursive: true });
+    const executable = writeExecutable(join(tempDir, CODEX_EXECUTABLE));
     vi.stubEnv("PATH", [unusable, tempDir].join(delimiter));
     expect(resolveOpenAICodexCommand(makeTestConfig({}))).toEqual({ command: executable, args: [] });
   });
@@ -160,8 +162,7 @@ describe("OpenAICodexProvider", () => {
     const unusable = join(tempDir, "unusable");
     mkdirSync(unusable);
     writeFileSync(join(unusable, "codex"), "#!/bin/sh\nexit 0\n", { mode: 0o644 });
-    const executable = join(tempDir, "codex");
-    writeFileSync(executable, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    const executable = writeExecutable(join(tempDir, "codex"));
     vi.stubEnv("PATH", [unusable, tempDir].join(delimiter));
     expect(resolveOpenAICodexCommand(makeTestConfig({}))).toEqual({ command: executable, args: [] });
   });
@@ -180,7 +181,7 @@ describe("OpenAICodexProvider", () => {
     writeFileSync(entry, "process.exit(0);\n");
     const launcher = join(globalDir, process.platform === "win32" ? "codex.cmd" : "codex");
     writeFileSync(launcher, process.platform === "win32"
-      ? '@ECHO off\n"node" "%dp0%\\node_modules\\@openai\\codex\\bin\\codex.js" %*\n'
+      ? NPM_CMD_LAUNCHER
       : '#!/bin/sh\nexec node "$basedir/node_modules/@openai/codex/bin/codex.js" "$@"\n');
     chmodSync(launcher, 0o755);
     vi.stubEnv("PATH", globalDir);
@@ -209,7 +210,7 @@ describe("OpenAICodexProvider", () => {
     writeFileSync(entry, "process.exit(process.argv.slice(2).join(' ') === 'login --device-auth' ? 0 : 1);\n");
     const launcher = join(tempDir, `codex.${extension}`);
     writeFileSync(launcher, extension === "cmd"
-      ? '@ECHO off\n"node" "%dp0%\\node_modules\\@openai\\codex\\bin\\codex.js" %*\n'
+      ? NPM_CMD_LAUNCHER
       : '#!/usr/bin/env pwsh\n& "node" "$basedir/node_modules/@openai/codex/bin/codex.js" $args\n');
     const selected = makeTestConfig({ providers: { "openai-codex": { codexPath: launcher } } });
     await expect(runOpenAICodexLogin(selected, { stdio: "pipe", deviceAuth: true })).resolves.toBeUndefined();

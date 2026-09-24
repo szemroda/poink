@@ -2,21 +2,13 @@ import { afterEach, describe, expect, test } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { Context, Effect, Layer } from "effect";
+import { Context, Effect, Either, Layer } from "effect";
 import {
   DocumentIngestion,
   makeDocumentIngestion,
+  type DocumentIngestionService,
 } from "./DocumentIngestion.js";
-import {
-  SemanticLibrary,
-  makeSemanticLibrary,
-} from "./SemanticLibrary.js";
-import {
-  AddOptions,
-  Config,
-  Document,
-  OllamaError,
-} from "../types.js";
+import { AddOptions, Config, Document, OllamaError } from "../types.js";
 import {
   DocumentIntegrityRepository,
   DocumentRepository,
@@ -54,8 +46,7 @@ type SourceFileTypeDetectorService = Context.Tag.Service<
   typeof SourceFileTypeDetector
 >;
 type ReplacementChunk = Parameters<DatabaseService["replaceDocument"]>[1][number];
-type ReplacementEmbedding =
-  Parameters<DatabaseService["replaceDocument"]>[2][number];
+type ExtractedChunk = { page: number; chunkIndex: number; content: string };
 
 const tempDirs: string[] = [];
 
@@ -64,6 +55,15 @@ afterEach(() => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+/** Writes `content` to a fresh temp file and returns its path. */
+function writeSource(name: string, content: string): string {
+  const dir = mkdtempSync(join(tmpdir(), "poink-ingestion-"));
+  tempDirs.push(dir);
+  const path = join(dir, name);
+  writeFileSync(path, content);
+  return path;
+}
 
 function makeDatabase(
   overrides: Partial<DatabaseService> = {},
@@ -101,700 +101,374 @@ function makeDatabase(
   };
 }
 
-function unusedPDFExtractor(): PDFExtractorService {
+/** Embedding provider that records every batch and can fail the Nth one. */
+function recordingEmbeddingProvider(
+  options: { onBatch?: () => void; failOnBatch?: number } = {},
+): { provider: EmbeddingProviderService; batches: string[][] } {
+  const batches: string[][] = [];
   return {
-    extract: () => Effect.die("PDF extractor should not be used"),
-    extractImages: () => Effect.die("PDF extractor should not be used"),
-    process: () => Effect.die("PDF extractor should not be used"),
+    batches,
+    provider: {
+      provider: "ollama",
+      checkHealth: () => Effect.void,
+      embed: () => Effect.succeed([1, 0, 0]),
+      embedBatch: (texts) =>
+        Effect.suspend(() => {
+          batches.push(texts);
+          options.onBatch?.();
+          if (batches.length === options.failOnBatch) {
+            return Effect.fail(new OllamaError({ reason: "batch failed" }));
+          }
+          return Effect.succeed(texts.map(() => [1, 0, 0]));
+        }),
+    },
   };
 }
 
-function unusedOfficeExtractor(): OfficeExtractorService {
+function markdownExtractorReturning(
+  chunks: ExtractedChunk[],
+): MarkdownExtractorService {
   return {
-    extract: () => Effect.die("Office extractor should not be used"),
-    extractImages: () => Effect.die("Office extractor should not be used"),
-    process: () => Effect.die("Office extractor should not be used"),
+    extractFrontmatter: () => Effect.succeed({}),
+    extract: () =>
+      Effect.succeed({ frontmatter: {}, sections: [], sectionCount: 0 }),
+    process: () => Effect.succeed({ pageCount: 1, frontmatter: {}, chunks }),
   };
 }
 
-function unusedTextExtractor(): TextExtractorService {
-  return {
-    process: () => Effect.die("Text extractor should not be used"),
-  };
+function unused(name: string) {
+  return () => Effect.die(`${name} should not be used`);
 }
 
-function makeIngestionDependencies(services: {
-  database: DatabaseService;
-  embeddingProvider: EmbeddingProviderService;
-  markdownExtractor: MarkdownExtractorService;
-  pdfExtractor: PDFExtractorService;
-  officeExtractor: OfficeExtractorService;
-  textExtractor?: TextExtractorService;
-  visualEnrichment: VisualEnrichmentService;
-  sourceFileTypeDetector?: SourceFileTypeDetectorService;
-}) {
-  const sourceFileTypeDetector = services.sourceFileTypeDetector
-    ? Layer.succeed(SourceFileTypeDetector, services.sourceFileTypeDetector)
-    : SourceFileTypeDetectorLive;
-  return Layer.mergeAll(
+const noVisuals: VisualEnrichmentService = {
+  enrichDocument: () => Effect.succeed([]),
+};
+
+/**
+ * Runs `use` against a DocumentIngestion built from the given fakes. Services
+ * that a test does not supply die when touched.
+ */
+function runIngestion<A, E>(
+  services: {
+    database: DatabaseService;
+    embeddingProvider?: EmbeddingProviderService;
+    markdownExtractor?: MarkdownExtractorService;
+    pdfExtractor?: PDFExtractorService;
+    officeExtractor?: OfficeExtractorService;
+    textExtractor?: TextExtractorService;
+    visualEnrichment?: VisualEnrichmentService;
+    sourceFileTypeDetector?: SourceFileTypeDetectorService;
+  },
+  use: (ingestion: DocumentIngestionService) => Effect.Effect<A, E>,
+): Promise<Either.Either<A, E>> {
+  const deps = Layer.mergeAll(
     Layer.succeed(DocumentRepository, services.database),
     Layer.succeed(DocumentIntegrityRepository, services.database),
     Layer.succeed(SearchRepository, services.database),
     Layer.succeed(LibraryMaintenance, services.database),
-    Layer.succeed(EmbeddingProvider, services.embeddingProvider),
-    Layer.succeed(MarkdownExtractor, services.markdownExtractor),
-    Layer.succeed(PDFExtractor, services.pdfExtractor),
-    Layer.succeed(OfficeExtractor, services.officeExtractor),
+    Layer.succeed(
+      EmbeddingProvider,
+      services.embeddingProvider ?? recordingEmbeddingProvider().provider,
+    ),
+    Layer.succeed(
+      MarkdownExtractor,
+      services.markdownExtractor ?? {
+        extractFrontmatter: unused("Markdown extractor"),
+        extract: unused("Markdown extractor"),
+        process: unused("Markdown extractor"),
+      },
+    ),
+    Layer.succeed(
+      PDFExtractor,
+      services.pdfExtractor ?? {
+        extract: unused("PDF extractor"),
+        extractImages: unused("PDF extractor"),
+        process: unused("PDF extractor"),
+      },
+    ),
+    Layer.succeed(
+      OfficeExtractor,
+      services.officeExtractor ?? {
+        extract: unused("Office extractor"),
+        extractImages: unused("Office extractor"),
+        process: unused("Office extractor"),
+      },
+    ),
     Layer.succeed(
       TextExtractor,
-      services.textExtractor ?? unusedTextExtractor(),
+      services.textExtractor ?? { process: unused("Text extractor") },
     ),
-    Layer.succeed(VisualEnrichment, services.visualEnrichment),
-    sourceFileTypeDetector,
+    Layer.succeed(VisualEnrichment, services.visualEnrichment ?? noVisuals),
+    services.sourceFileTypeDetector
+      ? Layer.succeed(SourceFileTypeDetector, services.sourceFileTypeDetector)
+      : SourceFileTypeDetectorLive,
+  );
+  return Effect.runPromise(
+    Effect.either(Effect.flatMap(DocumentIngestion, use)).pipe(
+      Effect.provide(
+        makeDocumentIngestion(Config.Default).pipe(Layer.provide(deps)),
+      ),
+    ),
   );
 }
 
-function successfulEmbeddingProvider(): EmbeddingProviderService {
-  return {
-    provider: "ollama",
-    checkHealth: () => Effect.void,
-    embed: () => Effect.succeed([1, 0, 0]),
-    embedBatch: (texts) =>
-      Effect.succeed(texts.map(() => [1, 0, 0])),
-  };
-}
-
-function migrationDocument(
-  path: string,
-  fileType: Document["fileType"],
-): Document {
-  return new Document({
-    id: "doc-1",
-    title: "Preserved title",
-    path,
-    addedAt: new Date("2024-01-02T03:04:05.000Z"),
-    pageCount: 9,
-    sizeBytes: 12,
-    tags: ["preserved"],
-    fileType,
-    metadata: {
-      owner: "user",
-      chunker: { id: "old", version: 1 },
-      visuals: { enabled: true, version: 0 },
-    },
+function recordingDatabase(overrides: Partial<DatabaseService> = {}) {
+  const replaced: Array<{ doc: Document; chunks: ReplacementChunk[] }> = [];
+  const database = makeDatabase({
+    replaceDocument: (doc, chunks) =>
+      Effect.sync(() => {
+        replaced.push({ doc, chunks });
+      }),
+    ...overrides,
   });
-}
-
-function migrationExtractors(
-  onProcessed: (sourceFormat: DetectedSourceType["sourceFormat"]) => void,
-): {
-  markdown: MarkdownExtractorService;
-  pdf: PDFExtractorService;
-  office: OfficeExtractorService;
-  text: TextExtractorService;
-} {
-  return {
-    markdown: {
-      extractFrontmatter: () => Effect.succeed({}),
-      extract: () =>
-        Effect.succeed({ frontmatter: {}, sections: [], sectionCount: 0 }),
-      process: () => {
-        onProcessed("markdown-text");
-        return Effect.succeed({
-          pageCount: 1,
-          frontmatter: {},
-          chunks: [{ page: 1, chunkIndex: 0, content: "markdown" }],
-        });
-      },
-    },
-    pdf: {
-      extract: () => Effect.die("PDF extract should not be used"),
-      extractImages: () => Effect.succeed([]),
-      process: () => {
-        onProcessed("pdf");
-        return Effect.succeed({
-          pageCount: 2,
-          chunks: [{ page: 1, chunkIndex: 0, content: "pdf" }],
-        });
-      },
-    },
-    office: {
-      extract: () => Effect.die("Office extract should not be used"),
-      extractImages: () => Effect.succeed([]),
-      process: (_path, sourceFormat) => {
-        onProcessed(sourceFormat);
-        return Effect.succeed({
-          pageCount: 3,
-          chunks: [{ page: 1, chunkIndex: 0, content: sourceFormat }],
-        });
-      },
-    },
-    text: {
-      process: () => {
-        onProcessed("plain-text");
-        return Effect.succeed({
-          pageCount: 1,
-          chunks: [{ page: 1, chunkIndex: 0, content: "text" }],
-        });
-      },
-    },
-  };
+  return { database, replaced };
 }
 
 describe("DocumentIngestion.add", () => {
   test("does not persist a new document when embedding fails after an earlier batch", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "poink-add-"));
-    tempDirs.push(dir);
-    const docPath = join(dir, "doc.md");
-    writeFileSync(docPath, "# Doc\n\ncontent\n");
-
-    const persistenceCalls: string[] = [];
-    let embedBatchCalls = 0;
-
-    const chunks = Array.from(
-      { length: DEFAULT_QUEUE_CONFIG.batchSize + 1 },
-      (_, i) => ({
-        page: 1,
-        chunkIndex: i,
-        content: `chunk ${i}`,
-      }),
-    );
-
-    const database = makeDatabase({
-      replaceDocument: (
-        _doc,
-        chunksArg,
-        embeddingsArg,
-      ) =>
-        Effect.sync(() => {
-          persistenceCalls.push(
-            `replaceDocument:${chunksArg.length}:${embeddingsArg.length}`,
-          );
-        }),
+    const docPath = writeSource("doc.md", "# Doc\n\ncontent\n");
+    let checkpoints = 0;
+    const { database, replaced } = recordingDatabase({
       checkpoint: () =>
         Effect.sync(() => {
-          persistenceCalls.push("checkpoint");
+          checkpoints++;
         }),
     });
-
-    const embeddingProvider: EmbeddingProviderService = {
-      provider: "ollama" as const,
-      checkHealth: () => Effect.void,
-      embed: () => Effect.succeed([1, 0, 0]),
-      embedBatch: (texts: string[]) => {
-        embedBatchCalls++;
-        if (embedBatchCalls === 2) {
-          return Effect.fail(
-            new OllamaError({ reason: "simulated second batch failure" }),
-          );
-        }
-        return Effect.succeed(texts.map(() => [1, 0, 0]));
-      },
-    };
-
-    const markdownExtractor: MarkdownExtractorService = {
-      extractFrontmatter: () => Effect.succeed({}),
-      extract: () =>
-        Effect.succeed({ frontmatter: {}, sections: [], sectionCount: 0 }),
-      process: () => Effect.succeed({ pageCount: 1, chunks, frontmatter: {} }),
-    };
-
-    const pdfExtractor = unusedPDFExtractor();
-    const officeExtractor = unusedOfficeExtractor();
-    const visualEnrichment: VisualEnrichmentService = {
-      enrichDocument: () => Effect.succeed([]),
-    };
-
-    const deps = makeIngestionDependencies({
-      database,
-      embeddingProvider,
-      markdownExtractor,
-      pdfExtractor,
-      officeExtractor,
-      visualEnrichment,
-    });
-
-    const program = Effect.gen(function* () {
-      const library = yield* DocumentIngestion;
-      return yield* library.add(docPath, new AddOptions({ title: "Doc" }));
-    });
-
-    const result = await Effect.runPromise(
-      Effect.either(program).pipe(
-        Effect.provide(
-          makeDocumentIngestion(Config.Default).pipe(Layer.provide(deps)),
-        ),
-      ),
+    const embeddings = recordingEmbeddingProvider({ failOnBatch: 2 });
+    const chunks = Array.from(
+      { length: DEFAULT_QUEUE_CONFIG.batchSize + 1 },
+      (_, i) => ({ page: 1, chunkIndex: i, content: `chunk ${i}` }),
     );
 
-    expect(result._tag).toBe("Left");
-    expect(embedBatchCalls).toBe(2);
-    expect(persistenceCalls).toEqual([]);
+    const result = await runIngestion(
+      {
+        database,
+        embeddingProvider: embeddings.provider,
+        markdownExtractor: markdownExtractorReturning(chunks),
+      },
+      (ingestion) => ingestion.add(docPath, new AddOptions({ title: "Doc" })),
+    );
+
+    expect(Either.isLeft(result)).toBe(true);
+    expect(embeddings.batches).toHaveLength(2);
+    expect(replaced).toEqual([]);
+    expect(checkpoints).toBe(0);
   });
 
   test("does not persist when the source changes before the final hash", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "poink-add-change-"));
-    tempDirs.push(dir);
-    const docPath = join(dir, "doc.md");
-    writeFileSync(docPath, "# Doc\n\noriginal\n");
-
-    let persisted = false;
-    const database = makeDatabase({
-      replaceDocument: () =>
-        Effect.sync(() => {
-          persisted = true;
-        }),
+    const docPath = writeSource("doc.md", "# Doc\n\noriginal\n");
+    const { database, replaced } = recordingDatabase();
+    const embeddings = recordingEmbeddingProvider({
+      onBatch: () => writeFileSync(docPath, "# Doc\n\nchanged\n"),
     });
-    const embeddingProvider: EmbeddingProviderService = {
-      provider: "ollama" as const,
-      checkHealth: () => Effect.void,
-      embed: () => Effect.succeed([1, 0, 0]),
-      embedBatch: (texts: string[]) =>
-        Effect.sync(() => {
-          writeFileSync(docPath, "# Doc\n\nchanged\n");
-          return texts.map(() => [1, 0, 0]);
-        }),
-    };
-    const markdownExtractor: MarkdownExtractorService = {
-      extractFrontmatter: () => Effect.succeed({}),
-      extract: () =>
-        Effect.succeed({ frontmatter: {}, sections: [], sectionCount: 0 }),
-      process: () =>
-        Effect.succeed({
-          pageCount: 1,
-          frontmatter: {},
-          chunks: [{ page: 1, chunkIndex: 0, content: "original" }],
-        }),
-    };
-    const deps = makeIngestionDependencies({
-      database,
-      embeddingProvider,
-      markdownExtractor,
-      pdfExtractor: unusedPDFExtractor(),
-      officeExtractor: unusedOfficeExtractor(),
-      visualEnrichment: {
-        enrichDocument: () => Effect.succeed([]),
+
+    const result = await runIngestion(
+      {
+        database,
+        embeddingProvider: embeddings.provider,
+        markdownExtractor: markdownExtractorReturning([
+          { page: 1, chunkIndex: 0, content: "original" },
+        ]),
       },
-    });
-
-    const result = await Effect.runPromise(
-      Effect.either(
-        Effect.gen(function* () {
-          const library = yield* DocumentIngestion;
-          return yield* library.add(
-            docPath,
-            new AddOptions({ title: "Doc" }),
-          );
-        }),
-      ).pipe(
-        Effect.provide(
-          makeDocumentIngestion(Config.Default).pipe(Layer.provide(deps)),
-        ),
-      ),
+      (ingestion) => ingestion.add(docPath, new AddOptions({ title: "Doc" })),
     );
 
-    expect(result._tag).toBe("Left");
-    if (result._tag === "Left") {
-      expect(result.left).toMatchObject({
-        _tag: "SOURCE_FILE_CHANGED",
-      });
-    }
-    expect(persisted).toBe(false);
+    expect(Either.isLeft(result) && result.left).toMatchObject({
+      _tag: "SOURCE_FILE_CHANGED",
+    });
+    expect(replaced).toEqual([]);
   });
 
   test("embeds enriched chunk text while preserving display content", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "poink-embed-content-"));
-    tempDirs.push(dir);
-    const docPath = join(dir, "doc.md");
-    writeFileSync(docPath, "# Doc\n\ncontent\n");
+    const docPath = writeSource("doc.md", "# Doc\n\ncontent\n");
+    const { database, replaced } = recordingDatabase();
+    const embeddings = recordingEmbeddingProvider();
+    const content =
+      "# Section\n\n| Name | Value |\n| --- | --- |\n| Accuracy | High |";
 
-    let embeddedTexts: string[] = [];
-    let persistedChunks: ReplacementChunk[] = [];
-
-    const database = makeDatabase({
-      replaceDocument: (_doc, chunksArg) =>
-        Effect.sync(() => {
-          persistedChunks = chunksArg;
-        }),
-    });
-
-    const embeddingProvider: EmbeddingProviderService = {
-      provider: "ollama" as const,
-      checkHealth: () => Effect.void,
-      embed: () => Effect.succeed([1, 0, 0]),
-      embedBatch: (texts: string[]) =>
-        Effect.sync(() => {
-          embeddedTexts = texts;
-          return texts.map(() => [1, 0, 0]);
-        }),
-    };
-
-    const markdownExtractor: MarkdownExtractorService = {
-      extractFrontmatter: () => Effect.succeed({}),
-      extract: () =>
-        Effect.succeed({ frontmatter: {}, sections: [], sectionCount: 0 }),
-      process: () =>
-        Effect.succeed({
-          pageCount: 1,
-          frontmatter: {},
-          chunks: [
-            {
-              page: 1,
-              chunkIndex: 0,
-              content:
-                "# Section\n\n| Name | Value |\n| --- | --- |\n| Accuracy | High |",
-            },
-          ],
-        }),
-    };
-
-    const visualEnrichment: VisualEnrichmentService = {
-      enrichDocument: () => Effect.succeed([]),
-    };
-
-    const deps = makeIngestionDependencies({
-      database,
-      embeddingProvider,
-      markdownExtractor,
-      pdfExtractor: unusedPDFExtractor(),
-      officeExtractor: unusedOfficeExtractor(),
-      visualEnrichment,
-    });
-
-    const program = Effect.gen(function* () {
-      const library = yield* DocumentIngestion;
-      return yield* library.add(docPath, new AddOptions({ title: "Doc" }));
-    });
-
-    await Effect.runPromise(
-      program.pipe(
-        Effect.provide(
-          makeDocumentIngestion(Config.Default).pipe(Layer.provide(deps)),
-        ),
-      ),
+    await runIngestion(
+      {
+        database,
+        embeddingProvider: embeddings.provider,
+        markdownExtractor: markdownExtractorReturning([
+          { page: 1, chunkIndex: 0, content },
+        ]),
+      },
+      (ingestion) => ingestion.add(docPath, new AddOptions({ title: "Doc" })),
     );
 
-    expect(persistedChunks[0].content).toContain("| Name | Value |");
-    expect(persistedChunks[0].embeddingContent).toContain("Document: Doc");
-    expect(persistedChunks[0].embeddingContent).toContain("Section: Section");
-    expect(persistedChunks[0].embeddingContent).toContain(
+    const embeddingContent = [
+      "Document: Doc",
+      "Section: Section",
+      "Page: 1",
+      "",
+      content,
+      "",
       "Columns: Name | Value",
-    );
-    expect(persistedChunks[0].embeddingContent).toContain(
       "Row 1: Name=Accuracy; Value=High",
-    );
-    expect(embeddedTexts[0]).toBe(persistedChunks[0].embeddingContent);
+    ].join("\n");
+    expect(replaced[0]?.chunks).toEqual([
+      expect.objectContaining({ content, embeddingContent }),
+    ]);
+    expect(embeddings.batches).toEqual([[embeddingContent]]);
   });
 
   test("ingests detected TXT files with txt chunker metadata", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "poink-add-txt-"));
-    tempDirs.push(dir);
-    const docPath = join(dir, "meeting-notes.txt");
-    writeFileSync(docPath, "Unique plain text phrase.", "utf8");
+    const docPath = writeSource(
+      "meeting-notes.txt",
+      "Unique plain text phrase.",
+    );
+    const { database, replaced } = recordingDatabase();
+    const embeddings = recordingEmbeddingProvider();
 
-    let processedByTextExtractor = false;
-    let persistedDoc: Document | undefined;
-    let persistedChunks: ReplacementChunk[] = [];
-    let embeddedTexts: string[] = [];
-
-    const database = makeDatabase({
-      replaceDocument: (doc, chunksArg) =>
-        Effect.sync(() => {
-          persistedDoc = doc;
-          persistedChunks = chunksArg;
-        }),
-    });
-
-    const embeddingProvider: EmbeddingProviderService = {
-      provider: "ollama",
-      checkHealth: () => Effect.void,
-      embed: () => Effect.succeed([1, 0, 0]),
-      embedBatch: (texts: string[]) =>
-        Effect.sync(() => {
-          embeddedTexts = texts;
-          return texts.map(() => [1, 0, 0]);
-        }),
-    };
-
-    const deps = makeIngestionDependencies({
-      database,
-      embeddingProvider,
-      markdownExtractor: {
-        extractFrontmatter: () => Effect.die("Markdown should not be used"),
-        extract: () => Effect.die("Markdown should not be used"),
-        process: () => Effect.die("Markdown should not be used"),
-      },
-      pdfExtractor: unusedPDFExtractor(),
-      officeExtractor: unusedOfficeExtractor(),
-      textExtractor: {
-        process: () => {
-          processedByTextExtractor = true;
-          return Effect.succeed({
-            pageCount: 1,
-            chunks: [
-              { page: 1, chunkIndex: 0, content: "Unique plain text phrase." },
-            ],
-          });
+    const result = await runIngestion(
+      {
+        database,
+        embeddingProvider: embeddings.provider,
+        textExtractor: {
+          process: () =>
+            Effect.succeed({
+              pageCount: 1,
+              chunks: [
+                { page: 1, chunkIndex: 0, content: "Unique plain text phrase." },
+              ],
+            }),
         },
       },
-      visualEnrichment: {
-        enrichDocument: () => Effect.succeed([]),
-      },
-    });
-
-    const program = Effect.gen(function* () {
-      const library = yield* DocumentIngestion;
-      return yield* library.add(docPath);
-    });
-
-    const doc = await Effect.runPromise(
-      program.pipe(
-        Effect.provide(
-          makeDocumentIngestion(Config.Default).pipe(Layer.provide(deps)),
-        ),
-      ),
+      (ingestion) => ingestion.add(docPath),
     );
 
-    expect(processedByTextExtractor).toBe(true);
-    expect(doc.title).toBe("meeting-notes");
-    expect(persistedDoc).toMatchObject({
+    expect(Either.getOrThrow(result).title).toBe("meeting-notes");
+    const persisted = replaced[0];
+    expect(persisted?.doc).toMatchObject({
       fileType: "txt",
       pageCount: 1,
       title: "meeting-notes",
+      metadata: {
+        chunker: {
+          id: "txt-extractor:plain-context-v1",
+          version: 1,
+          unit: "chars",
+        },
+      },
     });
-    expect(persistedDoc?.metadata?.chunker).toMatchObject({
-      id: "txt-extractor:plain-context-v1",
-      version: 1,
-      unit: "chars",
-    });
-    expect(persistedChunks[0]?.embeddingContent).toContain(
+    expect(persisted?.chunks[0]?.embeddingContent).toContain(
       "Document: meeting-notes",
     );
-    expect(embeddedTexts[0]).toBe(persistedChunks[0]?.embeddingContent);
+    expect(embeddings.batches).toEqual([
+      [persisted?.chunks[0]?.embeddingContent],
+    ]);
   });
 
-  test("appends visual chunks when visual enrichment is enabled", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "poink-visual-chunks-"));
-    tempDirs.push(dir);
-    const docPath = join(dir, "doc.md");
-    writeFileSync(docPath, "# Doc\n\ncontent\n");
+  test("appends visual chunks after text chunks when visual enrichment is enabled", async () => {
+    const docPath = writeSource("doc.md", "# Doc\n\ncontent\n");
+    const { database, replaced } = recordingDatabase();
+    const embeddings = recordingEmbeddingProvider();
+    const visual = "Visual: Page 1, image 1\n\nDescription:\nA diagram.";
 
-    let embeddedTexts: string[] = [];
-    let persistedChunks: ReplacementChunk[] = [];
-
-    const database = makeDatabase({
-      replaceDocument: (_doc, chunksArg) =>
-        Effect.sync(() => {
-          persistedChunks = chunksArg;
-        }),
-    });
-
-    const embeddingProvider: EmbeddingProviderService = {
-      provider: "ollama" as const,
-      checkHealth: () => Effect.void,
-      embed: () => Effect.succeed([1, 0, 0]),
-      embedBatch: (texts: string[]) =>
-        Effect.sync(() => {
-          embeddedTexts = texts;
-          return texts.map(() => [1, 0, 0]);
-        }),
-    };
-
-    const markdownExtractor: MarkdownExtractorService = {
-      extractFrontmatter: () => Effect.succeed({}),
-      extract: () =>
-        Effect.succeed({ frontmatter: {}, sections: [], sectionCount: 0 }),
-      process: () =>
-        Effect.succeed({
-          pageCount: 1,
-          frontmatter: {},
-          chunks: [{ page: 1, chunkIndex: 0, content: "Text chunk" }],
-        }),
-    };
-
-    const visualEnrichment: VisualEnrichmentService = {
-      enrichDocument: () =>
-        Effect.succeed([
-          {
-            page: 1,
-            chunkIndex: 0,
-            content: "Visual: Page 1, image 1\n\nDescription:\nA diagram.",
-          },
+    await runIngestion(
+      {
+        database,
+        embeddingProvider: embeddings.provider,
+        markdownExtractor: markdownExtractorReturning([
+          { page: 1, chunkIndex: 0, content: "Text chunk" },
         ]),
-    };
-
-    const deps = makeIngestionDependencies({
-      database,
-      embeddingProvider,
-      markdownExtractor,
-      pdfExtractor: unusedPDFExtractor(),
-      officeExtractor: unusedOfficeExtractor(),
-      visualEnrichment,
-    });
-
-    const program = Effect.gen(function* () {
-      const library = yield* DocumentIngestion;
-      return yield* library.add(
-        docPath,
-        new AddOptions({ title: "Doc", visuals: true }),
-      );
-    });
-
-    await Effect.runPromise(
-      program.pipe(
-        Effect.provide(
-          makeDocumentIngestion(Config.Default).pipe(Layer.provide(deps)),
-        ),
-      ),
+        visualEnrichment: {
+          enrichDocument: () =>
+            Effect.succeed([{ page: 1, chunkIndex: 0, content: visual }]),
+        },
+      },
+      (ingestion) =>
+        ingestion.add(docPath, new AddOptions({ title: "Doc", visuals: true })),
     );
 
-    expect(persistedChunks).toHaveLength(2);
-    expect(persistedChunks[1].content).toContain("Visual: Page 1, image 1");
-    expect(embeddedTexts[1]).toContain("A diagram.");
-  });
-
-  test("reindex uses stored embedding content when available", async () => {
-    const embeddedTexts: string[][] = [];
-    const addEmbeddingsCalls: ReplacementEmbedding[][] = [];
-    const doc = new Document({
-      id: "doc-1",
-      title: "Doc",
-      path: "doc.md",
-      addedAt: new Date(),
-      pageCount: 1,
-      sizeBytes: 10,
-      tags: [],
-      fileType: "markdown",
-      metadata: {},
-    });
-
-    const database = makeDatabase({
-      getDocument: () => Effect.succeed(doc),
-      listChunksByDocument: () =>
-        Effect.succeed([
-          {
-            id: "chunk-1",
-            docId: "doc-1",
-            page: 1,
-            chunkIndex: 0,
-            content: "Display text",
-            embeddingContent: "Stored embedding text",
-          },
-        ]),
-      addEmbeddings: (items) =>
-        Effect.sync(() => {
-          addEmbeddingsCalls.push(items);
-        }),
-    });
-
-    const embeddingProvider: EmbeddingProviderService = {
-      provider: "ollama" as const,
-      checkHealth: () => Effect.void,
-      embed: () => Effect.succeed([1, 0, 0]),
-      embedBatch: (texts: string[]) =>
-        Effect.sync(() => {
-          embeddedTexts.push(texts);
-          return texts.map(() => [1, 0, 0]);
-        }),
-    };
-
-    const deps = Layer.mergeAll(
-      Layer.succeed(DocumentRepository, database),
-      Layer.succeed(SearchRepository, database),
-      Layer.succeed(LibraryMaintenance, database),
-      Layer.succeed(EmbeddingProvider, embeddingProvider),
-    );
-
-    const program = Effect.gen(function* () {
-      const library = yield* SemanticLibrary;
-      return yield* library.reindexEmbeddings("doc-1");
-    });
-
-    await Effect.runPromise(
-      program.pipe(
-        Effect.provide(
-          makeSemanticLibrary(Config.Default).pipe(Layer.provide(deps)),
-        ),
-      ),
-    );
-
-    expect(embeddedTexts).toEqual([["Stored embedding text"]]);
-    expect(addEmbeddingsCalls[0]).toHaveLength(1);
+    expect(replaced[0]?.chunks).toEqual([
+      expect.objectContaining({ chunkIndex: 0, content: "Text chunk" }),
+      expect.objectContaining({ chunkIndex: 1, content: visual }),
+    ]);
+    expect(embeddings.batches[0]?.[1]).toContain("A diagram.");
   });
 });
 
 describe("DocumentIngestion.replace source type migration", () => {
-  const storedTypes = ["pdf", "markdown", "docx", "odt", "txt"] as const;
-  const detectedTypes = [
+  function storedDocument(path: string): Document {
+    return new Document({
+      id: "doc-1",
+      title: "Preserved title",
+      path,
+      addedAt: new Date("2024-01-02T03:04:05.000Z"),
+      pageCount: 9,
+      sizeBytes: 12,
+      tags: ["preserved"],
+      fileType: "pdf",
+      metadata: {
+        owner: "user",
+        chunker: { id: "old", version: 1 },
+        visuals: { enabled: true, version: 0 },
+      },
+    });
+  }
+
+  function migrationOptions(detectedType: DetectedSourceType): AddOptions {
+    return new AddOptions({ sourceContext: { detectedType } });
+  }
+
+  // `replace` never reads the stored file type, so one stored type suffices;
+  // what varies is which extractor the supplied detection routes to.
+  test.each([
     { sourceFormat: "pdf", fileType: "pdf" },
     { sourceFormat: "markdown-text", fileType: "markdown" },
     { sourceFormat: "plain-text", fileType: "txt" },
     { sourceFormat: "docx-package", fileType: "docx" },
     { sourceFormat: "odt-package", fileType: "odt" },
     { sourceFormat: "odt-flat-xml", fileType: "odt" },
-  ] as const satisfies readonly DetectedSourceType[];
-  const migrations = storedTypes.flatMap((storedType) =>
-    detectedTypes.map((detected) => ({
-      storedType,
-      detected,
-      name: `${storedType} -> ${detected.sourceFormat}`,
-    })),
-  );
-
-  test.each(migrations)(
-    "migrates $name using the supplied authoritative result",
-    async ({ storedType, detected }) => {
-      const dir = mkdtempSync(join(tmpdir(), "poink-migration-"));
-      tempDirs.push(dir);
-      const docPath = join(dir, "source.bin");
-      writeFileSync(docPath, "stable source bytes");
-
-      const existing = migrationDocument(docPath, storedType);
-      let committed: Document | undefined;
-      let processedBy: DetectedSourceType["sourceFormat"] | undefined;
-      const database = makeDatabase({
+  ] as const satisfies readonly DetectedSourceType[])(
+    "migrates to $sourceFormat using the supplied authoritative result",
+    async (detected) => {
+      const docPath = writeSource("source.bin", "stable source bytes");
+      const existing = storedDocument(docPath);
+      const { database, replaced } = recordingDatabase({
         getDocumentByPath: () => Effect.succeed(existing),
-        getDocument: () => Effect.succeed(committed ?? existing),
-        replaceDocument: (doc) =>
-          Effect.sync(() => {
-            committed = doc;
-          }),
       });
-      const extractors = migrationExtractors((sourceFormat) => {
+      let processedBy: DetectedSourceType["sourceFormat"] | undefined;
+      const processed = (sourceFormat: DetectedSourceType["sourceFormat"]) => {
         processedBy = sourceFormat;
-      });
-      const deps = makeIngestionDependencies({
-        database,
-        embeddingProvider: successfulEmbeddingProvider(),
-        markdownExtractor: extractors.markdown,
-        pdfExtractor: extractors.pdf,
-        officeExtractor: extractors.office,
-        textExtractor: extractors.text,
-        visualEnrichment: {
-          enrichDocument: () => Effect.succeed([]),
-        },
-        sourceFileTypeDetector: {
-          detect: () => Effect.die("Detector should not run"),
-        },
-      });
-      const options = new AddOptions({
-        sourceContext: { detectedType: detected },
-      });
-      const program = Effect.gen(function* () {
-        const ingestion = yield* DocumentIngestion;
-        yield* ingestion.replace(docPath, options);
-        return yield* ingestion.replace(docPath, options);
-      });
+        return Effect.succeed({
+          pageCount: 1,
+          chunks: [{ page: 1, chunkIndex: 0, content: sourceFormat }],
+        });
+      };
 
-      await Effect.runPromise(
-        program.pipe(
-          Effect.provide(
-            makeDocumentIngestion(Config.Default).pipe(Layer.provide(deps)),
-          ),
-        ),
+      const result = await runIngestion(
+        {
+          database,
+          markdownExtractor: {
+            extractFrontmatter: () => Effect.succeed({}),
+            extract: unused("Markdown extract"),
+            process: () =>
+              processed("markdown-text").pipe(
+                Effect.map((extracted) => ({ ...extracted, frontmatter: {} })),
+              ),
+          },
+          pdfExtractor: {
+            extract: unused("PDF extract"),
+            extractImages: () => Effect.succeed([]),
+            process: () => processed("pdf"),
+          },
+          officeExtractor: {
+            extract: unused("Office extract"),
+            extractImages: () => Effect.succeed([]),
+            process: (_path, sourceFormat) => processed(sourceFormat),
+          },
+          textExtractor: { process: () => processed("plain-text") },
+          sourceFileTypeDetector: { detect: unused("Detector") },
+        },
+        (ingestion) => ingestion.replace(docPath, migrationOptions(detected)),
       );
 
+      expect(Either.isRight(result)).toBe(true);
       expect(processedBy).toBe(detected.sourceFormat);
+      const committed = replaced[0]?.doc;
       expect(committed).toMatchObject({
         id: existing.id,
         title: existing.title,
@@ -802,8 +476,8 @@ describe("DocumentIngestion.replace source type migration", () => {
         addedAt: existing.addedAt,
         tags: existing.tags,
         fileType: detected.fileType,
+        metadata: { owner: "user" },
       });
-      expect(committed?.metadata).toMatchObject({ owner: "user" });
       expect(committed?.metadata?.chunker).not.toEqual(
         existing.metadata?.chunker,
       );
@@ -811,86 +485,30 @@ describe("DocumentIngestion.replace source type migration", () => {
   );
 
   test("does not replace existing state when migration embedding fails", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "poink-migration-failure-"));
-    tempDirs.push(dir);
-    const docPath = join(dir, "source.bin");
-    writeFileSync(docPath, "stable source bytes");
-    const existing = new Document({
-      id: "doc-1",
-      title: "Preserved",
-      path: docPath,
-      addedAt: new Date("2024-01-02T03:04:05.000Z"),
-      pageCount: 4,
-      sizeBytes: 19,
-      tags: ["old"],
-      fileType: "pdf",
-      metadata: { owner: "user", chunker: { id: "old", version: 1 } },
+    const docPath = writeSource("source.bin", "stable source bytes");
+    const { database, replaced } = recordingDatabase({
+      getDocumentByPath: () => Effect.succeed(storedDocument(docPath)),
     });
-    let replaceCalls = 0;
-    const database = makeDatabase({
-      getDocumentByPath: () => Effect.succeed(existing),
-      replaceDocument: () =>
-        Effect.sync(() => {
-          replaceCalls++;
-        }),
-    });
-    const deps = makeIngestionDependencies({
-      database,
-      embeddingProvider: {
-        provider: "ollama",
-        checkHealth: () => Effect.void,
-        embed: () => Effect.fail(new OllamaError({ reason: "failure" })),
-        embedBatch: () =>
-          Effect.fail(new OllamaError({ reason: "failure" })),
+
+    const result = await runIngestion(
+      {
+        database,
+        embeddingProvider: recordingEmbeddingProvider({ failOnBatch: 1 }).provider,
+        markdownExtractor: markdownExtractorReturning([
+          { page: 1, chunkIndex: 0, content: "new content" },
+        ]),
       },
-      markdownExtractor: {
-        extractFrontmatter: () => Effect.succeed({}),
-        extract: () =>
-          Effect.succeed({ frontmatter: {}, sections: [], sectionCount: 0 }),
-        process: () =>
-          Effect.succeed({
-            pageCount: 1,
-            frontmatter: {},
-            chunks: [{ page: 1, chunkIndex: 0, content: "new content" }],
+      (ingestion) =>
+        ingestion.replace(
+          docPath,
+          migrationOptions({
+            sourceFormat: "markdown-text",
+            fileType: "markdown",
           }),
-      },
-      pdfExtractor: unusedPDFExtractor(),
-      officeExtractor: unusedOfficeExtractor(),
-      visualEnrichment: {
-        enrichDocument: () => Effect.succeed([]),
-      },
-    });
-    const result = await Effect.runPromise(
-      Effect.either(
-        Effect.gen(function* () {
-          const ingestion = yield* DocumentIngestion;
-          return yield* ingestion.replace(
-            docPath,
-            new AddOptions({
-              sourceContext: {
-                detectedType: {
-                  sourceFormat: "markdown-text",
-                  fileType: "markdown",
-                },
-              },
-            }),
-          );
-        }),
-      ).pipe(
-        Effect.provide(
-          makeDocumentIngestion(Config.Default).pipe(Layer.provide(deps)),
         ),
-      ),
     );
 
-    expect(result._tag).toBe("Left");
-    expect(replaceCalls).toBe(0);
-    expect(existing).toMatchObject({
-      fileType: "pdf",
-      pageCount: 4,
-      sizeBytes: 19,
-      tags: ["old"],
-      metadata: { owner: "user", chunker: { id: "old", version: 1 } },
-    });
+    expect(Either.isLeft(result)).toBe(true);
+    expect(replaced).toEqual([]);
   });
 });

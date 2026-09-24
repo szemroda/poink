@@ -7,7 +7,9 @@ import {
   getConfiguredEmbeddingModel,
   normalizeOllamaBaseUrl,
   resolveLanguageModel,
+  type SupportedProvider,
 } from "./AIProvider.js";
+import { normalizeOllamaHostUrl } from "./Ollama.js";
 import { closeOpenAICodexProviderManager } from "./OpenAICodexProvider.js";
 
 afterEach(async () => {
@@ -30,230 +32,117 @@ function makeTestConfig(overrides: Record<string, unknown>) {
   });
 }
 
-describe("AIProvider", () => {
-  test("appends /api to a plain Ollama host", () => {
-    expect(normalizeOllamaBaseUrl("http://localhost:11434")).toBe(
-      "http://localhost:11434/api"
-    );
+describe("Ollama base URL normalization", () => {
+  test.each([
+    ["http://localhost:11434", "http://localhost:11434/api"],
+    ["http://localhost:11434/", "http://localhost:11434/api"],
+    ["http://localhost:11434/api", "http://localhost:11434/api"],
+    [" ", undefined],
+  ])("AI SDK URL for %j is %j", (input, expected) => {
+    expect(normalizeOllamaBaseUrl(input)).toBe(expected);
   });
 
-  test("preserves an Ollama host that already ends with /api", () => {
-    expect(normalizeOllamaBaseUrl("http://localhost:11434/api")).toBe(
-      "http://localhost:11434/api"
-    );
+  test.each([
+    ["http://localhost:11434", "http://localhost:11434"],
+    ["http://localhost:11434/api", "http://localhost:11434"],
+    ["http://localhost:11434/api/", "http://localhost:11434"],
+  ])("REST host for %j is %j", (input, expected) => {
+    expect(normalizeOllamaHostUrl(input)).toBe(expected);
   });
+});
 
-  test("trims a trailing slash before appending /api", () => {
-    expect(normalizeOllamaBaseUrl("http://localhost:11434/")).toBe(
-      "http://localhost:11434/api"
-    );
+describe("describeLanguageModelError", () => {
+  test.each([
+    [
+      "names the missing model from the response body",
+      Object.assign(new Error("Not Found"), {
+        requestBodyValues: { model: "llama3.2" },
+        url: "http://localhost:11434/api/chat",
+        responseBody: JSON.stringify({ error: "model 'llama3.2' not found" }),
+      }),
+      'Ollama model "llama3.2" not found. Configure an exact installed model name from `ollama list`',
+    ],
+    [
+      "names the missing model and URL for a bare 404",
+      Object.assign(new Error("Not Found"), {
+        requestBodyValues: { model: "llama3.2" },
+        url: "http://localhost:11434/api/chat",
+      }),
+      'Ollama model "llama3.2" not found at http://localhost:11434/api/chat.',
+    ],
+    [
+      "surfaces other response body errors",
+      Object.assign(new Error("Bad Request"), {
+        responseBody: JSON.stringify({ error: "context length exceeded" }),
+      }),
+      "context length exceeded",
+    ],
+  ])("%s", (_name, error, expected) => {
+    expect(describeLanguageModelError(error)).toContain(expected);
   });
+});
 
-  test("formats missing Ollama model errors with the exact configured model", () => {
-    const error = Object.assign(new Error("Not Found"), {
-      requestBodyValues: { model: "llama3.2" },
-      url: "http://localhost:11434/api/chat",
-      responseBody: JSON.stringify({ error: "model 'llama3.2' not found" }),
+describe("model resolution", () => {
+  test.each<[SupportedProvider, Record<string, unknown>, string, string]>([
+    ["openrouter", { openrouter: { apiKey: "test-key" } }, "anthropic/claude-3.5-haiku", "openrouter"],
+    ["google", { google: { apiKey: "test-key" } }, "gemini-2.5-flash", "google.generative-ai"],
+    ["anthropic", { anthropic: { apiKey: "test-key" } }, "claude-3-5-haiku-20241022", "anthropic.messages"],
+    ["openai-codex", { "openai-codex": { codexPath: process.execPath } }, "gpt-5.5", "codex-app-server"],
+  ])("resolves %s language models", async (provider, providers, modelId, sdkProvider) => {
+    const resolved = await resolveLanguageModel(makeTestConfig({ providers }), provider, modelId);
+
+    expect(resolved).toMatchObject({
+      provider,
+      modelId,
+      model: { provider: sdkProvider, modelId },
     });
-
-    expect(describeLanguageModelError(error)).toContain(
-      'Ollama model "llama3.2" not found.'
-    );
-    expect(describeLanguageModelError(error)).toContain("ollama list");
-    expect(describeLanguageModelError(error)).toContain("llama3.2:3b");
   });
 
-  test("resolves OpenRouter language models through the provider abstraction", async () => {
+  test.each<[SupportedProvider, Record<string, unknown>, string, string]>([
+    ["openrouter", { openrouter: { apiKey: "test-key" } }, "openai/text-embedding-3-small", "openrouter"],
+    ["google", { google: { apiKey: "test-key" } }, "gemini-embedding-001", "google.generative-ai"],
+  ])("resolves %s embedding models", async (provider, providers, modelId, sdkProvider) => {
     const config = makeTestConfig({
-      providers: {
-        openrouter: {
-          apiKey: "test-openrouter-key",
-        },
-      },
+      models: { embedding: { provider, model: modelId } },
+      providers,
     });
 
-    const resolved = await resolveLanguageModel(
-      config,
-      "openrouter",
-      "anthropic/claude-3.5-haiku"
-    );
-
-    expect(resolved.provider).toBe("openrouter");
-    expect(resolved.modelId).toBe("anthropic/claude-3.5-haiku");
-    expect(resolved.model.provider).toBe("openrouter");
-    expect(resolved.model.modelId).toBe("anthropic/claude-3.5-haiku");
+    expect(await getConfiguredEmbeddingModel(config)).toMatchObject({
+      provider,
+      modelId,
+      model: { provider: sdkProvider, modelId },
+    });
   });
 
-  test("caches resolved language models for one config snapshot", async () => {
+  test("caches resolved models for one config snapshot", async () => {
     const config = makeTestConfig({
-      providers: {
-        openrouter: {
-          apiKey: "test-openrouter-key",
-        },
-      },
+      models: { embedding: { provider: "google", model: "gemini-embedding-001" } },
+      providers: { google: { apiKey: "test-key" } },
     });
 
-    const [first, second] = await Promise.all([
-      resolveLanguageModel(
-        config,
-        "openrouter",
-        "anthropic/claude-3.5-haiku",
-      ),
-      resolveLanguageModel(
-        config,
-        "openrouter",
-        "anthropic/claude-3.5-haiku",
-      ),
-    ]);
-
-    expect(second).toBe(first);
-  });
-
-  test("resolves OpenRouter embedding models through the provider abstraction", async () => {
-    const config = makeTestConfig({
-      models: {
-        embedding: {
-          provider: "openrouter",
-          model: "openai/text-embedding-3-small",
-        },
-      },
-      providers: {
-        openrouter: {
-          apiKey: "test-openrouter-key",
-        },
-      },
-    });
-
-    const resolved = await getConfiguredEmbeddingModel(config);
-
-    expect(resolved.provider).toBe("openrouter");
-    expect(resolved.model.provider).toBe("openrouter");
-    expect(resolved.modelId).toBe("openai/text-embedding-3-small");
-    expect(resolved.model.modelId).toBe("openai/text-embedding-3-small");
-  });
-
-  test("resolves Google language models through the provider abstraction", async () => {
-    const config = makeTestConfig({
-      providers: {
-        google: {
-          apiKey: "test-google-key",
-        },
-      },
-    });
-
-    const resolved = await resolveLanguageModel(config, "google", "gemini-2.5-flash");
-
-    expect(resolved.provider).toBe("google");
-    expect(resolved.modelId).toBe("gemini-2.5-flash");
-    expect(resolved.model.provider).toBe("google.generative-ai");
-    expect(resolved.model.modelId).toBe("gemini-2.5-flash");
-  });
-
-  test("resolves Google embedding models through the provider abstraction", async () => {
-    const config = makeTestConfig({
-      models: {
-        embedding: {
-          provider: "google",
-          model: "gemini-embedding-001",
-        },
-      },
-      providers: {
-        google: {
-          apiKey: "test-google-key",
-        },
-      },
-    });
-
-    const resolved = await getConfiguredEmbeddingModel(config);
-
-    expect(resolved.provider).toBe("google");
-    expect(resolved.model.provider).toBe("google.generative-ai");
-    expect(resolved.modelId).toBe("gemini-embedding-001");
-    expect(resolved.model.modelId).toBe("gemini-embedding-001");
-  });
-
-  test("caches resolved embedding models for one config snapshot", async () => {
-    const config = makeTestConfig({
-      models: {
-        embedding: {
-          provider: "google",
-          model: "gemini-embedding-001",
-        },
-      },
-      providers: {
-        google: {
-          apiKey: "test-google-key",
-        },
-      },
-    });
-
-    const [first, second] = await Promise.all([
+    const [firstLanguage, secondLanguage, firstEmbedding, secondEmbedding] = await Promise.all([
+      resolveLanguageModel(config, "google", "gemini-2.5-flash"),
+      resolveLanguageModel(config, "google", "gemini-2.5-flash"),
       getConfiguredEmbeddingModel(config),
       getConfiguredEmbeddingModel(config),
     ]);
 
-    expect(second).toBe(first);
+    expect(secondLanguage).toBe(firstLanguage);
+    expect(secondEmbedding).toBe(firstEmbedding);
   });
 
-  test("resolves Anthropic language models through the provider abstraction", async () => {
-    const config = makeTestConfig({
-      providers: {
-        anthropic: {
-          apiKey: "test-anthropic-key",
-        },
-      },
-    });
-
-    const resolved = await resolveLanguageModel(
-      config,
-      "anthropic",
-      "claude-3-5-haiku-20241022",
-    );
-
-    expect(resolved.provider).toBe("anthropic");
-    expect(resolved.modelId).toBe("claude-3-5-haiku-20241022");
-    expect(resolved.model.provider).toBe("anthropic.messages");
-    expect(resolved.model.modelId).toBe("claude-3-5-haiku-20241022");
-  });
-
-  test("passes configured reasoning through the resolved language model", async () => {
+  test("passes the configured role and reasoning through", async () => {
     const config = makeTestConfig({
       models: {
-        enrichment: {
-          provider: "openai",
-          model: "gpt-5.2",
-          reasoning: "xhigh",
-        },
+        enrichment: { provider: "openai", model: "gpt-5.2", reasoning: "xhigh" },
       },
-      providers: {
-        openai: {
-          apiKey: "test-openai-key",
-        },
-      },
+      providers: { openai: { apiKey: "test-openai-key" } },
     });
 
-    const resolved = await getConfiguredLanguageModel(config, "enrichment");
-
-    expect(resolved.reasoning).toBe("xhigh");
-  });
-
-  test("resolves OpenAI Codex language models through the app-server provider", async () => {
-    const config = makeTestConfig({
-      providers: { "openai-codex": { codexPath: process.execPath } },
-      models: {
-        enrichment: {
-          provider: "openai-codex",
-          model: "gpt-5.5",
-        },
-      },
+    expect(await getConfiguredLanguageModel(config, "enrichment")).toMatchObject({
+      provider: "openai",
+      modelId: "gpt-5.2",
+      reasoning: "xhigh",
     });
-
-    const resolved = await getConfiguredLanguageModel(config, "enrichment");
-
-    expect(resolved.provider).toBe("openai-codex");
-    expect(resolved.modelId).toBe("gpt-5.5");
-    expect(resolved.model.provider).toBe("codex-app-server");
-    expect(resolved.model.modelId).toBe("gpt-5.5");
   });
-
 });

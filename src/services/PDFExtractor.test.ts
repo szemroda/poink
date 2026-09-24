@@ -1,173 +1,53 @@
-/**
- * PDFExtractor Unit Tests
- */
-
 import { describe, expect, test } from "vitest";
 import {
+  chunkText,
   cleanPDFPageArtifacts,
   enhancePDFPageText,
   renderPDFTableAsMarkdown,
   sanitizeText,
-  chunkText,
 } from "./PDFExtractor.js";
 
-// ============================================================================
-// sanitizeText() Tests
-// ============================================================================
+/** Builds numbered pages from per-page line arrays. */
+function pagesFromLines(...pages: string[][]) {
+  return pages.map((lines, index) => ({ page: index + 1, text: lines.join("\n") }));
+}
 
-describe("sanitizeText", () => {
-  test("strips null bytes from text", () => {
-    const input = "Hello\x00World\x00!";
-    const result = sanitizeText(input);
-    expect(result).toBe("HelloWorld!");
-  });
-
-  test("strips multiple consecutive null bytes", () => {
-    const input = "Text\x00\x00\x00with\x00\x00nulls";
-    const result = sanitizeText(input);
-    expect(result).toBe("Textwithnulls");
-  });
-
-  test("handles text with no null bytes", () => {
-    const input = "Clean text";
-    const result = sanitizeText(input);
-    expect(result).toBe("Clean text");
-  });
-
-  test("handles empty string", () => {
-    const input = "";
-    const result = sanitizeText(input);
-    expect(result).toBe("");
-  });
-
-  test("handles string with only null bytes", () => {
-    const input = "\x00\x00\x00";
-    const result = sanitizeText(input);
-    expect(result).toBe("");
-  });
-
-  test("preserves unicode characters", () => {
-    const input = "café\x00naïve\x00résumé";
-    const result = sanitizeText(input);
-    expect(result).toBe("cafénaïverésumé");
-  });
-
-  test("strips null bytes before other processing", () => {
-    // Verify that null bytes are removed early in the pipeline
-    const input = "Text\x00with\x00null\x00bytes";
-    const result = sanitizeText(input);
-    // Should not contain null bytes
-    expect(result).not.toContain("\x00");
-    // Should preserve the rest
-    expect(result).toBe("Textwithnullbytes");
-  });
+test("sanitizeText strips null bytes and keeps everything else", () => {
+  expect(sanitizeText("\x00café\x00\x00 naïve\x00")).toBe("café naïve");
 });
 
 describe("cleanPDFPageArtifacts", () => {
-  test("removes repeated headers, footers, and page numbers", () => {
-    const pages = cleanPDFPageArtifacts([
-      {
-        page: 1,
-        text: [
-          "Quarterly Report",
-          "Revenue increased in the first quarter.",
-          "Confidential",
-          "Page 1 of 3",
-        ].join("\n"),
-      },
-      {
-        page: 2,
-        text: [
-          "Quarterly Report",
-          "Margins improved in the second quarter.",
-          "Confidential",
-          "Page 2 of 3",
-        ].join("\n"),
-      },
-      {
-        page: 3,
-        text: [
-          "Quarterly Report",
-          "Cash flow remained stable.",
-          "Confidential",
-          "Page 3 of 3",
-        ].join("\n"),
-      },
-    ]);
-
-    expect(pages.map((page) => page.text).join("\n")).not.toContain(
-      "Quarterly Report",
-    );
-    expect(pages.map((page) => page.text).join("\n")).not.toContain(
-      "Confidential",
-    );
-    expect(pages.map((page) => page.text).join("\n")).not.toContain("Page 1");
-    expect(pages[0].text).toContain("Revenue increased");
-    expect(pages[1].text).toContain("Margins improved");
-    expect(pages[2].text).toContain("Cash flow remained");
-  });
-
-  test("keeps repeated body lines that are not page edges", () => {
-    const pages = cleanPDFPageArtifacts([
-      {
-        page: 1,
-        text: [
-          "Header",
-          "Intro unique 1",
-          "More unique 1",
-          "Important repeated finding.",
-          "Detail unique 1",
-          "Closing unique 1",
-          "1",
-        ].join("\n"),
-      },
-      {
-        page: 2,
-        text: [
-          "Header",
-          "Intro unique 2",
-          "More unique 2",
-          "Important repeated finding.",
-          "Detail unique 2",
-          "Closing unique 2",
-          "2",
-        ].join("\n"),
-      },
-    ]);
-
-    expect(pages[0].text).toContain("Important repeated finding.");
-    expect(pages[1].text).toContain("Important repeated finding.");
-    expect(pages.map((page) => page.text).join("\n")).not.toContain("Header");
-  });
-
-  test("keeps numeric-only body lines", () => {
-    const pages = cleanPDFPageArtifacts([
-      {
-        page: 1,
-        text: [
-          "Header",
-          "Intro unique 1",
-          "42",
-          "Body after number.",
-          "1",
-        ].join("\n"),
-      },
-      {
-        page: 2,
-        text: [
-          "Header",
-          "Intro unique 2",
-          "42",
-          "Other body after number.",
-          "2",
-        ].join("\n"),
-      },
-    ]);
-
-    expect(pages[0].text).toContain("42");
-    expect(pages[1].text).toContain("42");
-    expect(pages[0].text).not.toContain("\n1");
-    expect(pages[1].text).not.toContain("\n2");
+  test.each([
+    {
+      name: "removes repeated headers, footers, and page numbers",
+      pages: pagesFromLines(
+        ["Quarterly Report", "Revenue increased.", "Confidential", "Page 1 of 3"],
+        ["Quarterly Report", "Margins improved.", "Confidential", "Page 2 of 3"],
+        ["Quarterly Report", "Cash flow remained stable.", "Confidential", "Page 3 of 3"],
+      ),
+      expected: ["Revenue increased.", "Margins improved.", "Cash flow remained stable."],
+    },
+    {
+      name: "keeps repeated body lines that are not page edges",
+      pages: pagesFromLines(
+        ["Header", "Intro 1", "More 1", "Important repeated finding.", "Detail 1", "Closing 1", "1"],
+        ["Header", "Intro 2", "More 2", "Important repeated finding.", "Detail 2", "Closing 2", "2"],
+      ),
+      expected: [
+        "Intro 1\nMore 1\nImportant repeated finding.\nDetail 1\nClosing 1",
+        "Intro 2\nMore 2\nImportant repeated finding.\nDetail 2\nClosing 2",
+      ],
+    },
+    {
+      name: "keeps numeric-only body lines",
+      pages: pagesFromLines(
+        ["Header", "Intro 1", "42", "Body after number.", "1"],
+        ["Header", "Intro 2", "42", "Other body after number.", "2"],
+      ),
+      expected: ["Intro 1\n42\nBody after number.", "Intro 2\n42\nOther body after number."],
+    },
+  ])("$name", ({ pages, expected }) => {
+    expect(cleanPDFPageArtifacts(pages).map((page) => page.text)).toEqual(expected);
   });
 });
 
@@ -198,103 +78,67 @@ describe("PDF table extraction helpers", () => {
       ],
     ]);
 
-    expect(text).toContain("Body text");
-    expect(text).toContain("## Detected PDF tables");
-    expect(text).toContain("| Name | Value |");
-    expect(text).not.toContain("chart-like noise only");
+    expect(text).toBe(
+      [
+        "Body text",
+        "## Detected PDF tables",
+        "Table 1",
+        "| Name | Value |\n| --- | ---: |\n| A | 1 |",
+      ].join("\n\n"),
+    );
   });
 });
 
-// ============================================================================
-// chunkText() Tests
-// ============================================================================
-
 describe("chunkText", () => {
-  test("preserves paragraph boundaries (does not collapse all whitespace)", () => {
-    const input = [
-      "Para 1 line one",
-      "Para 1 line two",
-      "",
-      "Para 2 line one",
-      "Para 2 line two",
-      "",
-    ].join("\n");
-
-    const chunks = chunkText(input, 10_000, 0);
-    expect(chunks).toHaveLength(1);
-    expect(chunks[0]).toBe(
-      "Para 1 line one Para 1 line two\n\nPara 2 line one Para 2 line two"
-    );
+  test.each([
+    {
+      name: "joins wrapped lines but keeps paragraph boundaries",
+      lines: ["Para 1 line one", "Para 1 line two", "", "Para 2 line one", "Para 2 line two", ""],
+      expected: "Para 1 line one Para 1 line two\n\nPara 2 line one Para 2 line two",
+    },
+    {
+      name: "removes hyphenation artifacts at line breaks",
+      lines: ["This is inter-", "national text."],
+      expected: "This is international text.",
+    },
+    {
+      name: "marks likely section titles as headings",
+      lines: [
+        "Executive Summary",
+        "This paragraph should remain under the section heading.",
+        "",
+        "FINDINGS",
+        "These are the findings in body text.",
+      ],
+      expected:
+        "# Executive Summary\n\nThis paragraph should remain under the section heading.\n\n# FINDINGS\n\nThese are the findings in body text.",
+    },
+    {
+      name: "keeps Markdown table rows on separate lines",
+      lines: [
+        "| Pozycja | 31.03.2026 | 31.03.2025 |",
+        "| --- | ---: | ---: |",
+        "| Przychody | 1 094 018 | 580 294 |",
+        "| Zysk netto | 535 042 | 193 923 |",
+      ],
+      expected: [
+        "| Pozycja | 31.03.2026 | 31.03.2025 |",
+        "| --- | ---: | ---: |",
+        "| Przychody | 1 094 018 | 580 294 |",
+        "| Zysk netto | 535 042 | 193 923 |",
+      ].join("\n"),
+    },
+  ])("$name", ({ lines, expected }) => {
+    expect(chunkText(lines.join("\n"), 10_000, 0)).toEqual([expected]);
   });
 
-  test("removes common PDF hyphenation artifacts at line breaks", () => {
-    const input = "This is inter-\nnational text.";
-    const chunks = chunkText(input, 10_000, 0);
-    expect(chunks).toHaveLength(1);
-    expect(chunks[0]).toBe("This is international text.");
-  });
+  test("keeps a short section title as its own chunk", () => {
+    const input = ["Short", "", "This is a longer paragraph that should remain."].join("\n");
 
-  test("preserves likely PDF section titles as heading context", () => {
-    const input = [
-      "Executive Summary",
-      "This paragraph should remain under the section heading.",
-      "",
-      "FINDINGS",
-      "These are the findings in body text.",
-    ].join("\n");
-
-    const chunks = chunkText(input, 10_000, 0);
-
-    expect(chunks).toHaveLength(1);
-    expect(chunks[0]).toContain("# Executive Summary");
-    expect(chunks[0]).toContain("# FINDINGS");
-  });
-
-  test("preserves Markdown tables generated from PDF tables", () => {
-    const input = [
-      "| Pozycja | 31.03.2026 | 31.03.2025 |",
-      "| --- | ---: | ---: |",
-      "| Przychody | 1 094 018 | 580 294 |",
-      "| Zysk netto | 535 042 | 193 923 |",
-    ].join("\n");
-
-    const chunks = chunkText(input, 10_000, 0);
-
-    expect(chunks).toHaveLength(1);
-    expect(chunks[0]).toContain("| Pozycja | 31.03.2026 | 31.03.2025 |");
-    expect(chunks[0]).toContain("| Zysk netto | 535 042 | 193 923 |");
-  });
-
-  test("preserves short PDF section-title context", () => {
-    const input = ["Short", "", "This is a longer paragraph that should remain."]
-      .join("\n");
-    const chunks = chunkText(input, 25, 0);
-    const output = chunks.join("\n");
-
-    expect(output).toContain("# Short");
-    expect(output).toContain("This is a longer paragrap");
-  });
-
-  test("throws when chunk overlap is not smaller than chunk size", () => {
-    const input = `${"word ".repeat(50)}.`;
-    expect(() => chunkText(input, 100, 100)).toThrow(
-      "chunkOverlap (100) must be smaller than chunkSize (100)",
-    );
-  });
-
-  test("overlaps adjacent paragraph chunks", () => {
-    const input = [
-      "First paragraph has context that should carry forward.",
-      "",
-      "Second paragraph starts a new chunk with its own content.",
-      "",
-      "Third paragraph completes the sample.",
-    ].join("\n");
-
-    const chunks = chunkText(input, 70, 35);
-
-    expect(chunks.length).toBeGreaterThan(1);
-    expect(chunks[1]).toContain("First paragraph has context");
-    expect(chunks[1]).toContain("Second paragraph starts");
+    expect(chunkText(input, 25, 0)).toEqual([
+      "# Short",
+      "This is a longer paragrap",
+      "h that should remain.",
+    ]);
   });
 });

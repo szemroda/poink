@@ -42,6 +42,12 @@ function runWithProvider<A, E>(
   );
 }
 
+function embedFailure(text: string) {
+  return runWithProvider(
+    Effect.flip(Effect.flatMap(EmbeddingProvider, (provider) => provider.embed(text))),
+  );
+}
+
 afterEach(() => {
   vi.clearAllMocks();
 });
@@ -52,19 +58,21 @@ describe("EmbeddingProvider", () => {
       new Error("credentials unavailable"),
     );
 
-    const result = await runWithProvider(
-      Effect.gen(function* () {
-        const provider = yield* EmbeddingProvider;
-        return yield* Effect.either(provider.embed("query"));
-      }),
-    );
+    expect(await embedFailure("query")).toMatchObject({
+      _tag: "OllamaError",
+      reason: "Embedding model resolution failed: credentials unavailable",
+    });
+  });
 
-    expect(result._tag).toBe("Left");
-    if (result._tag === "Left") {
-      expect(result.left._tag).toBe("OllamaError");
-      expect(result.left.reason).toContain("model resolution failed");
-      expect(result.left.reason).toContain("credentials unavailable");
-    }
+  test.each([
+    ["an empty vector", [], "Invalid embedding: dimension 0 (empty vector)"],
+    ["NaN", [0.1, Number.NaN], "Invalid embedding: contains non-finite values (NaN or Infinity)"],
+    ["Infinity", [0.1, Number.POSITIVE_INFINITY], "Invalid embedding: contains non-finite values (NaN or Infinity)"],
+  ])("rejects an embedding containing %s", async (_name, embedding, reason) => {
+    mockedGetConfiguredEmbeddingModel.mockResolvedValue(resolvedModel());
+    mockedEmbed.mockResolvedValue({ embedding } as never);
+
+    expect(await embedFailure("query")).toMatchObject({ _tag: "OpenAIError", reason });
   });
 
   test("resolves the configured model once across concurrent requests", async () => {
@@ -116,10 +124,8 @@ describe("EmbeddingProvider", () => {
     );
 
     expect(results.filter((result) => result._tag === "Right")).toHaveLength(1);
-    const failure = results.find((result) => result._tag === "Left");
-    expect(failure?._tag).toBe("Left");
-    if (failure?._tag === "Left") {
-      expect(failure.left.reason).toContain("expected");
-    }
+    expect(results.find((result) => result._tag === "Left")).toMatchObject({
+      left: { reason: expect.stringMatching(/^Invalid embedding: dimension \d \(expected \d\)$/) },
+    });
   });
 });

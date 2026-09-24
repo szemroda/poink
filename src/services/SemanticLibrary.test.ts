@@ -1,7 +1,8 @@
-import { Context, Effect, Layer } from "effect";
+import { Context, Effect, Either, Layer } from "effect";
 import { describe, expect, test } from "vitest";
 import {
   Config,
+  Document,
   OllamaError,
   SearchOptions,
   SemanticSearchProviderError,
@@ -18,12 +19,14 @@ import { EmbeddingProvider } from "./EmbeddingProvider.js";
 import {
   makeSemanticLibrary,
   SemanticLibrary,
+  type SemanticLibraryService,
 } from "./SemanticLibrary.js";
 
 type DatabaseService = DocumentRepositoryService &
   SearchRepositoryService &
   LibraryMaintenanceService;
 type EmbeddingProviderService = Context.Tag.Service<typeof EmbeddingProvider>;
+type EmbeddingRecord = Parameters<DatabaseService["addEmbeddings"]>[0][number];
 
 function makeDatabase(
   overrides: Partial<DatabaseService> = {},
@@ -58,25 +61,31 @@ function makeDatabase(
   };
 }
 
-function runSearch(
+function makeEmbeddingProvider(
+  overrides: Partial<EmbeddingProviderService> = {},
+): EmbeddingProviderService {
+  return {
+    provider: "ollama",
+    checkHealth: () => Effect.void,
+    embed: () => Effect.succeed([1, 0, 0]),
+    embedBatch: (texts) => Effect.succeed(texts.map(() => [1, 0, 0])),
+    ...overrides,
+  };
+}
+
+function runLibrary<A, E>(
   database: DatabaseService,
   embeddingProvider: EmbeddingProviderService,
-) {
+  use: (library: SemanticLibraryService) => Effect.Effect<A, E>,
+): Promise<Either.Either<A, E>> {
   const deps = Layer.mergeAll(
     Layer.succeed(DocumentRepository, database),
     Layer.succeed(SearchRepository, database),
     Layer.succeed(LibraryMaintenance, database),
     Layer.succeed(EmbeddingProvider, embeddingProvider),
   );
-  const program = Effect.gen(function* () {
-    const library = yield* SemanticLibrary;
-    return yield* library.search(
-      "query",
-      new SearchOptions({ hybrid: true }),
-    );
-  });
   return Effect.runPromise(
-    Effect.either(program).pipe(
+    Effect.either(Effect.flatMap(SemanticLibrary, use)).pipe(
       Effect.provide(
         makeSemanticLibrary(Config.Default).pipe(Layer.provide(deps)),
       ),
@@ -85,65 +94,109 @@ function runSearch(
 }
 
 describe("SemanticLibrary.search", () => {
-  test("reports provider health failure without falling back to FTS", async () => {
-    let ftsCalls = 0;
-    const result = await runSearch(
-      makeDatabase({
+  const failure = () => Effect.fail(new OllamaError({ reason: "unavailable" }));
+
+  test.each([
+    ["provider health", { checkHealth: failure }],
+    ["query embedding", { embed: failure }],
+  ] as const)(
+    "reports %s failure without falling back to FTS",
+    async (_stage, providerOverrides) => {
+      let ftsCalls = 0;
+      const database = makeDatabase({
         ftsSearch: () =>
           Effect.sync(() => {
             ftsCalls++;
             return [];
           }),
-      }),
-      {
-        provider: "ollama",
-        checkHealth: () =>
-          Effect.fail(new OllamaError({ reason: "provider unavailable" })),
-        embed: () => Effect.succeed([1, 0, 0]),
-        embedBatch: () => Effect.succeed([]),
-      },
-    );
+      });
 
-    expect(result._tag).toBe("Left");
-    if (result._tag === "Left") {
-      expect(result.left).toEqual(
-        new SemanticSearchProviderError({
-          provider: "ollama",
-          reason: "provider unavailable",
-        }),
+      const result = await runLibrary(
+        database,
+        makeEmbeddingProvider(providerOverrides),
+        (library) =>
+          library.search("query", new SearchOptions({ hybrid: true })),
       );
-    }
-    expect(ftsCalls).toBe(0);
-  });
 
-  test("reports query embedding failure without falling back to FTS", async () => {
-    let ftsCalls = 0;
-    const result = await runSearch(
-      makeDatabase({
-        ftsSearch: () =>
-          Effect.sync(() => {
-            ftsCalls++;
-            return [];
+      expect(result).toEqual(
+        Either.left(
+          new SemanticSearchProviderError({
+            provider: "ollama",
+            reason: "unavailable",
           }),
-      }),
-      {
-        provider: "ollama",
-        checkHealth: () => Effect.void,
-        embed: () =>
-          Effect.fail(new OllamaError({ reason: "embedding failed" })),
-        embedBatch: () => Effect.succeed([]),
-      },
+        ),
+      );
+      expect(ftsCalls).toBe(0);
+    },
+  );
+});
+
+describe("SemanticLibrary.reindexEmbeddings", () => {
+  test("embeds stored embedding content, rebuilding it only when missing", async () => {
+    const embeddedTexts: string[][] = [];
+    const storedEmbeddings: EmbeddingRecord[][] = [];
+    const doc = new Document({
+      id: "doc-1",
+      title: "Doc",
+      path: "doc.md",
+      addedAt: new Date(),
+      pageCount: 1,
+      sizeBytes: 10,
+      tags: [],
+      fileType: "markdown",
+      metadata: {},
+    });
+    const database = makeDatabase({
+      getDocument: () => Effect.succeed(doc),
+      listChunksByDocument: () =>
+        Effect.succeed([
+          {
+            id: "chunk-1",
+            docId: "doc-1",
+            page: 1,
+            chunkIndex: 0,
+            content: "Display text",
+            embeddingContent: "Stored embedding text",
+          },
+          {
+            id: "chunk-2",
+            docId: "doc-1",
+            page: 2,
+            chunkIndex: 1,
+            content: "Legacy text",
+          },
+        ]),
+      addEmbeddings: (items) =>
+        Effect.sync(() => {
+          storedEmbeddings.push(items);
+        }),
+    });
+    const embeddingProvider = makeEmbeddingProvider({
+      embedBatch: (texts) =>
+        Effect.sync(() => {
+          embeddedTexts.push(texts);
+          return texts.map(() => [1, 0, 0]);
+        }),
+    });
+
+    const result = await runLibrary(database, embeddingProvider, (library) =>
+      library.reindexEmbeddings("doc-1"),
     );
 
-    expect(result._tag).toBe("Left");
-    if (result._tag === "Left") {
-      expect(result.left).toEqual(
-        new SemanticSearchProviderError({
-          provider: "ollama",
-          reason: "embedding failed",
-        }),
-      );
-    }
-    expect(ftsCalls).toBe(0);
+    expect(Either.getOrThrow(result)).toEqual({
+      docId: "doc-1",
+      title: "Doc",
+      chunks: 2,
+      embeddings: 2,
+    });
+    expect(embeddedTexts).toEqual([
+      ["Stored embedding text", "Document: Doc\nPage: 2\n\nLegacy text"],
+    ]);
+    expect(storedEmbeddings).toEqual([
+      [
+        { chunkId: "chunk-1", embedding: [1, 0, 0] },
+        { chunkId: "chunk-2", embedding: [1, 0, 0] },
+      ],
+    ]);
   });
 });

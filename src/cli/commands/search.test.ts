@@ -25,34 +25,34 @@ function makeResult(
 }
 
 describe("search output projection", () => {
-  test("returns matching chunk content without expansion", () => {
-    const output = toSearchDocumentOutput(makeResult(), 0);
-
-    expect(output.content).toBe("matching chunk");
-    expect(output).not.toHaveProperty("expandedContent");
-    expect(output).not.toHaveProperty("rawScore");
-    expect(output).not.toHaveProperty("scoreType");
-    expect(output).not.toHaveProperty("vectorScore");
-    expect(output).not.toHaveProperty("ftsRank");
-    expect(output).not.toHaveProperty("diagnostics");
+  test("returns only the compact fields with the matching chunk content", () => {
+    expect(toSearchDocumentOutput(makeResult(), 0)).toEqual({
+      chunkId: "chunk-1",
+      docId: "doc-1",
+      title: "Example",
+      page: 2,
+      score: 0.8,
+      matchType: "vector",
+      content: "matching chunk",
+    });
   });
 
-  test("replaces content with expanded context when requested", () => {
-    const output = toSearchDocumentOutput(makeResult(), 1000);
-
-    expect(output.content).toBe(
+  test.each([
+    [
+      "uses expanded context when requested",
+      {},
       "context before\nmatching chunk\ncontext after",
-    );
+    ],
+    [
+      "falls back to matching content when expansion is unavailable",
+      { expandedContent: undefined },
+      "matching chunk",
+    ],
+  ])("%s", (_name, overrides, content) => {
+    const output = toSearchDocumentOutput(makeResult(overrides), 1000);
+
+    expect(output.content).toBe(content);
     expect(output).not.toHaveProperty("expandedContent");
-  });
-
-  test("falls back to matching content when expansion is unavailable", () => {
-    const output = toSearchDocumentOutput(
-      makeResult({ expandedContent: undefined }),
-      1000,
-    );
-
-    expect(output.content).toBe("matching chunk");
   });
 
   test("groups diagnostics in verbose mode", () => {

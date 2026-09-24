@@ -1,265 +1,238 @@
 import { describe, expect, test } from "vitest";
-import { generateHints, type CommandResult } from "./hints.js";
+import {
+  generateHints,
+  generateNextActions,
+  type CommandResult,
+} from "./hints.js";
 import { formatHintBlock, stripEmoji } from "./format.js";
 
+/** Returns the backticked command of each hint, dropping its description. */
+function hintCommands(result: CommandResult): string[] {
+  return generateHints(result).map((hint) => hint.slice(1, hint.indexOf("`", 1)));
+}
+
+type SearchResult = Extract<CommandResult, { _tag: "search" }>;
+
+function searchResult(overrides: Partial<SearchResult>): SearchResult {
+  return {
+    _tag: "search",
+    query: "error handling",
+    results: [{ title: "Release It!", docId: "doc-1", chunkId: "chunk-1", score: 0.85 }],
+    concepts: [],
+    hadExpand: false,
+    wasFts: false,
+    ...overrides,
+  };
+}
+
 describe("generateHints", () => {
-  test("search with results suggests read + expand", () => {
-    const result: CommandResult = {
-      _tag: "search",
-      query: "error handling",
-      results: [
-        { title: "Release It!", docId: "doc-1", score: 0.85 },
-        { title: "DDIA", docId: "doc-2", score: 0.72 },
+  test.each<[string, CommandResult, string[]]>([
+    [
+      "search with results suggests read, expand, and keyword search",
+      searchResult({}),
+      [
+        'poink read "Release It!"',
+        'poink search "error handling" --expand 2000',
+        'poink search "error handling" --fts',
       ],
-      concepts: [],
-      hadExpand: false,
-      wasFts: false,
-    };
-    const hints = generateHints(result);
-    expect(hints.length).toBeGreaterThan(0);
-    expect(hints.some((h) => h.includes("read"))).toBe(true);
-    expect(hints.some((h) => h.includes("--expand"))).toBe(true);
-  });
-
-  test("search with expand already used does not suggest --expand again", () => {
-    const result: CommandResult = {
-      _tag: "search",
-      query: "error handling",
-      results: [{ title: "Release It!", docId: "doc-1", score: 0.85 }],
-      concepts: [],
-      hadExpand: true,
-      wasFts: false,
-    };
-    const hints = generateHints(result);
-    expect(hints.some((h) => h.includes("--expand"))).toBe(false);
-  });
-
-  test("search with no results suggests broader query + fts", () => {
-    const result: CommandResult = {
-      _tag: "search",
-      query: "nonexistent topic",
-      results: [],
-      concepts: [],
-      hadExpand: false,
-      wasFts: false,
-    };
-    const hints = generateHints(result);
-    expect(hints.length).toBeGreaterThan(0);
-    expect(hints.some((h) => h.includes("--fts"))).toBe(true);
-    expect(hints.some((h) => h.includes("list"))).toBe(true);
-  });
-
-  test("search with concepts suggests taxonomy navigation", () => {
-    const result: CommandResult = {
-      _tag: "search",
-      query: "design patterns",
-      results: [{ title: "GoF", docId: "doc-1", score: 0.9 }],
-      concepts: [{ id: "software/design-patterns", prefLabel: "Design Patterns" }],
-      hadExpand: false,
-      wasFts: false,
-    };
-    const hints = generateHints(result);
-    expect(hints.some((h) => h.includes("taxonomy tree"))).toBe(true);
-  });
-
-  test("noResults with FTS suggests vector search", () => {
-    const result: CommandResult = {
-      _tag: "noResults",
-      query: "missing thing",
-      wasFts: true,
-    };
-    const hints = generateHints(result);
-    expect(hints.some((h) => !h.includes("--fts"))).toBe(true);
-    expect(hints.some((h) => h.includes("list"))).toBe(true);
-  });
-
-  test("read suggests search + tag + taxonomy", () => {
-    const result: CommandResult = {
-      _tag: "read",
-      title: "Release It!",
-      id: "doc-123",
-      tags: ["programming", "resilience"],
-    };
-    const hints = generateHints(result);
-    expect(hints.length).toBeGreaterThan(0);
-    expect(hints.some((h) => h.includes("search"))).toBe(true);
-    expect(hints.some((h) => h.includes("--tag"))).toBe(true);
-    expect(hints.some((h) => h.includes("taxonomy"))).toBe(true);
-  });
-
-  test("list suggests read + search", () => {
-    const result: CommandResult = {
-      _tag: "list",
-      count: 42,
-      firstDoc: { title: "DDIA", id: "doc-1" },
-    };
-    const hints = generateHints(result);
-    expect(hints.some((h) => h.includes("read"))).toBe(true);
-    expect(hints.some((h) => h.includes("search"))).toBe(true);
-  });
-
-  test("stats suggests search + list + taxonomy + doctor", () => {
-    const result: CommandResult = {
-      _tag: "stats",
-      documents: 100,
-      chunks: 5000,
-      embeddings: 5000,
-    };
-    const hints = generateHints(result);
-    expect(hints.length).toBe(4);
-    expect(hints.some((h) => h.includes("search"))).toBe(true);
-    expect(hints.some((h) => h.includes("doctor"))).toBe(true);
-  });
-
-  test("taxonomySearch with matches suggests tree + search", () => {
-    const result: CommandResult = {
-      _tag: "taxonomySearch",
-      query: "error",
-      matches: [{ id: "programming/error-handling", prefLabel: "Error Handling" }],
-    };
-    const hints = generateHints(result);
-    expect(hints.some((h) => h.includes("taxonomy tree"))).toBe(true);
-    expect(hints.some((h) => h.includes("search"))).toBe(true);
-  });
-
-  test("taxonomySearch with no matches suggests list + search", () => {
-    const result: CommandResult = {
-      _tag: "taxonomySearch",
-      query: "nonexistent",
-      matches: [],
-    };
-    const hints = generateHints(result);
-    expect(hints.some((h) => h.includes("taxonomy list"))).toBe(true);
-  });
-
-  test("taxonomyList suggests tree + search", () => {
-    const result: CommandResult = { _tag: "taxonomyList", count: 50 };
-    const hints = generateHints(result);
-    expect(hints.some((h) => h.includes("taxonomy tree"))).toBe(true);
-    expect(hints.some((h) => h.includes("taxonomy search"))).toBe(true);
-  });
-
-  test("taxonomyTree with rootId suggests full tree", () => {
-    const result: CommandResult = { _tag: "taxonomyTree", rootId: "software" };
-    const hints = generateHints(result);
-    expect(hints.some((h) => h.includes("taxonomy tree`"))).toBe(true);
-  });
-
-  test("add suggests read + search + tag", () => {
-    const result: CommandResult = { _tag: "add", title: "New Book", id: "doc-new" };
-    const hints = generateHints(result);
-    expect(hints.length).toBe(3);
-    expect(hints.some((h) => h.includes("read"))).toBe(true);
-    expect(hints.some((h) => h.includes("search"))).toBe(true);
-    expect(hints.some((h) => h.includes("tag"))).toBe(true);
-  });
-
-  test("remove suggests list + stats", () => {
-    const result: CommandResult = { _tag: "remove", title: "Old Book" };
-    const hints = generateHints(result);
-    expect(hints.some((h) => h.includes("list"))).toBe(true);
-    expect(hints.some((h) => h.includes("stats"))).toBe(true);
-  });
-
-  test("doctor unhealthy suggests --fix", () => {
-    const result: CommandResult = { _tag: "doctor", healthy: false };
-    const hints = generateHints(result);
-    expect(hints.some((h) => h.includes("--fix"))).toBe(true);
-  });
-
-  test("doctor healthy does not suggest --fix", () => {
-    const result: CommandResult = { _tag: "doctor", healthy: true };
-    const hints = generateHints(result);
-    expect(hints.some((h) => h.includes("--fix"))).toBe(false);
-  });
-
-  test("error suggests doctor + check + help", () => {
-    const result: CommandResult = {
-      _tag: "error",
-      command: "search",
-      message: "Connection failed",
-    };
-    const hints = generateHints(result);
-    expect(hints.some((h) => h.includes("doctor"))).toBe(true);
-    expect(hints.some((h) => h.includes("check"))).toBe(true);
-    expect(hints.some((h) => h.includes("--help"))).toBe(true);
-  });
-
-  test("every variant produces non-empty hints array", () => {
-    const variants: CommandResult[] = [
-      { _tag: "search", query: "q", results: [{ title: "T", docId: "d", score: 0.5 }], concepts: [], hadExpand: false, wasFts: false },
-      { _tag: "noResults", query: "q", wasFts: false },
-      { _tag: "read", title: "T", id: "d", tags: ["t"] },
-      { _tag: "list", count: 1, firstDoc: { title: "T", id: "d" } },
-      { _tag: "stats", documents: 1, chunks: 1, embeddings: 1 },
-      { _tag: "taxonomySearch", query: "q", matches: [{ id: "c", prefLabel: "C" }] },
-      { _tag: "taxonomyList", count: 1 },
-      { _tag: "taxonomyTree" },
-      { _tag: "add", title: "T", id: "d" },
-      { _tag: "remove", title: "T" },
-      { _tag: "tag", title: "T", tags: ["t"] },
+    ],
+    [
+      "search does not repeat --expand or --fts once used",
+      searchResult({ hadExpand: true, wasFts: true }),
+      ['poink read "Release It!"'],
+    ],
+    [
+      "search with concepts suggests taxonomy navigation",
+      searchResult({
+        hadExpand: true,
+        wasFts: true,
+        concepts: [{ id: "software/design-patterns", prefLabel: "Design Patterns" }],
+      }),
+      ['poink read "Release It!"', 'poink taxonomy tree "software/design-patterns"'],
+    ],
+    [
+      "search without matches falls back to no-result hints",
+      searchResult({ results: [] }),
+      [
+        'poink search "error handling" --fts',
+        "poink list",
+        'poink taxonomy search "error handling"',
+      ],
+    ],
+    [
+      "no results after FTS suggests vector search",
+      { _tag: "noResults", query: "missing thing", wasFts: true },
+      ['poink search "missing thing"', "poink list", 'poink taxonomy search "missing thing"'],
+    ],
+    [
+      "read suggests the first tag",
+      { _tag: "read", title: "Release It!", id: "doc-123", tags: ["resilience", "ops"] },
+      [
+        'poink search "Release It!" --expand 2000',
+        'poink list --tag "resilience"',
+        'poink taxonomy search "Release It!"',
+      ],
+    ],
+    [
+      "untagged list suggests taxonomy browsing",
+      { _tag: "list", count: 42, firstDoc: { title: "DDIA", id: "doc-1" } },
+      ['poink read "DDIA"', 'poink search "<query>"', "poink taxonomy list"],
+    ],
+    [
+      "tag-filtered list skips taxonomy browsing",
+      { _tag: "list", count: 0, tag: "ml" },
+      ['poink search "<query>"'],
+    ],
+    [
+      "stats suggests search, browsing, and doctor",
+      { _tag: "stats", documents: 100, chunks: 5000, embeddings: 5000 },
+      ['poink search "<query>"', "poink list", "poink taxonomy list", "poink doctor"],
+    ],
+    [
+      "taxonomy list suggests tree and search",
+      { _tag: "taxonomyList", count: 50 },
+      ["poink taxonomy tree", 'poink taxonomy search "<query>"', 'poink search "<query>"'],
+    ],
+    [
+      "add suggests read, search, and tagging the new document",
+      { _tag: "add", title: "New Book", id: "doc-new" },
+      [
+        'poink read "New Book"',
+        'poink search "New Book" --expand 2000',
+        'poink tag "doc-new" "topic1,topic2"',
+      ],
+    ],
+    [
+      "remove suggests list and stats",
+      { _tag: "remove", title: "Old Book" },
+      ["poink list", "poink stats"],
+    ],
+    [
+      "error suggests diagnostics and help",
+      { _tag: "error", command: "search", message: "Connection failed" },
+      ["poink doctor", "poink check", "poink --help"],
+    ],
+    [
+      "taxonomy search with matches navigates the top match",
+      {
+        _tag: "taxonomySearch",
+        query: "error",
+        matches: [{ id: "programming/error-handling", prefLabel: "Error Handling" }],
+      },
+      ['poink taxonomy tree "programming/error-handling"', 'poink search "Error Handling"'],
+    ],
+    [
+      "taxonomy search without matches suggests browsing",
+      { _tag: "taxonomySearch", query: "nonexistent", matches: [] },
+      ["poink taxonomy list", 'poink search "nonexistent"'],
+    ],
+    [
+      "subtree view suggests the full tree",
+      { _tag: "taxonomyTree", rootId: "software" },
+      ['poink taxonomy search "<query>"', 'poink search "<query>"', "poink taxonomy tree"],
+    ],
+    [
+      "unhealthy doctor suggests --fix and rechunking",
+      { _tag: "doctor", healthy: false, chunkerMismatch: 1, chunkerMissing: 2 },
+      [
+        "poink doctor --fix",
+        "poink rechunk --dry-run",
+        "poink rechunk",
+        "poink rechunk --dry-run --include-missing",
+        "poink rechunk --include-missing --max-docs 25",
+        "poink stats",
+        'poink search "<query>"',
+      ],
+    ],
+    [
+      "healthy doctor does not suggest --fix",
       { _tag: "doctor", healthy: true },
-      { _tag: "config", subcommand: "show" },
-      { _tag: "check", reachable: true },
-      { _tag: "repair", orphanedChunks: 0, orphanedEmbeddings: 0 },
-      { _tag: "reindex", count: 1, errors: 0 },
-      { _tag: "error", command: "search", message: "fail" },
-    ];
+      ["poink stats", 'poink search "<query>"'],
+    ],
+  ])("%s", (_name, result, expected) => {
+    expect(hintCommands(result)).toEqual(expected);
+  });
 
-    for (const variant of variants) {
-      const hints = generateHints(variant);
-      expect(hints.length).toBeGreaterThan(0);
-    }
+  // Mapped over every tag so adding a CommandResult variant forces a case here.
+  const everyVariant: { [Tag in CommandResult["_tag"]]: Extract<CommandResult, { _tag: Tag }> } = {
+    search: searchResult({}),
+    searchPack: { _tag: "searchPack", queries: ["q"], results: [] },
+    noResults: { _tag: "noResults", query: "q", wasFts: false },
+    read: { _tag: "read", title: "T", id: "d", tags: [] },
+    list: { _tag: "list", count: 0 },
+    stats: { _tag: "stats", documents: 1, chunks: 1, embeddings: 1 },
+    taxonomySearch: { _tag: "taxonomySearch", query: "q", matches: [] },
+    taxonomyList: { _tag: "taxonomyList", count: 1 },
+    taxonomyTree: { _tag: "taxonomyTree" },
+    add: { _tag: "add", title: "T", id: "d" },
+    remove: { _tag: "remove", title: "T" },
+    tag: { _tag: "tag", title: "T", tags: ["t"] },
+    doctor: { _tag: "doctor", healthy: true },
+    config: { _tag: "config", subcommand: "show" },
+    check: { _tag: "check", reachable: false },
+    repair: { _tag: "repair", orphanedChunks: 0, orphanedEmbeddings: 0 },
+    reindex: { _tag: "reindex", count: 1, errors: 0 },
+    rechunk: { _tag: "rechunk", dryRun: false, planned: 0, succeeded: 0, failed: 0 },
+    error: { _tag: "error", command: "search", message: "fail" },
+  };
+
+  test.each(Object.values(everyVariant))("suggests at least one next step for $_tag", (result) => {
+    expect(generateHints(result).length).toBeGreaterThan(0);
+    expect(generateNextActions(result).length).toBeGreaterThan(0);
+  });
+});
+
+describe("generateNextActions", () => {
+  test("search actions address the top result by id and chunk", () => {
+    expect(generateNextActions(searchResult({ hadExpand: true, wasFts: true }))).toEqual([
+      { kind: "shell", argv: ["poink", "read", "doc-1"], description: "Full metadata for top result" },
+      { kind: "shell", argv: ["poink", "chunk", "get", "chunk-1"], description: "Fetch exact top chunk text" },
+    ]);
   });
 });
 
 describe("formatHintBlock", () => {
-  test("produces valid markdown blockquote", () => {
-    const block = formatHintBlock([
-      "`poink search \"test\"` -- Search",
-      "`poink list` -- Browse",
-    ], { documents: 42 });
-
-    expect(block).toContain("---");
-    expect(block).toContain("> **Next Actions**");
-    expect(block).toContain("> -");
-    expect(block).toContain("42 documents");
-    expect(block).toContain("`poink --help`");
+  test("renders hints as a markdown blockquote with a library summary", () => {
+    expect(
+      formatHintBlock(["`poink list` -- Browse"], { documents: 42, concepts: 50 }),
+    ).toBe(
+      [
+        "",
+        "---",
+        "> **Next Actions**",
+        "> - `poink list` -- Browse",
+        ">",
+        "> poink: 42 documents, 50 concepts. `poink --help` for full reference.",
+      ].join("\n"),
+    );
   });
 
-  test("includes concept count when provided", () => {
-    const block = formatHintBlock(["`cmd` -- desc"], {
-      documents: 10,
-      concepts: 50,
-    });
-    expect(block).toContain("50 concepts");
+  test.each([
+    ["without stats", undefined, "> `poink --help` for full reference."],
+    [
+      "with zero concepts",
+      { documents: 3, concepts: 0 },
+      "> poink: 3 documents. `poink --help` for full reference.",
+    ],
+  ])("footer omits missing summary parts %s", (_name, stats, footer) => {
+    expect(formatHintBlock(["`cmd` -- desc"], stats)).toBe(
+      ["", "---", "> **Next Actions**", "> - `cmd` -- desc", ">", footer].join("\n"),
+    );
   });
 
-  test("returns empty string for no hints", () => {
+  test("returns an empty string for no hints", () => {
     expect(formatHintBlock([])).toBe("");
-  });
-
-  test("works without stats", () => {
-    const block = formatHintBlock(["`cmd` -- desc"]);
-    expect(block).toContain("> **Next Actions**");
-    expect(block).toContain("`poink --help`");
-    expect(block).not.toContain("documents");
   });
 });
 
 describe("stripEmoji", () => {
-  test("removes emoji characters", () => {
-    expect(stripEmoji("📚 Concepts")).toBe("Concepts");
-    expect(stripEmoji("🏷️ Label")).toBe("Label");
-    expect(stripEmoji("📄 Documents (5):")).toBe("Documents (5):");
-  });
-
-  test("preserves plain text", () => {
-    expect(stripEmoji("Hello world")).toBe("Hello world");
-    expect(stripEmoji("poink search")).toBe("poink search");
-  });
-
-  test("handles empty string", () => {
-    expect(stripEmoji("")).toBe("");
+  test.each([
+    ["📚 Concepts", "Concepts"],
+    ["🏷️ Label", "Label"],
+    ["📄 Documents (5):", "Documents (5):"],
+    ["Hello world", "Hello world"],
+    ["", ""],
+  ])("%j -> %j", (input, expected) => {
+    expect(stripEmoji(input)).toBe(expected);
   });
 });

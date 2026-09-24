@@ -1,9 +1,9 @@
-import { createClient } from "@libsql/client";
-import { Effect } from "effect";
+import { createClient, type ResultSet } from "@libsql/client";
+import { Effect, Either } from "effect";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterAll, describe, expect, test } from "vitest";
 import { Config, Document, SearchOptions } from "../types.js";
 import { removeDirWithRetries } from "../testUtils.js";
 import {
@@ -12,6 +12,7 @@ import {
   LibraryMaintenance,
   SearchRepository,
   StorageError,
+  type ChunkInput,
 } from "./StorageRepositories.js";
 import { makeStorageLayer } from "./StorageLayer.js";
 import { TaxonomyService } from "./TaxonomyService.js";
@@ -20,13 +21,17 @@ import {
   initializeLibSQLSchema,
 } from "./LibSQLSchema.js";
 
-const tempDirs: string[] = [];
+// One root for the whole suite: Windows releases libSQL file handles lazily,
+// so per-test removal spends seconds retrying on EBUSY.
+const tempRoot = mkdtempSync(join(tmpdir(), "poink-libsql-"));
+let databaseCount = 0;
 
-afterEach(async () => {
-  for (const directory of tempDirs.splice(0)) {
-    await removeDirWithRetries(directory, 300, 100);
-  }
-}, 30_000);
+afterAll(() => removeDirWithRetries(tempRoot), 60_000);
+
+/** Returns a `file:` URL for a fresh database under the suite temp root. */
+function fileDatabaseUrl(): string {
+  return `file:${join(tempRoot, `library-${databaseCount++}.db`)}`;
+}
 
 function makeConfig(url = ":memory:", authTokenEnv?: string): Config {
   return new Config({
@@ -54,35 +59,71 @@ function makeDocument(id = "doc-1"): Document {
   });
 }
 
+function makeChunk(
+  id: string,
+  content: string,
+  overrides: Partial<ChunkInput> = {},
+): ChunkInput {
+  return { id, docId: "doc-1", page: 1, chunkIndex: 0, content, ...overrides };
+}
+
 const TEST_SOURCE_IDENTITY = {
   algorithm: "sha256" as const,
   hash: "a".repeat(64),
 };
 
-function runStorage<A, E>(
+type StorageServices =
+  | DocumentRepository
+  | DocumentIntegrityRepository
+  | SearchRepository
+  | LibraryMaintenance
+  | TaxonomyService;
+
+function runStorageEither<A, E>(
   config: Config,
-  effect: Effect.Effect<
-    A,
-    E,
-    | DocumentRepository
-    | DocumentIntegrityRepository
-    | SearchRepository
-    | LibraryMaintenance
-    | TaxonomyService
-  >,
-): Promise<A> {
+  effect: Effect.Effect<A, E, StorageServices>,
+) {
   return Effect.runPromise(
-    Effect.scoped(effect.pipe(Effect.provide(makeStorageLayer(config)))),
+    Effect.either(
+      Effect.scoped(effect.pipe(Effect.provide(makeStorageLayer(config)))),
+    ),
   );
 }
 
+async function runStorage<A, E>(
+  config: Config,
+  effect: Effect.Effect<A, E, StorageServices>,
+): Promise<A> {
+  return Either.getOrThrow(await runStorageEither(config, effect));
+}
+
+/** Runs raw SQL against a database file outside the storage layer. */
+async function withClient<A>(
+  url: string,
+  use: (execute: (sql: string) => Promise<ResultSet>) => Promise<A>,
+): Promise<A> {
+  const client = createClient({ url });
+  try {
+    return await use((sql) => client.execute(sql));
+  } finally {
+    client.close();
+  }
+}
+
+const sourceIdentityOf = (id: string) =>
+  Effect.flatMap(DocumentIntegrityRepository, (integrity) =>
+    integrity.getDocumentWithSourceIdentity(id),
+  ).pipe(Effect.map((stored) => stored?.sourceIdentity));
+
 describe("libSQL storage", () => {
-  test("classifies local, in-memory, and remote URLs", () => {
-    expect(classifyLibsqlUrl(":memory:")).toBe("memory");
-    expect(classifyLibsqlUrl("file::memory:?cache=shared")).toBe("memory");
-    expect(classifyLibsqlUrl("file:./library.db")).toBe("local");
-    expect(classifyLibsqlUrl("libsql://example.turso.io")).toBe("remote");
-    expect(classifyLibsqlUrl("https://example.turso.io")).toBe("remote");
+  test.each([
+    [":memory:", "memory"],
+    ["file::memory:?cache=shared", "memory"],
+    ["file:./library.db", "local"],
+    ["libsql://example.turso.io", "remote"],
+    ["https://example.turso.io", "remote"],
+  ] as const)("classifies %s as %s", (url, mode) => {
+    expect(classifyLibsqlUrl(url)).toBe(mode);
   });
 
   test("shares one database across document and taxonomy services", async () => {
@@ -124,20 +165,11 @@ describe("libSQL storage", () => {
 
         yield* integrity.replaceDocument(
           doc,
-          [
-            {
-              id: "chunk-1",
-              docId: doc.id,
-              page: 1,
-              chunkIndex: 0,
-              content: "first content",
-            },
-          ],
+          [makeChunk("chunk-1", "first content")],
           [{ chunkId: "chunk-1", embedding: [1, 0, 0] }],
           TEST_SOURCE_IDENTITY,
           "add",
         );
-
         const updated = new Document({
           ...doc,
           title: "Stale title",
@@ -151,33 +183,24 @@ describe("libSQL storage", () => {
         });
         yield* integrity.replaceDocument(
           updated,
-          [
-            {
-              id: "chunk-2",
-              docId: doc.id,
-              page: 1,
-              chunkIndex: 0,
-              content: "second content",
-            },
-          ],
+          [makeChunk("chunk-2", "second content")],
           [{ chunkId: "chunk-2", embedding: [0, 1, 0] }],
           TEST_SOURCE_IDENTITY,
           "refresh",
         );
 
-        const stored = yield* documents.getDocument(doc.id);
-        expect(stored?.title).toBe("Document");
-        expect(stored?.tags).toEqual(["test"]);
-        expect(stored?.fileType).toBe("docx");
-        expect(stored?.metadata).toEqual({
-          source: "test",
-          chunker: { id: "new", version: 2 },
-          visuals: { enabled: true, version: 1 },
+        // Refresh keeps user-owned fields and replaces source-derived ones.
+        expect(yield* documents.getDocument(doc.id)).toMatchObject({
+          title: "Document",
+          tags: ["test"],
+          fileType: "docx",
+          metadata: {
+            source: "test",
+            chunker: { id: "new", version: 2 },
+            visuals: { enabled: true, version: 1 },
+          },
         });
-        expect(
-          (yield* integrity.getDocumentWithSourceIdentity(doc.id))
-            ?.sourceIdentity,
-        ).toEqual({
+        expect(yield* sourceIdentityOf(doc.id)).toEqual({
           status: "valid",
           identity: TEST_SOURCE_IDENTITY,
         });
@@ -205,22 +228,14 @@ describe("libSQL storage", () => {
         const result = yield* Effect.either(
           integrity.replaceDocument(
             doc,
-            [
-              {
-                id: "chunk-1",
-                docId: doc.id,
-                page: 1,
-                chunkIndex: 0,
-                content: "content",
-              },
-            ],
+            [makeChunk("chunk-1", "content")],
             [{ chunkId: "missing-chunk", embedding: [1, 0, 0] }],
             TEST_SOURCE_IDENTITY,
             "add",
           ),
         );
 
-        expect(result._tag).toBe("Left");
+        expect(Either.isLeft(result)).toBe(true);
         expect(yield* documents.getDocument(doc.id)).toBeNull();
         expect(yield* documents.listChunksByDocument(doc.id)).toEqual([]);
       }),
@@ -234,18 +249,13 @@ describe("libSQL storage", () => {
         const documents = yield* DocumentRepository;
         const integrity = yield* DocumentIntegrityRepository;
         const doc = makeDocument();
+        const oldChunk = makeChunk("old-chunk", "old content", {
+          page: 2,
+          embeddingContent: "old embedding content",
+        });
         yield* integrity.replaceDocument(
           doc,
-          [
-            {
-              id: "old-chunk",
-              docId: doc.id,
-              page: 2,
-              chunkIndex: 0,
-              content: "old content",
-              embeddingContent: "old embedding content",
-            },
-          ],
+          [oldChunk],
           [{ chunkId: "old-chunk", embedding: [1, 0, 0] }],
           TEST_SOURCE_IDENTITY,
           "add",
@@ -262,45 +272,48 @@ describe("libSQL storage", () => {
             visuals: { enabled: true, version: 1 },
           },
         });
-        const attemptedIdentity = {
-          algorithm: "sha256" as const,
-          hash: "b".repeat(64),
-        };
         const result = yield* Effect.either(
           integrity.replaceDocument(
             attempted,
-            [
-              {
-                id: "new-chunk",
-                docId: doc.id,
-                page: 1,
-                chunkIndex: 0,
-                content: "new content",
-              },
-            ],
+            [makeChunk("new-chunk", "new content")],
             [{ chunkId: "missing-new-chunk", embedding: [0, 1, 0] }],
-            attemptedIdentity,
+            { algorithm: "sha256", hash: "b".repeat(64) },
             "refresh",
           ),
         );
 
-        expect(result._tag).toBe("Left");
+        expect(Either.isLeft(result)).toBe(true);
         expect(yield* documents.getDocument(doc.id)).toEqual(doc);
         expect(yield* documents.listChunksByDocument(doc.id)).toEqual([
-          expect.objectContaining({
-            id: "old-chunk",
-            page: 2,
-            content: "old content",
-            embeddingContent: "old embedding content",
-          }),
+          expect.objectContaining(oldChunk),
         ]);
-        expect(
-          (yield* integrity.getDocumentWithSourceIdentity(doc.id))
-            ?.sourceIdentity,
-        ).toEqual({
+        expect(yield* sourceIdentityOf(doc.id)).toEqual({
           status: "valid",
           identity: TEST_SOURCE_IDENTITY,
         });
+      }),
+    );
+  });
+
+  test("rejects malformed source identity writes before persistence", async () => {
+    await runStorage(
+      makeConfig(),
+      Effect.gen(function* () {
+        const documents = yield* DocumentRepository;
+        const integrity = yield* DocumentIntegrityRepository;
+        const doc = makeDocument();
+        const result = yield* Effect.either(
+          integrity.replaceDocument(
+            doc,
+            [],
+            [],
+            { algorithm: "sha256", hash: "g".repeat(64) },
+            "add",
+          ),
+        );
+
+        expect(Either.isLeft(result)).toBe(true);
+        expect(yield* documents.getDocument(doc.id)).toBeNull();
       }),
     );
   });
@@ -315,42 +328,33 @@ describe("libSQL storage", () => {
     );
   });
 
-  test("preserves FTS and vector search scoring behavior", async () => {
+  test("finds a stored chunk through vector and FTS search", async () => {
     await runStorage(
       makeConfig(),
       Effect.gen(function* () {
-        const documents = yield* DocumentRepository;
         const integrity = yield* DocumentIntegrityRepository;
         const search = yield* SearchRepository;
-        const doc = makeDocument();
         yield* integrity.replaceDocument(
-          doc,
-          [
-            {
-              id: "chunk-1",
-              docId: doc.id,
-              page: 1,
-              chunkIndex: 0,
-              content: "semantic storage architecture",
-            },
-          ],
+          makeDocument(),
+          [makeChunk("chunk-1", "semantic storage architecture")],
           [{ chunkId: "chunk-1", embedding: [1, 0, 0] }],
           TEST_SOURCE_IDENTITY,
           "add",
         );
+        const options = new SearchOptions({ limit: 5 });
 
-        const vector = yield* search.vectorSearch(
-          [1, 0, 0],
-          new SearchOptions({ limit: 5 }),
-        );
-        const fts = yield* search.ftsSearch(
-          "storage",
-          new SearchOptions({ limit: 5 }),
-        );
-        expect(vector[0]?.chunkId).toBe("chunk-1");
-        expect(vector[0]?.scoreType).toBe("cosine_similarity");
-        expect(fts[0]?.chunkId).toBe("chunk-1");
-        expect(fts[0]?.scoreType).toBe("fts_rank");
+        expect(yield* search.vectorSearch([1, 0, 0], options)).toEqual([
+          expect.objectContaining({
+            chunkId: "chunk-1",
+            scoreType: "cosine_similarity",
+          }),
+        ]);
+        expect(yield* search.ftsSearch("storage", options)).toEqual([
+          expect.objectContaining({
+            chunkId: "chunk-1",
+            scoreType: "fts_rank",
+          }),
+        ]);
       }),
     );
   });
@@ -364,12 +368,12 @@ describe("libSQL storage", () => {
         yield* documents.addDocument(makeDocument());
         yield* documents.addDocument(makeDocument("other"));
         yield* documents.addChunks([
-          { id: "e", docId: "doc-1", page: 3, chunkIndex: 0, content: "E" },
-          { id: "b", docId: "doc-1", page: 1, chunkIndex: 1, content: "B" },
-          { id: "c", docId: "doc-1", page: 2, chunkIndex: 0, content: "C" },
-          { id: "a", docId: "doc-1", page: 1, chunkIndex: 0, content: "A" },
-          { id: "d", docId: "doc-1", page: 2, chunkIndex: 1, content: "D" },
-          { id: "other", docId: "other", page: 2, chunkIndex: 0, content: "Other" },
+          makeChunk("e", "E", { page: 3 }),
+          makeChunk("b", "B", { chunkIndex: 1 }),
+          makeChunk("c", "C", { page: 2 }),
+          makeChunk("a", "A"),
+          makeChunk("d", "D", { page: 2, chunkIndex: 1 }),
+          makeChunk("other", "Other", { docId: "other", page: 2 }),
         ]);
 
         for (const [direction, content, startChunk, endChunk] of [
@@ -390,129 +394,107 @@ describe("libSQL storage", () => {
   });
 
   test("upgrades supported legacy columns during centralized startup", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "poink-schema-"));
-    tempDirs.push(directory);
-    const url = `file:${join(directory, "library.db")}`;
-    const client = createClient({ url });
-    await client.execute(`
-      CREATE TABLE documents (
-        id TEXT PRIMARY KEY,
-        title TEXT NOT NULL,
-        path TEXT NOT NULL UNIQUE,
-        added_at TEXT NOT NULL,
-        page_count INTEGER NOT NULL,
-        size_bytes INTEGER NOT NULL,
-        tags TEXT DEFAULT '[]',
-        metadata TEXT DEFAULT '{}'
-      )
-    `);
-    await client.execute(`
-      INSERT INTO documents
-        (id, title, path, added_at, page_count, size_bytes, tags, metadata)
-      VALUES
-        ('legacy', 'Legacy', '/legacy.md', '2026-01-01T00:00:00.000Z',
-         1, 10, '[]', '{}')
-    `);
-    await client.execute(`
-      CREATE TABLE chunks (
-        id TEXT PRIMARY KEY,
-        doc_id TEXT NOT NULL,
-        page INTEGER NOT NULL,
-        chunk_index INTEGER NOT NULL,
-        content TEXT NOT NULL
-      )
-    `);
-    await client.execute("CREATE INDEX idx_chunks_doc ON chunks(doc_id)");
-    client.close();
+    const url = fileDatabaseUrl();
+    await withClient(url, async (execute) => {
+      await execute(`
+        CREATE TABLE documents (
+          id TEXT PRIMARY KEY,
+          title TEXT NOT NULL,
+          path TEXT NOT NULL UNIQUE,
+          added_at TEXT NOT NULL,
+          page_count INTEGER NOT NULL,
+          size_bytes INTEGER NOT NULL,
+          tags TEXT DEFAULT '[]',
+          metadata TEXT DEFAULT '{}'
+        )
+      `);
+      await execute(`
+        INSERT INTO documents
+          (id, title, path, added_at, page_count, size_bytes, tags, metadata)
+        VALUES
+          ('legacy', 'Legacy', '/legacy.md', '2026-01-01T00:00:00.000Z',
+           1, 10, '[]', '{}')
+      `);
+      await execute(`
+        CREATE TABLE chunks (
+          id TEXT PRIMARY KEY,
+          doc_id TEXT NOT NULL,
+          page INTEGER NOT NULL,
+          chunk_index INTEGER NOT NULL,
+          content TEXT NOT NULL
+        )
+      `);
+      await execute("CREATE INDEX idx_chunks_doc ON chunks(doc_id)");
+    });
 
     await runStorage(
       makeConfig(url),
       Effect.gen(function* () {
         const documents = yield* DocumentRepository;
-        const integrity = yield* DocumentIntegrityRepository;
-        const document = yield* documents.getDocument("legacy");
-        expect(document?.fileType).toBe("markdown");
-        expect(
-          (yield* integrity.getDocumentWithSourceIdentity("legacy"))
-            ?.sourceIdentity,
-        ).toEqual({ status: "missing" });
+        expect((yield* documents.getDocument("legacy"))?.fileType).toBe(
+          "markdown",
+        );
+        expect(yield* sourceIdentityOf("legacy")).toEqual({
+          status: "missing",
+        });
       }),
     );
 
-    const verification = createClient({ url });
-    const positionIndex = await verification.execute(
-      "PRAGMA index_info(idx_chunks_doc_position)",
-    );
-    expect(positionIndex.rows.map((row) => row.name)).toEqual([
-      "doc_id", "page", "chunk_index",
-    ]);
-    const indexes = await verification.execute("PRAGMA index_list(chunks)");
-    expect(indexes.rows.some((row) => row.name === "idx_chunks_doc")).toBe(false);
-    const documentColumns = await verification.execute(
-      "PRAGMA table_info(documents)",
-    );
-    const chunkColumns = await verification.execute(
-      "PRAGMA table_info(chunks)",
-    );
-    expect(documentColumns.rows.some((row) => row.name === "file_type")).toBe(
-      true,
-    );
-    expect(
-      chunkColumns.rows.some((row) => row.name === "embedding_content"),
-    ).toBe(true);
-    expect(
-      documentColumns.rows.some(
-        (row) => row.name === "source_hash_algorithm",
-      ),
-    ).toBe(true);
-    expect(
-      documentColumns.rows.some((row) => row.name === "source_hash"),
-    ).toBe(true);
-    const legacyIdentity = await verification.execute(
-      "SELECT source_hash_algorithm, source_hash FROM documents WHERE id = 'legacy'",
-    );
-    expect(legacyIdentity.rows[0]?.source_hash_algorithm).toBeNull();
-    expect(legacyIdentity.rows[0]?.source_hash).toBeNull();
-    verification.close();
+    await withClient(url, async (execute) => {
+      const names = async (sql: string) =>
+        (await execute(sql)).rows.map((row) => row.name);
+
+      expect(
+        await names("PRAGMA index_info(idx_chunks_doc_position)"),
+      ).toEqual(["doc_id", "page", "chunk_index"]);
+      expect(await names("PRAGMA index_list(chunks)")).not.toContain(
+        "idx_chunks_doc",
+      );
+      expect(await names("PRAGMA table_info(documents)")).toEqual(
+        expect.arrayContaining([
+          "file_type",
+          "source_hash_algorithm",
+          "source_hash",
+        ]),
+      );
+      expect(await names("PRAGMA table_info(chunks)")).toContain(
+        "embedding_content",
+      );
+    });
   });
 
   test("isolates malformed source identity from ordinary document reads", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "poink-integrity-"));
-    tempDirs.push(directory);
-    const url = `file:${join(directory, "library.db")}`;
-
+    const url = fileDatabaseUrl();
     await runStorage(
       makeConfig(url),
-      Effect.gen(function* () {
-        const documents = yield* DocumentRepository;
-        yield* documents.addDocument(makeDocument());
-      }),
+      Effect.flatMap(DocumentRepository, (documents) =>
+        documents.addDocument(makeDocument()),
+      ),
+    );
+    await withClient(url, (execute) =>
+      execute(
+        `UPDATE documents
+         SET source_hash_algorithm = 'sha256', source_hash = '${"g".repeat(64)}'
+         WHERE id = 'doc-1'`,
+      ),
     );
 
-    const client = createClient({ url });
-    await client.execute({
-      sql: `UPDATE documents
-            SET source_hash_algorithm = 'sha256', source_hash = ?
-            WHERE id = 'doc-1'`,
-      args: ["g".repeat(64)],
-    });
-    client.close();
-
     await runStorage(
       makeConfig(url),
       Effect.gen(function* () {
         const documents = yield* DocumentRepository;
-        const integrity = yield* DocumentIntegrityRepository;
         expect((yield* documents.getDocument("doc-1"))?.id).toBe("doc-1");
-        expect(
-          (yield* integrity.getDocumentWithSourceIdentity("doc-1"))
-            ?.sourceIdentity,
-        ).toEqual({ status: "invalid" });
+        expect(yield* sourceIdentityOf("doc-1")).toEqual({
+          status: "invalid",
+        });
       }),
     );
   });
 
-  test("fresh schema rejects half-null and uppercase identities", async () => {
+  test.each([
+    ["half-null", "source_hash = NULL"],
+    ["uppercase", `source_hash = '${"A".repeat(64)}'`],
+  ])("fresh schema rejects %s identities", async (_case, hashAssignment) => {
     const client = createClient({ url: ":memory:" });
     try {
       await initializeLibSQLSchema(client, "memory");
@@ -528,84 +510,43 @@ describe("libSQL storage", () => {
       await expect(
         client.execute(
           `UPDATE documents
-           SET source_hash_algorithm = 'sha256', source_hash = NULL
+           SET source_hash_algorithm = 'sha256', ${hashAssignment}
            WHERE id = 'doc-1'`,
         ),
-      ).rejects.toThrow();
-      await expect(
-        client.execute({
-          sql: `UPDATE documents
-                SET source_hash_algorithm = 'sha256', source_hash = ?
-                WHERE id = 'doc-1'`,
-          args: ["A".repeat(64)],
-        }),
       ).rejects.toThrow();
     } finally {
       client.close();
     }
   });
 
-  test("rejects malformed source identity writes before persistence", async () => {
-    await runStorage(
-      makeConfig(),
-      Effect.gen(function* () {
-        const documents = yield* DocumentRepository;
-        const integrity = yield* DocumentIntegrityRepository;
-        const doc = makeDocument();
-        const result = yield* Effect.either(
-          integrity.replaceDocument(
-            doc,
-            [],
-            [],
-            { algorithm: "sha256", hash: "g".repeat(64) },
-            "add",
-          ),
-        );
-
-        expect(result._tag).toBe("Left");
-        expect(yield* documents.getDocument(doc.id)).toBeNull();
-      }),
-    );
-  });
-
   test("fails startup with a diagnostic for an incompatible schema", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "poink-incompatible-"));
-    tempDirs.push(directory);
-    const url = `file:${join(directory, "library.db")}`;
-    const client = createClient({ url });
-    await client.execute(`
-      CREATE TABLE documents (
-        id TEXT PRIMARY KEY,
-        path TEXT NOT NULL UNIQUE,
-        added_at TEXT NOT NULL,
-        page_count INTEGER NOT NULL,
-        size_bytes INTEGER NOT NULL,
-        tags TEXT DEFAULT '[]',
-        metadata TEXT DEFAULT '{}'
-      )
-    `);
-    client.close();
-
-    const result = await Effect.runPromise(
-      Effect.either(
-        Effect.scoped(
-          Effect.asVoid(DocumentRepository).pipe(
-            Effect.provide(makeStorageLayer(makeConfig(url))),
-          ),
-        ),
-      ),
+    const url = fileDatabaseUrl();
+    await withClient(url, (execute) =>
+      execute(`
+        CREATE TABLE documents (
+          id TEXT PRIMARY KEY,
+          path TEXT NOT NULL UNIQUE,
+          added_at TEXT NOT NULL,
+          page_count INTEGER NOT NULL,
+          size_bytes INTEGER NOT NULL,
+          tags TEXT DEFAULT '[]',
+          metadata TEXT DEFAULT '{}'
+        )
+      `),
     );
-    expect(result._tag).toBe("Left");
-    if (result._tag === "Left") {
-      expect(result.left.reason).toContain("table documents");
-      expect(result.left.reason).toContain("title");
-    }
+
+    const result = await runStorageEither(
+      makeConfig(url),
+      Effect.asVoid(DocumentRepository),
+    );
+
+    const { reason } = Either.getOrThrow(Either.flip(result));
+    expect(reason).toContain("table documents");
+    expect(reason).toContain("title");
   });
 
   test("stores embedding dimension, provider, and model metadata", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "poink-metadata-"));
-    tempDirs.push(directory);
-    const url = `file:${join(directory, "library.db")}`;
+    const url = fileDatabaseUrl();
     await runStorage(
       makeConfig(url),
       Effect.gen(function* () {
@@ -618,78 +559,54 @@ describe("libSQL storage", () => {
       }),
     );
 
-    const client = createClient({ url });
-    const result = await client.execute(
-      "SELECT key, value FROM library_metadata ORDER BY key",
+    const result = await withClient(url, (execute) =>
+      execute("SELECT key, value FROM library_metadata"),
     );
-    const metadata = Object.fromEntries(
-      result.rows.map((row) => [String(row.key), String(row.value)]),
-    );
-    expect(metadata).toMatchObject({
+    expect(
+      Object.fromEntries(
+        result.rows.map((row) => [String(row.key), String(row.value)]),
+      ),
+    ).toMatchObject({
       "embedding.dimensions": "3",
       "embedding.provider": "ollama",
       "embedding.model": "mxbai-embed-large",
     });
-    client.close();
   });
 
   test("fails reads with contextual errors for malformed JSON rows", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "poink-rows-"));
-    tempDirs.push(directory);
-    const url = `file:${join(directory, "library.db")}`;
-
+    const url = fileDatabaseUrl();
     await runStorage(
       makeConfig(url),
-      Effect.gen(function* () {
-        const documents = yield* DocumentRepository;
-        yield* documents.addDocument(makeDocument());
-      }),
-    );
-
-    const client = createClient({ url });
-    await client.execute(
-      "UPDATE documents SET tags = '{invalid' WHERE id = 'doc-1'",
-    );
-    client.close();
-
-    const result = await Effect.runPromise(
-      Effect.either(
-        Effect.scoped(
-          Effect.gen(function* () {
-            const documents = yield* DocumentRepository;
-            return yield* documents.getDocument("doc-1");
-          }).pipe(Effect.provide(makeStorageLayer(makeConfig(url)))),
-        ),
+      Effect.flatMap(DocumentRepository, (documents) =>
+        documents.addDocument(makeDocument()),
       ),
     );
-    expect(result._tag).toBe("Left");
-    if (result._tag === "Left") {
-      expect(result.left).toBeInstanceOf(StorageError);
-      expect(result.left.reason).toContain("documents.tags");
-      expect(result.left.reason).toContain("doc-1");
-    }
+    await withClient(url, (execute) =>
+      execute("UPDATE documents SET tags = '{invalid' WHERE id = 'doc-1'"),
+    );
+
+    const result = await runStorageEither(
+      makeConfig(url),
+      Effect.flatMap(DocumentRepository, (documents) =>
+        documents.getDocument("doc-1"),
+      ),
+    );
+
+    const error = Either.getOrThrow(Either.flip(result));
+    expect(error).toBeInstanceOf(StorageError);
+    expect(error.reason).toContain("documents.tags");
+    expect(error.reason).toContain("doc-1");
   });
 
   test("fails before client creation when authTokenEnv is missing", async () => {
     const variable = "POINK_TEST_MISSING_LIBSQL_TOKEN";
     delete process.env[variable];
-    const result = await Effect.runPromise(
-      Effect.either(
-        Effect.scoped(
-          Effect.asVoid(DocumentRepository).pipe(
-            Effect.provide(
-              makeStorageLayer(
-                makeConfig("libsql://example.invalid", variable),
-              ),
-            ),
-          ),
-        ),
-      ),
+
+    const result = await runStorageEither(
+      makeConfig("libsql://example.invalid", variable),
+      Effect.asVoid(DocumentRepository),
     );
 
-    expect(result._tag).toBe("Left");
-    if (result._tag === "Left") {
-      expect(result.left.reason).toContain(variable);
-    }
+    expect(Either.getOrThrow(Either.flip(result)).reason).toContain(variable);
   });
 });

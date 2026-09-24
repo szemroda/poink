@@ -1,74 +1,44 @@
 import { describe, it, expect } from "vitest";
-import {
-  mapClusterToConcept,
-  type ClusterInput,
-  type ConceptInput,
-  type MapOptions,
-} from "./ClusterConceptMapper.js";
-
-function mapCluster(
-  cluster: ClusterInput,
-  concepts: ConceptInput[],
-  options: MapOptions
-) {
-  return mapClusterToConcept(cluster, concepts, options);
-}
+import { mapClusterToConcept } from "./ClusterConceptMapper.js";
 
 describe("mapClusterToConcept", () => {
-  it("should map cluster to existing concept when similarity is high", () => {
-    const cluster = {
-      id: 1,
-      summary: "React hooks and state management",
-      centroid: [0.1, 0.2, 0.3],
-    };
-
-    const concepts = [
-      {
-        id: "programming/react-hooks",
-        label: "React Hooks",
-        embedding: [0.1, 0.2, 0.3],
-      },
-      { id: "programming/vue", label: "Vue.js", embedding: [0.9, 0.8, 0.7] },
-    ];
-
-    const result = mapCluster(cluster, concepts, { threshold: 0.8 });
-
-    expect(result.matched).toBe(true);
-    expect(result.conceptId).toBe("programming/react-hooks");
-  });
-
-  it("should suggest new concept when no match found", () => {
-    const cluster = {
-      id: 2,
-      summary: "Quantum computing algorithms",
-      centroid: [1.0, 0.0, 0.0],
-    };
-
-    const concepts = [
-      { id: "programming/react", label: "React", embedding: [0.0, 1.0, 0.0] },
-    ];
-
-    const result = mapCluster(cluster, concepts, { threshold: 0.8 });
-
-    expect(result.matched).toBe(false);
-    expect(result.suggestedLabel).toBe("Quantum computing algorithms");
-  });
-
-  it("should include matches exactly at the threshold", () => {
-    const result = mapCluster(
-      {
-        id: 3,
-        summary: "Threshold match",
-        centroid: [1, 0],
-      },
+  it("maps a cluster to the most similar concept above the threshold", () => {
+    const result = mapClusterToConcept(
+      { id: 1, summary: "React hooks and state management", centroid: [0.1, 0.2, 0.3] },
       [
-        {
-          id: "threshold-match",
-          label: "Threshold Match",
-          embedding: [0.8, 0.6],
-        },
+        { id: "programming/vue", label: "Vue.js", embedding: [0.9, 0.8, 0.7] },
+        { id: "programming/react-hooks", label: "React Hooks", embedding: [0.1, 0.2, 0.3] },
       ],
-      { threshold: 0.8 }
+      { threshold: 0.8 },
+    );
+
+    expect(result).toEqual({
+      clusterId: 1,
+      matched: true,
+      conceptId: "programming/react-hooks",
+      confidence: expect.closeTo(1),
+    });
+  });
+
+  it("suggests a label from the summary when no concept matches", () => {
+    const result = mapClusterToConcept(
+      { id: 2, summary: "Quantum computing algorithms", centroid: [1, 0, 0] },
+      [{ id: "programming/react", label: "React", embedding: [0, 1, 0] }],
+      { threshold: 0.8 },
+    );
+
+    expect(result).toEqual({
+      clusterId: 2,
+      matched: false,
+      suggestedLabel: "Quantum computing algorithms",
+    });
+  });
+
+  it("includes matches exactly at the threshold", () => {
+    const result = mapClusterToConcept(
+      { id: 3, summary: "Threshold match", centroid: [1, 0] },
+      [{ id: "threshold-match", label: "Threshold Match", embedding: [0.8, 0.6] }],
+      { threshold: 0.8 },
     );
 
     expect(result).toMatchObject({
@@ -78,33 +48,24 @@ describe("mapClusterToConcept", () => {
     });
   });
 
-  it("should keep the first concept when similarities are equal", () => {
-    const result = mapCluster(
-      {
-        id: 4,
-        summary: "Equal matches",
-        centroid: [1, 0],
-      },
+  it("keeps the first concept when similarities are equal", () => {
+    const result = mapClusterToConcept(
+      { id: 4, summary: "Equal matches", centroid: [1, 0] },
       [
         { id: "first", label: "First", embedding: [1, 0] },
         { id: "second", label: "Second", embedding: [1, 0] },
       ],
-      { threshold: 0.8 }
+      { threshold: 0.8 },
     );
 
     expect(result.conceptId).toBe("first");
   });
 
-  it("should truncate suggested labels from the first sentence", () => {
-    const firstSentence = "A".repeat(60);
-    const result = mapCluster(
-      {
-        id: 5,
-        summary: `${firstSentence}. Ignored sentence`,
-        centroid: [1, 0],
-      },
+  it("truncates suggested labels taken from the first sentence", () => {
+    const result = mapClusterToConcept(
+      { id: 5, summary: `${"A".repeat(60)}. Ignored sentence`, centroid: [1, 0] },
       [],
-      { threshold: 0.8 }
+      { threshold: 0.8 },
     );
 
     expect(result.suggestedLabel).toBe("A".repeat(50));

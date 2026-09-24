@@ -11,6 +11,7 @@ import {
   combineIngestDiscoveryResults,
   discoverIngestFiles,
   globPatternsFromOption,
+  type IngestSelectionFilters,
   normalizeGlobPath,
   resolveIngestSelectionFilters,
 } from "./fileDiscovery.js";
@@ -22,6 +23,21 @@ function withTempDirectory(run: (directory: string) => void): void {
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
+}
+
+/** Discovers from `root` and its `nested` child, then combines the overlapping results. */
+function discoverOverlappingRoots(
+  root: string,
+  nested: string,
+  filters: IngestSelectionFilters,
+) {
+  return combineIngestDiscoveryResults(
+    [
+      discoverIngestFiles(root, root, filters, true),
+      discoverIngestFiles(nested, root, filters, true),
+    ],
+    filters,
+  );
 }
 
 describe("ingest file discovery", () => {
@@ -64,17 +80,10 @@ describe("ingest file discovery", () => {
       writeFileSync(join(nested, "note.md"), "# Keep", "utf-8");
       writeFileSync(join(nested, "archive", "old.md"), "# Old", "utf-8");
 
-      const filters = {
+      const combined = discoverOverlappingRoots(root, nested, {
         include: ["**/*.md"],
         exclude: ["**/archive/**"],
-      };
-      const combined = combineIngestDiscoveryResults(
-        [
-          discoverIngestFiles(root, root, filters, true),
-          discoverIngestFiles(nested, root, filters, true),
-        ],
-        filters,
-      );
+      });
 
       expect(combined.files).toEqual([join(nested, "note.md")]);
       expect(combined.selection).toEqual({
@@ -95,17 +104,10 @@ describe("ingest file discovery", () => {
       mkdirSync(join(nested, "archive"), { recursive: true });
       writeFileSync(join(nested, "archive", "old.md"), "# Old", "utf-8");
 
-      const filters = {
+      const combined = discoverOverlappingRoots(root, nested, {
         include: ["**/*.md"],
         exclude: ["nested/archive/**"],
-      };
-      const combined = combineIngestDiscoveryResults(
-        [
-          discoverIngestFiles(root, root, filters, true),
-          discoverIngestFiles(nested, root, filters, true),
-        ],
-        filters,
-      );
+      });
 
       expect(combined.files).toEqual([]);
       expect(combined.selection).toEqual({
@@ -135,32 +137,25 @@ describe("ingest file discovery", () => {
     ]);
   });
 
-  test("uses config include when CLI include is absent", () => {
+  test.each([
+    [
+      "uses config filters when CLI filters are absent",
+      {},
+      { include: ["docs/**/*.md"], exclude: ["docs/archive/**"] },
+    ],
+    [
+      "CLI include overrides config include while CLI exclude extends config exclude",
+      { include: ["manual/**/*.pdf"], exclude: ["manual/drafts/**", "docs/archive/**"] },
+      { include: ["manual/**/*.pdf"], exclude: ["docs/archive/**", "manual/drafts/**"] },
+    ],
+  ])("%s", (_name, cliOptions, expected) => {
     const configuredFilters = {
       include: ["docs/**/*.md"],
       exclude: ["docs/archive/**"],
     };
 
-    expect(resolveIngestSelectionFilters(configuredFilters, {})).toEqual({
-      include: ["docs/**/*.md"],
-      exclude: ["docs/archive/**"],
-    });
-  });
-
-  test("CLI include overrides config include while CLI exclude extends config exclude", () => {
-    const configuredFilters = {
-      include: ["docs/**/*.md"],
-      exclude: ["docs/archive/**"],
-    };
-
-    expect(
-      resolveIngestSelectionFilters(configuredFilters, {
-        include: ["manual/**/*.pdf"],
-        exclude: ["manual/drafts/**", "docs/archive/**"],
-      }),
-    ).toEqual({
-      include: ["manual/**/*.pdf"],
-      exclude: ["docs/archive/**", "manual/drafts/**"],
-    });
+    expect(resolveIngestSelectionFilters(configuredFilters, cliOptions)).toEqual(
+      expected,
+    );
   });
 });

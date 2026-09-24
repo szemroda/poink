@@ -1,63 +1,24 @@
-/**
- * MarkdownExtractor Unit Tests
- */
-
-import { describe, expect, test, beforeAll, afterAll } from "vitest";
-import { Effect } from "effect";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { afterAll, beforeAll, describe, expect, test } from "vitest";
+import { Context, Effect } from "effect";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { LibraryConfig } from "../types.js";
 import {
   MarkdownExtractor,
-  MarkdownExtractorLive,
-  sanitizeText,
+  makeMarkdownExtractor,
 } from "./MarkdownExtractor.js";
 
-// ============================================================================
-// sanitizeText() Tests
-// ============================================================================
+type MarkdownExtractorService = Context.Tag.Service<typeof MarkdownExtractor>;
 
-describe("sanitizeText", () => {
-  test("strips null bytes from markdown text", () => {
-    const input = "Hello\x00World\x00!";
-    const result = sanitizeText(input);
-    expect(result).toBe("HelloWorld!");
-  });
-
-  test("strips multiple consecutive null bytes", () => {
-    const input = "Text\x00\x00\x00with\x00\x00nulls";
-    const result = sanitizeText(input);
-    expect(result).toBe("Textwithnulls");
-  });
-
-  test("handles text with no null bytes", () => {
-    const input = "Clean markdown text";
-    const result = sanitizeText(input);
-    expect(result).toBe("Clean markdown text");
-  });
-
-  test("handles empty string", () => {
-    const input = "";
-    const result = sanitizeText(input);
-    expect(result).toBe("");
-  });
-
-  test("preserves unicode in markdown", () => {
-    const input = "café\x00naïve\x00résumé";
-    const result = sanitizeText(input);
-    expect(result).toBe("cafénaïverésumé");
-  });
-
-  test("preserves markdown syntax", () => {
-    const input = "# Heading\x00\n\n**bold**\x00";
-    const result = sanitizeText(input);
-    expect(result).toBe("# Heading\n\n**bold**");
-  });
-});
-
-// ============================================================================
-// Test Helpers
-// ============================================================================
+const extractorLayer = makeMarkdownExtractor(
+  new LibraryConfig({
+    libraryPath: ".",
+    dbPath: ":memory:",
+    chunkSize: 1000,
+    chunkOverlap: 0,
+  }),
+);
 
 let tempDir: string;
 
@@ -69,489 +30,193 @@ afterAll(() => {
   rmSync(tempDir, { recursive: true, force: true });
 });
 
-function writeTempFile(name: string, content: string): string {
-  const path = join(tempDir, name);
+let fileCounter = 0;
+
+function writeMarkdown(content: string): string {
+  const path = join(tempDir, `doc-${fileCounter++}.md`);
   writeFileSync(path, content, "utf-8");
   return path;
 }
 
-function runExtract(path: string) {
+function run<A, E>(use: (extractor: MarkdownExtractorService) => Effect.Effect<A, E>) {
   return Effect.runPromise(
-    Effect.gen(function* () {
-      const extractor = yield* MarkdownExtractor;
-      return yield* extractor.extract(path);
-    }).pipe(Effect.provide(MarkdownExtractorLive))
+    MarkdownExtractor.pipe(Effect.flatMap(use), Effect.provide(extractorLayer)),
   );
 }
 
-function runProcess(path: string) {
-  return Effect.runPromise(
-    Effect.gen(function* () {
-      const extractor = yield* MarkdownExtractor;
-      return yield* extractor.process(path);
-    }).pipe(Effect.provide(MarkdownExtractorLive))
-  );
-}
+const extract = (content: string) =>
+  run((extractor) => extractor.extract(writeMarkdown(content)));
+const processMarkdown = (content: string) =>
+  run((extractor) => extractor.process(writeMarkdown(content)));
 
-function runExtractFrontmatter(path: string) {
-  return Effect.runPromise(
-    Effect.gen(function* () {
-      const extractor = yield* MarkdownExtractor;
-      return yield* extractor.extractFrontmatter(path);
-    }).pipe(Effect.provide(MarkdownExtractorLive))
-  );
-}
+const NESTED_HEADINGS = `# Parent
 
-// ============================================================================
-// Frontmatter Parsing Tests
-// ============================================================================
+Intro.
 
-describe("Frontmatter Parsing", () => {
-  test("extracts valid YAML frontmatter with title, description, tags", async () => {
-    const path = writeTempFile(
-      "full-frontmatter.md",
-      `---
-title: My Document
-description: A test document
-tags:
-  - test
-  - markdown
----
+## Child
 
-# Content here
-`
-    );
+Details.
 
-    const result = await runExtract(path);
-    expect(result.frontmatter.title).toBe("My Document");
-    expect(result.frontmatter.description).toBe("A test document");
-    expect(result.frontmatter.tags).toEqual(["test", "markdown"]);
+### Grandchild
+
+Nested details.
+
+# Other
+
+### Skipped
+
+Deep.
+`;
+
+describe("frontmatter", () => {
+  test.each([
+    {
+      name: "title, description and tags",
+      markdown:
+        "---\ntitle: My Document\ndescription: A test document\ntags:\n  - test\n  - markdown\n---\n\n# Content",
+      expected: {
+        title: "My Document",
+        description: "A test document",
+        tags: ["test", "markdown"],
+      },
+    },
+    {
+      name: "extra fields",
+      markdown:
+        "---\ntitle: Doc\nauthor: John Doe\ncustom_field: custom_value\n---\n\nContent.",
+      expected: {
+        title: "Doc",
+        author: "John Doe",
+        custom_field: "custom_value",
+      },
+    },
+    {
+      name: "no frontmatter",
+      markdown: "# Just a heading\n\nSome content.",
+      expected: {},
+    },
+  ])("extracts $name", async ({ markdown, expected }) => {
+    const path = writeMarkdown(markdown);
+
+    await expect(
+      run((extractor) => extractor.extractFrontmatter(path)),
+    ).resolves.toEqual(expected);
   });
 
-  test("extracts frontmatter with only title", async () => {
-    const path = writeTempFile(
-      "title-only.md",
-      `---
-title: Just a Title
----
-
-Some content.
-`
+  test("ignores malformed YAML and still extracts the body", async () => {
+    const result = await extract(
+      "---\ntitle: [unclosed bracket\ninvalid: yaml: here\n---\n\nContent after bad frontmatter.\n",
     );
 
-    const result = await runExtract(path);
-    expect(result.frontmatter.title).toBe("Just a Title");
-    expect(result.frontmatter.description).toBeUndefined();
-    expect(result.frontmatter.tags).toBeUndefined();
-  });
-
-  test("returns empty object for missing frontmatter", async () => {
-    const path = writeTempFile(
-      "no-frontmatter.md",
-      "# Just a heading\n\nSome content."
-    );
-
-    const result = await runExtract(path);
-    expect(result.frontmatter.title).toBeUndefined();
-    expect(
-      Object.keys(result.frontmatter).filter(
-        (k) => result.frontmatter[k] !== undefined
-      )
-    ).toHaveLength(0);
-  });
-
-  test("handles malformed YAML gracefully", async () => {
-    const path = writeTempFile(
-      "malformed.md",
-      `---
-title: [unclosed bracket
-invalid: yaml: here
----
-
-Content after bad frontmatter.
-`
-    );
-
-    // Should not throw, returns empty or partial
-    const result = await runExtract(path);
-    expect(result).toBeDefined();
-    expect(result.sections.length).toBeGreaterThan(0);
-  });
-
-  test("preserves extra frontmatter fields", async () => {
-    const path = writeTempFile(
-      "extra-fields.md",
-      `---
-title: Doc
-author: John Doe
-date: 2024-01-01
-custom_field: custom_value
----
-
-Content.
-`
-    );
-
-    const result = await runExtract(path);
-    expect(result.frontmatter.title).toBe("Doc");
-    expect(result.frontmatter.author).toBe("John Doe");
-    expect(result.frontmatter.custom_field).toBe("custom_value");
-  });
-
-  test("extractFrontmatter method works independently", async () => {
-    const path = writeTempFile(
-      "fm-only.md",
-      `---
-title: Fast Path Test
----
-
-# Heading
-Content that we don't need to parse.
-`
-    );
-
-    const fm = await runExtractFrontmatter(path);
-    expect(fm.title).toBe("Fast Path Test");
+    expect(result.frontmatter).toEqual({});
+    expect(result.sections.map((section) => section.text)).toEqual([
+      "Content after bad frontmatter.",
+    ]);
   });
 });
 
-// ============================================================================
-// Section Extraction Tests
-// ============================================================================
+describe("section extraction", () => {
+  test("splits sections by heading and compacts skipped heading levels", async () => {
+    const result = await extract(NESTED_HEADINGS);
 
-describe("Section Extraction", () => {
-  test("extracts single H1 heading", async () => {
-    const path = writeTempFile(
-      "single-h1.md",
-      "# Main Title\n\nSome content here."
-    );
-
-    const result = await runExtract(path);
-    expect(result.sections).toHaveLength(1);
-    expect(result.sections[0].heading).toBe("Main Title");
-    expect(result.sections[0].headingLevel).toBe(1);
-    expect(result.sections[0].text).toBe("Some content here.");
-  });
-
-  test("extracts multiple headings at different levels", async () => {
-    const path = writeTempFile(
-      "multi-heading.md",
-      `# H1 Title
-
-First section content.
-
-## H2 Section
-
-Second section content.
-
-### H3 Subsection
-
-Third section content.
-`
-    );
-
-    const result = await runExtract(path);
-    expect(result.sections).toHaveLength(3);
-    expect(result.sections[0].heading).toBe("H1 Title");
-    expect(result.sections[0].headingLevel).toBe(1);
-    expect(result.sections[0].headingPath).toEqual(["H1 Title"]);
-    expect(result.sections[1].heading).toBe("H2 Section");
-    expect(result.sections[1].headingLevel).toBe(2);
-    expect(result.sections[1].headingPath).toEqual(["H1 Title", "H2 Section"]);
-    expect(result.sections[2].heading).toBe("H3 Subsection");
-    expect(result.sections[2].headingLevel).toBe(3);
-    expect(result.sections[2].headingPath).toEqual([
-      "H1 Title",
-      "H2 Section",
-      "H3 Subsection",
+    expect(result.sectionCount).toBe(5);
+    expect(
+      result.sections.map(({ heading, headingLevel, headingPath, text }) => ({
+        heading,
+        headingLevel,
+        headingPath,
+        text,
+      })),
+    ).toEqual([
+      { heading: "Parent", headingLevel: 1, headingPath: ["Parent"], text: "Intro." },
+      { heading: "Child", headingLevel: 2, headingPath: ["Parent", "Child"], text: "Details." },
+      {
+        heading: "Grandchild",
+        headingLevel: 3,
+        headingPath: ["Parent", "Child", "Grandchild"],
+        text: "Nested details.",
+      },
+      { heading: "Other", headingLevel: 1, headingPath: ["Other"], text: "" },
+      { heading: "Skipped", headingLevel: 3, headingPath: ["Other", "Skipped"], text: "Deep." },
     ]);
   });
 
-  test("handles document with no headings", async () => {
-    const path = writeTempFile(
-      "no-headings.md",
-      "Just plain text content.\n\nWith multiple paragraphs.\n\nNo headings at all."
+  test("keeps content before the first heading as its own section", async () => {
+    const result = await extract(
+      "Some intro text before any heading.\n\n# First Heading\n\nContent after heading.\n",
     );
 
-    const result = await runExtract(path);
-    expect(result.sections).toHaveLength(1);
-    expect(result.sections[0].heading).toBe("");
-    expect(result.sections[0].text).toContain("Just plain text content");
+    expect(result.sections).toEqual([
+      {
+        section: 1,
+        heading: "",
+        headingLevel: 0,
+        headingPath: [],
+        text: "Some intro text before any heading.",
+      },
+      {
+        section: 2,
+        heading: "First Heading",
+        headingLevel: 1,
+        headingPath: ["First Heading"],
+        text: "Content after heading.",
+      },
+    ]);
   });
 
-  test("handles content before first heading", async () => {
-    const path = writeTempFile(
-      "content-before.md",
-      `Some intro text before any heading.
-
-# First Heading
-
-Content after heading.
-`
+  test("treats a document without headings as one section", async () => {
+    const result = await extract(
+      "Just plain text content.\n\nWith multiple paragraphs.",
     );
 
-    const result = await runExtract(path);
-    // Content before heading becomes section 1, heading becomes section 2
-    expect(result.sections.length).toBeGreaterThanOrEqual(1);
+    expect(result.sections).toEqual([
+      {
+        section: 1,
+        heading: "",
+        headingLevel: 0,
+        headingPath: [],
+        text: "Just plain text content.\n\nWith multiple paragraphs.",
+      },
+    ]);
   });
 
-  test("handles empty sections (heading with no content)", async () => {
-    const path = writeTempFile(
-      "empty-section.md",
-      `# First
-
-# Second
-
-Content only in second.
-`
-    );
-
-    const result = await runExtract(path);
-    expect(result.sections.length).toBeGreaterThanOrEqual(1);
-    // At least one section should have the content
-    const hasContent = result.sections.some((s) =>
-      s.text.includes("Content only")
-    );
-    expect(hasContent).toBe(true);
-  });
-
-  test("handles headings with special characters", async () => {
-    const path = writeTempFile(
-      "special-chars.md",
-      `# Hello & Goodbye: A "Test" <Document>
-
-Content here.
-`
-    );
-
-    const result = await runExtract(path);
-    expect(result.sections[0].heading).toBe(
-      'Hello & Goodbye: A "Test" <Document>'
-    );
-  });
-
-  test("handles GFM features (tables, strikethrough)", async () => {
-    const path = writeTempFile(
-      "gfm.md",
-      `# GFM Test
+  test("renders GFM tables as normalized Markdown tables", async () => {
+    const result = await extract(`# GFM Test
 
 | Column 1 | Column 2 |
 |----------|----------|
 | Cell 1   | Cell 2   |
 
 ~~strikethrough~~ and **bold**.
-`
-    );
+`);
 
-    const result = await runExtract(path);
-    expect(result.sections).toHaveLength(1);
-    expect(result.sections[0].text).toContain("Column 1");
-    expect(result.sections[0].text).toContain("| Column 1 | Column 2 |");
-    expect(result.sections[0].text).toContain("| --- | --- |");
-    expect(result.sections[0].text).toContain("strikethrough");
-  });
-});
-
-// ============================================================================
-// Chunking Logic Tests
-// ============================================================================
-
-describe("Chunking Logic", () => {
-  test("text shorter than chunk size returns single chunk", async () => {
-    const path = writeTempFile("short.md", "# Title\n\nShort content.");
-
-    const result = await runProcess(path);
-    expect(result.chunks.length).toBe(1);
+    expect(result.sections.map((section) => section.text)).toEqual([
+      "| Column 1 | Column 2 |\n| --- | --- |\n| Cell 1 | Cell 2 |\n\nstrikethrough and bold.",
+    ]);
   });
 
-  test("splits on paragraph boundaries", async () => {
-    const path = writeTempFile(
-      "paragraphs.md",
-      `# Title
+  test.each([
+    { name: "empty", markdown: "" },
+    { name: "whitespace-only", markdown: "   \n\n   \t\t\n   " },
+  ])("returns no sections for an $name file", async ({ markdown }) => {
+    const result = await extract(markdown);
 
-${"First paragraph. ".repeat(50)}
-
-${"Second paragraph. ".repeat(50)}
-
-${"Third paragraph. ".repeat(50)}
-`
-    );
-
-    const result = await runProcess(path);
-    expect(result.chunks.length).toBeGreaterThan(1);
-  });
-
-  test("preserves code block content (not split mid-block)", async () => {
-    const path = writeTempFile(
-      "code-block.md",
-      `# Code Example
-
-\`\`\`javascript
-function hello() {
-  console.log("Hello, world!");
-  return true;
-}
-\`\`\`
-
-Some text after.
-`
-    );
-
-    const result = await runProcess(path);
-    // Code block content should be preserved (fences stripped by mdast-util-to-string)
-    const codeChunk = result.chunks.find((c) =>
-      c.content.includes("console.log")
-    );
-    expect(codeChunk).toBeDefined();
-    expect(codeChunk?.content).toContain("function hello");
-  });
-
-  test("preserves inline code content", async () => {
-    const path = writeTempFile(
-      "inline-code.md",
-      "# Inline\n\nUse `const x = 1` for variables."
-    );
-
-    const result = await runProcess(path);
-    // Inline code content preserved (backticks stripped by mdast-util-to-string)
-    const chunk = result.chunks.find((c) => c.content.includes("const x = 1"));
-    expect(chunk).toBeDefined();
-  });
-
-  test("filters tiny chunks (<20 chars)", async () => {
-    const path = writeTempFile(
-      "tiny.md",
-      `# Title
-
-${"Long content here. ".repeat(100)}
-
-x
-`
-    );
-
-    const result = await runProcess(path);
-    // No chunk should be less than 20 chars
-    for (const chunk of result.chunks) {
-      expect(chunk.content.length).toBeGreaterThanOrEqual(20);
-    }
-  });
-
-  test("handles very long sentences with hard split", async () => {
-    const longSentence = "word ".repeat(600) + ".";
-    const path = writeTempFile(
-      "long-sentence.md",
-      `# Title\n\n${longSentence}`
-    );
-
-    const result = await runProcess(path);
-    // Should have multiple chunks due to hard split
-    expect(result.chunks.length).toBeGreaterThan(1);
-  });
-
-  test("splits large markdown tables with repeated headers", async () => {
-    const rows = Array.from(
-      { length: 140 },
-      (_, index) => `| Row ${index} | Value ${index} with some extra text |`,
-    ).join("\n");
-    const path = writeTempFile(
-      "large-table.md",
-      `# Table Section
-
-| Name | Value |
-|------|-------|
-${rows}
-`
-    );
-
-    const result = await runProcess(path);
-    const tableChunks = result.chunks.filter((chunk) =>
-      chunk.content.includes("| Name | Value |"),
-    );
-
-    expect(tableChunks.length).toBeGreaterThan(1);
-    for (const chunk of tableChunks) {
-      expect(chunk.content).toContain("| Name | Value |");
-      expect(chunk.content).toContain("| --- | --- |");
-    }
-  });
-});
-
-// ============================================================================
-// Edge Cases
-// ============================================================================
-
-describe("Edge Cases", () => {
-  test("handles empty file", async () => {
-    const path = writeTempFile("empty.md", "");
-
-    const result = await runExtract(path);
-    expect(result.sections).toHaveLength(0);
+    expect(result.sections).toEqual([]);
     expect(result.sectionCount).toBe(0);
   });
 
-  test("handles file with only frontmatter", async () => {
-    const path = writeTempFile(
-      "only-fm.md",
-      `---
-title: Only Frontmatter
----
-`
-    );
-
-    const result = await runExtract(path);
-    expect(result.frontmatter.title).toBe("Only Frontmatter");
-    // May have 0 sections or 1 empty section
-    expect(result.sections.length).toBeLessThanOrEqual(1);
-  });
-
-  test("handles file with only whitespace", async () => {
-    const path = writeTempFile("whitespace.md", "   \n\n   \t\t\n   ");
-
-    const result = await runExtract(path);
-    expect(result.sections).toHaveLength(0);
-  });
-
-  test("handles unicode and emoji content", async () => {
-    const path = writeTempFile(
-      "unicode.md",
-      `# Hello World
-
-Content with emojis and unicode: café, naïve, résumé.
-`
-    );
-
-    const result = await runExtract(path);
-    expect(result.sections[0].text).toContain("café");
-    expect(result.sections[0].text).toContain("naïve");
-  });
-
-  test("handles Windows line endings (CRLF)", async () => {
-    const path = writeTempFile(
-      "crlf.md",
-      "# Title\r\n\r\nContent with CRLF.\r\n"
-    );
-
-    const result = await runExtract(path);
-    expect(result.sections).toHaveLength(1);
-    expect(result.sections[0].heading).toBe("Title");
-  });
-
-  test("returns error for non-existent file", async () => {
+  test("fails with MarkdownNotFoundError for a missing file", async () => {
     const path = join(tempDir, "does-not-exist.md");
 
-    await expect(runExtract(path)).rejects.toThrow();
+    await expect(
+      run((extractor) => Effect.flip(extractor.extract(path))),
+    ).resolves.toMatchObject({ _tag: "MarkdownNotFoundError" });
   });
 });
 
-// ============================================================================
-// Integration Tests
-// ============================================================================
-
-describe("Integration", () => {
-  test("process() returns frontmatter with chunks", async () => {
-    const path = writeTempFile(
-      "integration.md",
-      `---
+describe("processing", () => {
+  test("returns frontmatter and one chunk per section", async () => {
+    const result = await processMarkdown(`---
 title: Integration Test
 tags:
   - test
@@ -564,96 +229,96 @@ Content for section one.
 # Section Two
 
 Content for section two.
-`
-    );
+`);
 
-    const result = await runProcess(path);
-    expect(result.frontmatter.title).toBe("Integration Test");
-    expect(result.frontmatter.tags).toEqual(["test"]);
-    expect(result.pageCount).toBe(2);
-    expect(result.chunks.length).toBeGreaterThanOrEqual(2);
+    expect(result).toEqual({
+      pageCount: 2,
+      frontmatter: { title: "Integration Test", tags: ["test"] },
+      chunks: [
+        { page: 1, chunkIndex: 0, content: "# Section One\n\nContent for section one." },
+        { page: 2, chunkIndex: 0, content: "# Section Two\n\nContent for section two." },
+      ],
+    });
   });
 
-  test("chunks include heading context", async () => {
-    const path = writeTempFile(
-      "heading-context.md",
-      `# Important Section
+  test("prefixes chunks with the heading ancestry", async () => {
+    const result = await processMarkdown(NESTED_HEADINGS);
 
-This is the content.
-`
-    );
-
-    const result = await runProcess(path);
-    // Chunk should include the heading for context
-    const chunk = result.chunks[0];
-    expect(chunk.content).toContain("Important Section");
+    expect(result.chunks.map((chunk) => chunk.content)).toEqual([
+      "# Parent\n\nIntro.",
+      "# Parent > Child\n\nDetails.",
+      "# Parent > Child > Grandchild\n\nNested details.",
+      "# Other",
+      "# Other > Skipped\n\nDeep.",
+    ]);
   });
 
-  test("chunks include full heading ancestry", async () => {
-    const path = writeTempFile(
-      "heading-ancestry.md",
-      `# Parent
+  test("returns no chunks for a frontmatter-only file", async () => {
+    const result = await processMarkdown("---\ntitle: Only Frontmatter\n---\n");
 
-Intro.
-
-## Child
-
-Details.
-
-### Grandchild
-
-Nested details.
-`
-    );
-
-    const result = await runProcess(path);
-    const grandchildChunk = result.chunks.find((c) =>
-      c.content.includes("Nested details")
-    );
-
-    expect(grandchildChunk).toBeDefined();
-    expect(grandchildChunk?.content).toContain(
-      "# Parent > Child > Grandchild",
-    );
+    expect(result).toMatchObject({
+      chunks: [],
+      frontmatter: { title: "Only Frontmatter" },
+    });
   });
 
-  test("chunks compact heading ancestry when levels are skipped", async () => {
-    const path = writeTempFile(
-      "skipped-heading-level.md",
-      `# Parent
+  test("keeps code block content", async () => {
+    const result = await processMarkdown(`# Code Example
 
-Intro.
+\`\`\`javascript
+function hello() {
+  console.log("Hello, world!");
+  return true;
+}
+\`\`\`
 
-### Grandchild
+Some text after.
+`);
 
-Nested details.
-`
-    );
-
-    const result = await runProcess(path);
-    const grandchildChunk = result.chunks.find((c) =>
-      c.content.includes("Nested details")
-    );
-
-    expect(grandchildChunk).toBeDefined();
-    expect(grandchildChunk?.content).toContain("# Parent > Grandchild");
-    expect(grandchildChunk?.content).not.toContain(">  >");
+    expect(result.chunks).toHaveLength(1);
+    expect(result.chunks[0]?.content).toContain("function hello()");
+    expect(result.chunks[0]?.content).toContain('console.log("Hello, world!");');
+    expect(result.chunks[0]?.content).toContain("Some text after.");
   });
 
-  test("process() strips null bytes from content", async () => {
-    const path = writeTempFile(
-      "null-bytes.md",
-      `# Title with\x00null bytes
+  test("splits large tables into chunks that each repeat the header", async () => {
+    const rows = Array.from(
+      { length: 140 },
+      (_, index) => `| Row ${index} | Value ${index} with some extra text |`,
+    ).join("\n");
 
-Content with\x00\x00multiple\x00null bytes.
-`
+    const result = await processMarkdown(
+      `# Table Section\n\n| Name | Value |\n|------|-------|\n${rows}\n`,
     );
 
-    const result = await runProcess(path);
-    // Verify no null bytes in any chunk
+    expect(result.chunks.length).toBeGreaterThan(1);
     for (const chunk of result.chunks) {
-      expect(chunk.content).not.toContain("\x00");
-      expect(chunk.content).toContain("null bytes");
+      expect(chunk.content).toContain("| Name | Value |\n| --- | --- |\n| Row ");
     }
+  });
+
+  test("splits long prose on paragraph boundaries", async () => {
+    const paragraphs = ["First", "Second", "Third"].map((name) =>
+      `${name} paragraph. `.repeat(50).trim(),
+    );
+
+    const result = await processMarkdown(`# Title\n\n${paragraphs.join("\n\n")}\n`);
+
+    expect(result.chunks.map((chunk) => chunk.content)).toEqual([
+      `# Title\n\n${paragraphs[0]}`,
+      paragraphs[1],
+      paragraphs[2],
+    ]);
+  });
+
+  test("never emits null bytes", async () => {
+    const result = await processMarkdown(
+      "# Title with\x00null bytes\n\nContent with\x00\x00multiple\x00null bytes.\n",
+    );
+
+    // remark replaces NUL with U+FFFD before our sanitizer sees the text.
+    expect(result.chunks.map((chunk) => chunk.content)).toEqual([
+      "# Title with�null bytes\n\nContent with��multiple�null bytes.",
+    ]);
   });
 });

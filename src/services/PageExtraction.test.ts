@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -21,12 +22,16 @@ import { Document } from "../types.js";
 import {
   extractStoredPdfPages,
   isSafeDocumentId,
-  PageExtractionError,
   parsePageExportFormats,
   parsePageSelector,
   parsePngWidth,
   resolvePageSelection,
+  type PageExtractionOptions,
 } from "./PageExtraction.js";
+import {
+  SourceFileChangedError,
+  type SourceIdentity,
+} from "./SourceIntegrity.js";
 
 const tempDirectories: string[] = [];
 
@@ -37,6 +42,7 @@ afterEach(() => {
   }
 });
 
+/** Page n is (240 + n) x (360 + n) points; page 2 is rotated 90 degrees. */
 async function createPdf(pageCount = 3): Promise<Uint8Array> {
   const pdf = await PDFDocument.create();
   for (let pageNumber = 1; pageNumber <= pageCount; pageNumber++) {
@@ -47,12 +53,14 @@ async function createPdf(pageCount = 3): Promise<Uint8Array> {
   return pdf.save();
 }
 
-async function createStoredPdf(pageCount = 3): Promise<{
+type StoredPdf = {
   root: string;
   sourcePath: string;
   document: Document;
-  identity: { algorithm: "sha256"; hash: string };
-}> {
+  identity: SourceIdentity;
+};
+
+async function createStoredPdf(pageCount = 3): Promise<StoredPdf> {
   const root = mkdtempSync(join(tmpdir(), "poink-page-extract-"));
   tempDirectories.push(root);
   const sourcePath = join(root, "source.pdf");
@@ -76,6 +84,56 @@ async function createStoredPdf(pageCount = 3): Promise<{
       hash: createHash("sha256").update(bytes).digest("hex"),
     },
   };
+}
+
+/**
+ * Extracts `selector` from `stored` as a PDF at the default PNG width unless
+ * overridden. Omitting `outputDirectory` selects managed output.
+ */
+function extractPages(
+  stored: StoredPdf,
+  selector: string,
+  overrides: Partial<PageExtractionOptions> & {
+    document?: Document;
+    identity?: SourceIdentity;
+  } = {},
+) {
+  const {
+    document = stored.document,
+    identity = stored.identity,
+    ...options
+  } = overrides;
+  return extractStoredPdfPages(
+    document,
+    identity,
+    parsePageSelector(selector),
+    { outputFormats: new Set(["pdf"]), pngWidth: 1600, ...options },
+  );
+}
+
+function fakeScreenshot() {
+  return {
+    total: 1,
+    pages: [
+      {
+        data: new Uint8Array([1, 2, 3]),
+        dataUrl: "",
+        pageNumber: 1,
+        width: 200,
+        height: 300,
+        scale: 1,
+      },
+    ],
+  };
+}
+
+/** Export ID of the explicit-output staging directory inside `output`. */
+function stagedExportId(output: string): string {
+  const exportId = readdirSync(output)
+    .map((name) => name.match(/^\.poink-export-([a-z0-9]{8})\.stage$/)?.[1])
+    .find((id) => id !== undefined);
+  if (!exportId) throw new Error("staging directory not found");
+  return exportId;
 }
 
 describe("page extraction validation", () => {
@@ -144,34 +202,28 @@ describe("page extraction validation", () => {
 });
 
 describe("page extraction artifacts", () => {
-  test("exports a PDF with normalized source-page order", async () => {
+  test("exports a PDF with normalized source-page order and rotation", async () => {
     const stored = await createStoredPdf();
     const output = join(stored.root, "exports");
-    const result = await extractStoredPdfPages(
-      stored.document,
-      stored.identity,
-      parsePageSelector("3,1,3"),
-      {
-        outputFormats: new Set(["pdf"]),
-        outputDirectory: output,
-        pngWidth: 1600,
-      },
-    );
+    const result = await extractPages(stored, "3,2,3", {
+      outputDirectory: output,
+    });
 
-    expect(result.pages).toEqual([1, 3]);
+    expect(result.pages).toEqual([2, 3]);
     expect(result.outputDirectory).toBe(output);
-    expect(result.files).toHaveLength(1);
-    expect(basename(result.files[0]!)).toMatch(
-      /^abc123-[a-z0-9]{8}\.pdf$/,
-    );
+    expect(result.files.map((path) => basename(path))).toEqual([
+      `abc123-${result.exportId}.pdf`,
+    ]);
     const exported = await PDFDocument.load(readFileSync(result.files[0]!));
-    expect(exported.getPageCount()).toBe(2);
-    expect(exported.getPage(0).getSize()).toEqual(
-      expect.objectContaining({ width: 241, height: 361 }),
-    );
-    expect(exported.getPage(1).getSize()).toEqual(
-      expect.objectContaining({ width: 243, height: 363 }),
-    );
+    expect(
+      exported.getPages().map((page) => ({
+        ...page.getSize(),
+        rotation: page.getRotation().angle,
+      })),
+    ).toEqual([
+      { width: 242, height: 362, rotation: 90 },
+      { width: 243, height: 363, rotation: 0 },
+    ]);
     if (process.platform !== "win32") {
       expect(statSync(result.files[0]!).mode & 0o777).toBe(
         0o666 & ~process.umask(),
@@ -181,7 +233,6 @@ describe("page extraction artifacts", () => {
 
   test("renders PNG pages sequentially from the verified snapshot", async () => {
     const stored = await createStoredPdf();
-    const output = join(stored.root, "images");
     const originalGetScreenshot = PDFParse.prototype.getScreenshot;
     let active = 0;
     let maxActive = 0;
@@ -192,6 +243,7 @@ describe("page extraction artifacts", () => {
         active++;
         maxActive = Math.max(maxActive, active);
         calls.push(parameters?.partial ?? []);
+        // Rendering must read the snapshot, not the now-changed source.
         if (calls.length === 1) {
           writeFileSync(stored.sourcePath, "changed after snapshot");
         }
@@ -205,16 +257,11 @@ describe("page extraction artifacts", () => {
       },
     );
 
-    const result = await extractStoredPdfPages(
-      stored.document,
-      stored.identity,
-      parsePageSelector("1-2"),
-      {
-        outputFormats: new Set(["png"]),
-        outputDirectory: output,
-        pngWidth: 320,
-      },
-    );
+    const result = await extractPages(stored, "1-2", {
+      outputFormats: new Set(["png"]),
+      outputDirectory: join(stored.root, "images"),
+      pngWidth: 320,
+    });
 
     expect(maxActive).toBe(1);
     expect(calls).toEqual([[1], [2]]);
@@ -222,8 +269,8 @@ describe("page extraction artifacts", () => {
       true,
     );
     expect(result.files.map((path) => basename(path))).toEqual([
-      expect.stringMatching(/^abc123-[a-z0-9]{8}-page-0001\.png$/),
-      expect.stringMatching(/^abc123-[a-z0-9]{8}-page-0002\.png$/),
+      `abc123-${result.exportId}-page-0001.png`,
+      `abc123-${result.exportId}-page-0002.png`,
     ]);
     for (const path of result.files) {
       expect(readFileSync(path).subarray(0, 8)).toEqual(
@@ -235,316 +282,26 @@ describe("page extraction artifacts", () => {
   test("publishes PDF first and PNGs in ascending page order", async () => {
     const stored = await createStoredPdf();
     const output = join(stored.root, "combined");
-    const result = await extractStoredPdfPages(
-      stored.document,
-      stored.identity,
-      parsePageSelector("3,1"),
-      {
-        outputFormats: new Set(["png", "pdf"]),
-        outputDirectory: output,
-        pngWidth: 200,
-      },
-    );
+    const result = await extractPages(stored, "3,1", {
+      outputFormats: new Set(["png", "pdf"]),
+      outputDirectory: output,
+      pngWidth: 200,
+    });
 
+    expect(result.exportId).toMatch(/^[a-z0-9]{8}$/);
+    expect(readdirSync(output).sort()).toEqual(
+      result.files.map((path) => basename(path)).sort(),
+    );
     expect(result.files.map((path) => basename(path))).toEqual([
-      expect.stringMatching(/^abc123-([a-z0-9]{8})\.pdf$/),
-      expect.stringMatching(/^abc123-([a-z0-9]{8})-page-0001\.png$/),
-      expect.stringMatching(/^abc123-([a-z0-9]{8})-page-0003\.png$/),
+      `abc123-${result.exportId}.pdf`,
+      `abc123-${result.exportId}-page-0001.png`,
+      `abc123-${result.exportId}-page-0003.png`,
     ]);
-    const exportIds = result.files.map(
-      (path) => basename(path).match(/^abc123-([a-z0-9]{8})/)?.[1],
-    );
-    expect(new Set(exportIds).size).toBe(1);
-    expect(result.files.every(existsSync)).toBe(true);
-    expect(
-      readdirSync(output).some((name) => name.includes(".stage")),
-    ).toBe(false);
   });
 
-  test("preserves source page rotation in copied PDFs", async () => {
+  test("names managed output after the export ID and omits it from artifacts", async () => {
     const stored = await createStoredPdf();
-    const output = join(stored.root, "rotation");
-    const result = await extractStoredPdfPages(
-      stored.document,
-      stored.identity,
-      parsePageSelector("2"),
-      {
-        outputFormats: new Set(["pdf"]),
-        outputDirectory: output,
-        pngWidth: 1600,
-      },
-    );
-    const exported = await PDFDocument.load(readFileSync(result.files[0]!));
-    expect(exported.getPage(0).getRotation().angle).toBe(90);
-  });
-
-  test("creates no output directory when source verification fails", async () => {
-    const stored = await createStoredPdf();
-    const output = join(stored.root, "must-not-exist");
-
-    await expect(
-      extractStoredPdfPages(
-        stored.document,
-        { algorithm: "sha256", hash: "0".repeat(64) },
-        parsePageSelector("1"),
-        {
-          outputFormats: new Set(["pdf"]),
-          outputDirectory: output,
-          pngWidth: 1600,
-        },
-      ),
-    ).rejects.toMatchObject({ _tag: "SOURCE_FILE_CHANGED" });
-    expect(existsSync(output)).toBe(false);
-  });
-
-  test("distinguishes unavailable and unreadable source files", async () => {
-    const stored = await createStoredPdf();
-    const unavailable = new Document({
-      ...stored.document,
-      path: join(stored.root, "missing.pdf"),
-    });
-    const unreadable = new Document({
-      ...stored.document,
-      path: stored.root,
-    });
-
-    await expect(
-      extractStoredPdfPages(
-        unavailable,
-        stored.identity,
-        parsePageSelector("1"),
-        { outputFormats: new Set(["pdf"]), pngWidth: 1600 },
-      ),
-    ).rejects.toMatchObject({ _tag: "SOURCE_FILE_UNAVAILABLE" });
-    await expect(
-      extractStoredPdfPages(
-        unreadable,
-        stored.identity,
-        parsePageSelector("1"),
-        { outputFormats: new Set(["pdf"]), pngWidth: 1600 },
-      ),
-    ).rejects.toMatchObject({ _tag: "SOURCE_FILE_UNREADABLE" });
-  });
-
-  test("rejects stored metadata mismatch without publishing artifacts", async () => {
-    const stored = await createStoredPdf();
-    const output = join(stored.root, "metadata-mismatch");
-    const mismatched = new Document({
-      ...stored.document,
-      pageCount: stored.document.pageCount + 1,
-    });
-
-    await expect(
-      extractStoredPdfPages(
-        mismatched,
-        stored.identity,
-        parsePageSelector("1"),
-        {
-          outputFormats: new Set(["pdf"]),
-          outputDirectory: output,
-          pngWidth: 1600,
-        },
-      ),
-    ).rejects.toMatchObject({ _tag: "SOURCE_METADATA_MISMATCH" });
-    expect(existsSync(output)).toBe(false);
-  });
-
-  test("rejects stored byte-count mismatch without publishing artifacts", async () => {
-    const stored = await createStoredPdf();
-    const output = join(stored.root, "size-mismatch");
-    const mismatched = new Document({
-      ...stored.document,
-      sizeBytes: stored.document.sizeBytes + 1,
-    });
-
-    await expect(
-      extractStoredPdfPages(
-        mismatched,
-        stored.identity,
-        parsePageSelector("1"),
-        {
-          outputFormats: new Set(["pdf"]),
-          outputDirectory: output,
-          pngWidth: 1600,
-        },
-      ),
-    ).rejects.toMatchObject({ _tag: "SOURCE_METADATA_MISMATCH" });
-    expect(existsSync(output)).toBe(false);
-  });
-
-  test("rejects a non-directory output path without replacing it", async () => {
-    const stored = await createStoredPdf();
-    const output = join(stored.root, "not-a-directory");
-    writeFileSync(output, "keep me");
-
-    await expect(
-      extractStoredPdfPages(
-        stored.document,
-        stored.identity,
-        parsePageSelector("1"),
-        {
-          outputFormats: new Set(["pdf"]),
-          outputDirectory: output,
-          pngWidth: 1600,
-        },
-      ),
-    ).rejects.toMatchObject({ _tag: "OUTPUT_DIRECTORY_ERROR" });
-    expect(readFileSync(output, "utf8")).toBe("keep me");
-  });
-
-  test("removes staged and published artifacts after rendering failure", async () => {
-    const stored = await createStoredPdf();
-    const output = join(stored.root, "failed-render");
-    let call = 0;
-    vi.spyOn(PDFParse.prototype, "getScreenshot").mockImplementation(
-      async () => {
-        call++;
-        if (call === 2) throw new Error("renderer failed");
-        return {
-          total: 1,
-          pages: [
-            {
-              data: new Uint8Array([1, 2, 3]),
-              dataUrl: "",
-              pageNumber: 1,
-              width: 200,
-              height: 300,
-              scale: 1,
-            },
-          ],
-        };
-      },
-    );
-
-    await expect(
-      extractStoredPdfPages(
-        stored.document,
-        stored.identity,
-        parsePageSelector("1-2"),
-        {
-          outputFormats: new Set(["pdf", "png"]),
-          outputDirectory: output,
-          pngWidth: 200,
-        },
-      ),
-    ).rejects.toMatchObject({ _tag: "PNG_RENDER_FAILED" });
-
-    expect(existsSync(output)).toBe(true);
-    expect(readdirSync(output)).toEqual([]);
-  });
-
-  test("does not overwrite an entry that appears after rendering", async () => {
-    const stored = await createStoredPdf();
-    const output = join(stored.root, "late-collision");
-    vi.spyOn(PDFParse.prototype, "getScreenshot").mockImplementation(
-      async () => {
-        const stageName = readdirSync(output).find((name) =>
-          name.endsWith(".stage"),
-        );
-        if (!stageName) throw new Error("staging directory not found");
-        const exportId = stageName.match(
-          /^\.poink-export-([a-z0-9]{8})\.stage$/,
-        )?.[1];
-        if (!exportId) throw new Error("export ID not found");
-        writeFileSync(
-          join(output, `abc123-${exportId}-page-0001.png`),
-          "unrelated entry",
-        );
-        return {
-          total: 1,
-          pages: [
-            {
-              data: new Uint8Array([1, 2, 3]),
-              dataUrl: "",
-              pageNumber: 1,
-              width: 200,
-              height: 300,
-              scale: 1,
-            },
-          ],
-        };
-      },
-    );
-
-    await expect(
-      extractStoredPdfPages(
-        stored.document,
-        stored.identity,
-        parsePageSelector("1"),
-        {
-          outputFormats: new Set(["pdf", "png"]),
-          outputDirectory: output,
-          pngWidth: 200,
-        },
-      ),
-    ).rejects.toMatchObject({ _tag: "OUTPUT_COLLISION" });
-
-    const entries = readdirSync(output);
-    expect(entries).toHaveLength(1);
-    expect(readFileSync(join(output, entries[0]!), "utf8")).toBe(
-      "unrelated entry",
-    );
-  });
-
-  test("treats a late broken symlink as a collision where supported", async () => {
-    if (process.platform === "win32") return;
-    const stored = await createStoredPdf();
-    const output = join(stored.root, "late-symlink-collision");
-    vi.spyOn(PDFParse.prototype, "getScreenshot").mockImplementation(
-      async () => {
-        const stageName = readdirSync(output).find((name) =>
-          name.endsWith(".stage"),
-        );
-        const exportId = stageName?.match(
-          /^\.poink-export-([a-z0-9]{8})\.stage$/,
-        )?.[1];
-        if (!exportId) throw new Error("export ID not found");
-        symlinkSync(
-          "missing-target",
-          join(output, `abc123-${exportId}-page-0001.png`),
-        );
-        return {
-          total: 1,
-          pages: [
-            {
-              data: new Uint8Array([1]),
-              dataUrl: "",
-              pageNumber: 1,
-              width: 200,
-              height: 300,
-              scale: 1,
-            },
-          ],
-        };
-      },
-    );
-
-    await expect(
-      extractStoredPdfPages(
-        stored.document,
-        stored.identity,
-        parsePageSelector("1"),
-        {
-          outputFormats: new Set(["png"]),
-          outputDirectory: output,
-          pngWidth: 200,
-        },
-      ),
-    ).rejects.toMatchObject({ _tag: "OUTPUT_COLLISION" });
-    expect(readdirSync(output)).toHaveLength(1);
-  });
-
-  test("managed output omits the export ID from artifact names", async () => {
-    const stored = await createStoredPdf();
-    const result = await extractStoredPdfPages(
-      stored.document,
-      stored.identity,
-      parsePageSelector("2"),
-      {
-        outputFormats: new Set(["pdf"]),
-        pngWidth: 1600,
-      },
-    );
+    const result = await extractPages(stored, "2");
     tempDirectories.push(result.outputDirectory);
 
     expect(basename(result.outputDirectory)).toBe(result.exportId);
@@ -552,6 +309,18 @@ describe("page extraction artifacts", () => {
       "abc123.pdf",
     ]);
   });
+
+  test.skipIf(process.platform === "win32")(
+    "uses private permissions for managed output",
+    async () => {
+      const stored = await createStoredPdf();
+      const result = await extractPages(stored, "1");
+      tempDirectories.push(result.outputDirectory);
+
+      expect(statSync(result.outputDirectory).mode & 0o777).toBe(0o700);
+      expect(statSync(result.files[0]!).mode & 0o777).toBe(0o600);
+    },
+  );
 
   test("allows an existing output-directory symlink and returns its canonical path", async () => {
     const stored = await createStoredPdf();
@@ -564,21 +333,156 @@ describe("page extraction artifacts", () => {
       return;
     }
 
-    const result = await extractStoredPdfPages(
-      stored.document,
-      stored.identity,
-      parsePageSelector("1"),
-      {
-        outputFormats: new Set(["pdf"]),
-        outputDirectory: linked,
-        pngWidth: 1600,
-      },
-    );
+    const result = await extractPages(stored, "1", { outputDirectory: linked });
 
     const canonicalTarget = realpathSync(target);
     expect(result.outputDirectory).toBe(canonicalTarget);
     expect(result.files[0]!.startsWith(canonicalTarget)).toBe(true);
   });
+
+  test("fails source verification without leaking the hash or creating output", async () => {
+    const stored = await createStoredPdf();
+    const output = join(stored.root, "must-not-exist");
+    const secretHash = "f".repeat(64);
+
+    const failure: unknown = await extractPages(stored, "1", {
+      identity: { algorithm: "sha256", hash: secretHash },
+      outputDirectory: output,
+    }).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+
+    expect(failure).toBeInstanceOf(SourceFileChangedError);
+    const message = failure instanceof Error ? failure.message : "";
+    expect(message).not.toContain(secretHash);
+    expect(message).not.toContain("poink-snapshot-");
+    expect(existsSync(output)).toBe(false);
+  });
+
+  test.each([
+    ["SOURCE_FILE_UNAVAILABLE", (root: string) => join(root, "missing.pdf")],
+    ["SOURCE_FILE_UNREADABLE", (root: string) => root],
+  ] as const)("rejects a source path with %s", async (tag, sourcePath) => {
+    const stored = await createStoredPdf();
+    const document = new Document({
+      ...stored.document,
+      path: sourcePath(stored.root),
+    });
+
+    await expect(
+      extractPages(stored, "1", { document }),
+    ).rejects.toMatchObject({ _tag: tag });
+  });
+
+  test.each([
+    ["page count", { pageCount: 4 }],
+    ["byte count", { sizeBytes: 1 }],
+  ] as const)(
+    "rejects a stored %s mismatch without publishing artifacts",
+    async (_field, mismatch) => {
+      const stored = await createStoredPdf();
+      const output = join(stored.root, "mismatch");
+
+      await expect(
+        extractPages(stored, "1", {
+          document: new Document({ ...stored.document, ...mismatch }),
+          outputDirectory: output,
+        }),
+      ).rejects.toMatchObject({ _tag: "SOURCE_METADATA_MISMATCH" });
+      expect(existsSync(output)).toBe(false);
+    },
+  );
+
+  test("rejects a non-directory output path without replacing it", async () => {
+    const stored = await createStoredPdf();
+    const output = join(stored.root, "not-a-directory");
+    writeFileSync(output, "keep me");
+
+    await expect(
+      extractPages(stored, "1", { outputDirectory: output }),
+    ).rejects.toMatchObject({ _tag: "OUTPUT_DIRECTORY_ERROR" });
+    expect(readFileSync(output, "utf8")).toBe("keep me");
+  });
+
+  test("removes staged and published artifacts after rendering failure", async () => {
+    const stored = await createStoredPdf();
+    const output = join(stored.root, "failed-render");
+    let call = 0;
+    vi.spyOn(PDFParse.prototype, "getScreenshot").mockImplementation(
+      async () => {
+        call++;
+        if (call === 2) throw new Error("renderer failed");
+        return fakeScreenshot();
+      },
+    );
+
+    await expect(
+      extractPages(stored, "1-2", {
+        outputFormats: new Set(["pdf", "png"]),
+        outputDirectory: output,
+        pngWidth: 200,
+      }),
+    ).rejects.toMatchObject({ _tag: "PNG_RENDER_FAILED" });
+
+    expect(readdirSync(output)).toEqual([]);
+  });
+
+  test("does not overwrite an entry that appears after rendering", async () => {
+    const stored = await createStoredPdf();
+    const output = join(stored.root, "late-collision");
+    vi.spyOn(PDFParse.prototype, "getScreenshot").mockImplementation(
+      async () => {
+        writeFileSync(
+          join(output, `abc123-${stagedExportId(output)}-page-0001.png`),
+          "unrelated entry",
+        );
+        return fakeScreenshot();
+      },
+    );
+
+    await expect(
+      extractPages(stored, "1", {
+        outputFormats: new Set(["pdf", "png"]),
+        outputDirectory: output,
+        pngWidth: 200,
+      }),
+    ).rejects.toMatchObject({ _tag: "OUTPUT_COLLISION" });
+
+    const entries = readdirSync(output);
+    expect(entries).toHaveLength(1);
+    expect(readFileSync(join(output, entries[0]!), "utf8")).toBe(
+      "unrelated entry",
+    );
+  });
+
+  test.skipIf(process.platform === "win32")(
+    "treats a late broken symlink as a collision",
+    async () => {
+      const stored = await createStoredPdf();
+      const output = join(stored.root, "late-symlink-collision");
+      vi.spyOn(PDFParse.prototype, "getScreenshot").mockImplementation(
+        async () => {
+          symlinkSync(
+            "missing-target",
+            join(output, `abc123-${stagedExportId(output)}-page-0001.png`),
+          );
+          return fakeScreenshot();
+        },
+      );
+
+      await expect(
+        extractPages(stored, "1", {
+          outputFormats: new Set(["png"]),
+          outputDirectory: output,
+          pngWidth: 200,
+        }),
+      ).rejects.toMatchObject({ _tag: "OUTPUT_COLLISION" });
+      const entries = readdirSync(output);
+      expect(entries).toHaveLength(1);
+      expect(lstatSync(join(output, entries[0]!)).isSymbolicLink()).toBe(true);
+    },
+  );
 
   const signalTest = process.platform === "win32" ? test.skip : test;
   signalTest.each([
@@ -676,56 +580,4 @@ describe("page extraction artifacts", () => {
     },
     25_000,
   );
-
-  test("uses private permissions for managed output where supported", async () => {
-    if (process.platform === "win32") return;
-    const stored = await createStoredPdf();
-    const result = await extractStoredPdfPages(
-      stored.document,
-      stored.identity,
-      parsePageSelector("1"),
-      {
-        outputFormats: new Set(["pdf"]),
-        pngWidth: 1600,
-      },
-    );
-    tempDirectories.push(result.outputDirectory);
-
-    expect(statSync(result.outputDirectory).mode & 0o777).toBe(0o700);
-    expect(statSync(result.files[0]!).mode & 0o777).toBe(0o600);
-  });
-
-  test("does not include hashes or snapshot paths in integrity errors", async () => {
-    const stored = await createStoredPdf();
-    const secretHash = "f".repeat(64);
-    let failure: unknown;
-    try {
-      await extractStoredPdfPages(
-        stored.document,
-        { algorithm: "sha256", hash: secretHash },
-        parsePageSelector("1"),
-        {
-          outputFormats: new Set(["pdf"]),
-          outputDirectory: join(stored.root, "unused"),
-          pngWidth: 1600,
-        },
-      );
-    } catch (error) {
-      failure = error;
-    }
-
-    expect(failure).toBeInstanceOf(Error);
-    const message = failure instanceof Error ? failure.message : String(failure);
-    expect(message).not.toContain(secretHash);
-    expect(message).not.toContain("poink-snapshot-");
-  });
-
-  test("uses a stable error object for output failures", () => {
-    expect(
-      new PageExtractionError("OUTPUT_COLLISION", "collision"),
-    ).toMatchObject({
-      _tag: "OUTPUT_COLLISION",
-      message: "collision",
-    });
-  });
 });

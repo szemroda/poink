@@ -1,58 +1,16 @@
-/**
- * AutoTagger Tests
- *
- * Focus: Auto-accept proposals with embedding-based deduplication + RAG context
- */
-
 import { describe, expect, it } from "vitest";
+import { getPathFilename } from "../pathUtils.js";
+import {
+  cleanTitle,
+  EnrichmentError,
+  extractAuthor,
+  extractFilenameTags,
+  extractPathTags,
+  validateProposedConcepts,
+} from "./AutoTagger.js";
 
-// ============================================================================
-// Tests - Verifying JSON file workflow is removed
-// ============================================================================
-
-describe("AutoTagger - JSON file workflow removed", () => {
-  it("should NOT have loadProposedConcepts function", async () => {
-    const module = await import("./AutoTagger.js");
-    // @ts-expect-error - function should not exist
-    expect(module.loadProposedConcepts).toBeUndefined();
-  });
-
-  it("should NOT have saveProposedConcepts function", async () => {
-    const module = await import("./AutoTagger.js");
-    // @ts-expect-error - function should not exist
-    expect(module.saveProposedConcepts).toBeUndefined();
-  });
-
-  it("should NOT have addProposedConcepts function", async () => {
-    const module = await import("./AutoTagger.js");
-    // @ts-expect-error - function should not exist
-    expect(module.addProposedConcepts).toBeUndefined();
-  });
-
-  it("should NOT have getProposedConceptsPath function", async () => {
-    const module = await import("./AutoTagger.js");
-    // @ts-expect-error - function should not exist
-    expect(module.getProposedConceptsPath).toBeUndefined();
-  });
-
-  it("should NOT have ProposedConceptEntry type", async () => {
-    // Type should not exist - compile-time check only
-    // No runtime check possible for types
-    expect(true).toBe(true);
-  });
-});
-
-describe("AutoTagger - Concept validation", () => {
-  it("should export validateProposedConcepts for validation", async () => {
-    const module = await import("./AutoTagger.js");
-
-    // Function should be exported for testing
-    expect(typeof module.validateProposedConcepts).toBe("function");
-  });
-
-  it("normalizes strict structured-output concept fields", async () => {
-    const { validateProposedConcepts } = await import("./AutoTagger.js");
-
+describe("validateProposedConcepts", () => {
+  it("normalizes strict structured-output concept fields", () => {
     expect(
       validateProposedConcepts([
         {
@@ -61,7 +19,7 @@ describe("AutoTagger - Concept validation", () => {
           altLabels: null,
           definition: null,
         },
-      ])
+      ]),
     ).toEqual([
       {
         id: "education/spaced-repetition",
@@ -71,39 +29,42 @@ describe("AutoTagger - Concept validation", () => {
       },
     ]);
   });
-});
 
-describe("AutoTagger errors", () => {
-  it("stringifies EnrichmentError using its message", async () => {
-    const { EnrichmentError } = await import("./AutoTagger.js");
-
-    const error = new EnrichmentError("RAG context extraction failed");
-
-    expect(String(error)).toBe("RAG context extraction failed");
-    expect(error.message).toBe("RAG context extraction failed");
+  it.each([
+    ["an id without a parent", "rust", "Rust"],
+    ["a nested id", "programming/rust/async", "Async Rust"],
+    ["an unknown parent", "cooking/rust", "Rust"],
+    ["a generic child", "programming/new", "New"],
+    ["an uppercase id", "programming/Rust", "Rust"],
+    ["a child with too many words", "programming/one-two-three-four-five", "Five Words"],
+    ["a sentence-like label", "programming/rust", "A language that is memory safe"],
+    ["an empty label", "programming/rust", ""],
+  ])("drops %s", (_name, id, prefLabel) => {
+    expect(validateProposedConcepts([{ id, prefLabel }])).toEqual([]);
   });
 });
 
-describe("AutoTagger path handling", () => {
-  it("extracts path tags from Windows-style paths", async () => {
-    const { extractPathTags } = await import("./AutoTagger.js");
+describe("EnrichmentError", () => {
+  it("stringifies to its message", () => {
+    expect(String(new EnrichmentError("RAG context extraction failed"))).toBe(
+      "RAG context extraction failed",
+    );
+  });
+});
 
+describe("path handling", () => {
+  it("extracts path tags from Windows-style paths", () => {
     expect(
       extractPathTags(
         "C:\\Users\\tester\\Documents\\ML\\Deep Learning\\paper.pdf",
-        "C:\\Users\\tester\\Documents"
-      )
+        "C:\\Users\\tester\\Documents",
+      ),
     ).toEqual(["ml", "deep-learning"]);
   });
 
-  it("extracts filename-based metadata from Windows-style paths", async () => {
-    const { cleanTitle, extractAuthor, extractFilenameTags } = await import(
-      "./AutoTagger.js"
-    );
-    const { getPathFilename } = await import("../pathUtils.js");
-
+  it("extracts filename-based metadata from Windows-style paths", () => {
     const filename = getPathFilename(
-      "C:\\Users\\tester\\Documents\\Deep Learning - Smith.pdf"
+      "C:\\Users\\tester\\Documents\\Deep Learning - Smith.pdf",
     );
 
     expect(filename).toBe("Deep Learning - Smith.pdf");

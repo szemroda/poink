@@ -1,4 +1,4 @@
-﻿import { describe, expect, test } from "vitest";
+import { describe, expect, test as baseTest } from "vitest";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
@@ -7,75 +7,81 @@ import {
   mkdtempSync,
   readFileSync,
   renameSync,
-  rmSync,
   writeFileSync,
 } from "fs";
 import { createServer } from "net";
 import { tmpdir } from "os";
-import { join, relative, resolve } from "path";
+import { isAbsolute, join, relative, resolve } from "path";
 import { Client } from "@modelcontextprotocol/sdk/client";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { createClient } from "@libsql/client";
 import { PDFDocument } from "pdf-lib";
 import { removeDirWithRetries } from "./testUtils.js";
 
+type CliResult = { exitCode: number; stdout: string; stderr: string };
+type RunOptions = { cwd?: string; env?: Record<string, string | undefined> };
+type OutputFormat = "json" | "ndjson" | "text";
+
+type TestConfigOptions = {
+  modelProvider?: "ollama" | "openrouter";
+  format?: OutputFormat;
+  ingest?: { include?: string[]; exclude?: string[] };
+  secrets?: {
+    openrouterApiKey?: string;
+    libsqlAuthToken?: string;
+    serverToken?: string;
+  };
+};
+
+/** A temp directory holding `config.json`; the library lives in it or in `librarySubdir`. */
+type TestLibrary = {
+  root: string;
+  libraryPath: string;
+  configPath: string;
+  env: Record<string, string>;
+  /** Runs the CLI with this library's config. */
+  run: (argv: string[], options?: RunOptions) => CliResult;
+};
+
 function nodeTsxArgs(args: string[]): string[] {
   return ["--import", import.meta.resolve("tsx"), resolve("src/cli.ts"), ...args];
-}
-
-function npmCommand(): string {
-  return process.platform === "win32" ? "npm.cmd" : "npm";
 }
 
 function sleep(delayMs: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, delayMs));
 }
 
-function makeTestConfig(
-  libraryPath: string,
-  modelProvider: "ollama" | "openrouter" = "ollama",
-  cliFormat: "json" | "ndjson" | "text" = "text",
-  ingestSelection: { include?: string[]; exclude?: string[] } = {},
-) {
-  const models =
-    modelProvider === "openrouter"
-      ? {
-          embedding: {
-            provider: "openrouter",
-            model: "openai/text-embedding-3-small",
-          },
-          enrichment: {
-            provider: "openrouter",
-            model: "anthropic/claude-3.5-haiku",
-          },
-          judge: {
-            provider: "openrouter",
-            model: "anthropic/claude-3.5-haiku",
-          },
-        }
-      : {
-          embedding: {
-            provider: "ollama",
-            model: "mxbai-embed-large",
-          },
-          enrichment: {
-            provider: "ollama",
-            model: "llama3.2:3b",
-          },
-          judge: {
-            provider: "ollama",
-            model: "llama3.2:3b",
-          },
-        };
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
 
+function modelsFor(provider: "ollama" | "openrouter") {
+  if (provider === "openrouter") {
+    const language = { provider, model: "anthropic/claude-3.5-haiku" };
+    return {
+      embedding: { provider, model: "openai/text-embedding-3-small" },
+      enrichment: language,
+      judge: language,
+    };
+  }
+  const language = { provider, model: "llama3.2:3b" };
+  return {
+    embedding: { provider, model: "mxbai-embed-large" },
+    enrichment: language,
+    judge: language,
+  };
+}
+
+// Ollama points at an unreachable port so semantic paths fail fast with PROVIDER_NOT_READY.
+function makeTestConfig(libraryPath: string, options: TestConfigOptions) {
   return {
     version: 1,
     library: { path: libraryPath },
     chunking: { strategy: "text", size: 2000, overlap: 200 },
-    cli: { globalFlags: { format: cliFormat } },
+    cli: { globalFlags: { format: options.format ?? "text" } },
     ingest: {
-      include: ingestSelection.include ?? [],
-      exclude: ingestSelection.exclude ?? [],
+      include: options.ingest?.include ?? [],
+      exclude: options.ingest?.exclude ?? [],
       urlDownloads: {
         maxFileSize: "100mb",
         timeout: "30s",
@@ -84,12 +90,9 @@ function makeTestConfig(
         allowedPrivateNetworkHosts: [],
       },
     },
-    models,
+    models: modelsFor(options.modelProvider ?? "ollama"),
     providers: {
-      ollama: {
-        baseUrl: "http://127.0.0.1:1",
-        autoPull: true,
-      },
+      ollama: { baseUrl: "http://127.0.0.1:1", autoPull: true },
       gateway: { apiKeyEnv: "AI_GATEWAY_API_KEY" },
       openai: {
         apiKeyEnv: "OPENAI_API_KEY",
@@ -98,10 +101,14 @@ function makeTestConfig(
       openrouter: {
         apiKeyEnv: "OPENROUTER_API_KEY",
         baseUrl: "https://openrouter.ai/api/v1",
+        apiKey: options.secrets?.openrouterApiKey,
       },
     },
     storage: {
-      libsql: { url: `file:${join(libraryPath, "library.db")}` },
+      libsql: {
+        url: `file:${join(libraryPath, "library.db")}`,
+        authToken: options.secrets?.libsqlAuthToken,
+      },
     },
     server: {
       host: "127.0.0.1",
@@ -109,47 +116,9 @@ function makeTestConfig(
       auth: {
         enabled: false,
         tokenEnv: "POINK_SERVER_TOKEN",
+        token: options.secrets?.serverToken,
       },
     },
-  };
-}
-
-function writeTestConfig(
-  configPath: string,
-  libraryPath: string,
-  modelProvider?: "ollama" | "openrouter",
-  cliFormat?: "json" | "ndjson" | "text",
-  ingestSelection?: { include?: string[]; exclude?: string[] },
-): void {
-  writeFileSync(
-    configPath,
-    JSON.stringify(
-      makeTestConfig(libraryPath, modelProvider, cliFormat, ingestSelection),
-      null,
-      2,
-    ),
-    "utf-8",
-  );
-}
-
-function writeTestConfigWithIngestSelection(
-  configPath: string,
-  libraryPath: string,
-  ingestSelection: { include?: string[]; exclude?: string[] },
-): void {
-  writeTestConfig(
-    configPath,
-    libraryPath,
-    undefined,
-    undefined,
-    ingestSelection,
-  );
-}
-
-function envForConfig(configPath: string): Record<string, string> {
-  return {
-    POINK_CONFIG: configPath,
-    POINK_LOG_LEVEL: "silent",
   };
 }
 
@@ -157,201 +126,1260 @@ function childEnv(
   overrides: Record<string, string | undefined> = {},
 ): Record<string, string> {
   return Object.fromEntries(
-    Object.entries({
-      ...process.env,
-      ...overrides,
-    }).filter((entry): entry is [string, string] => entry[1] !== undefined),
+    Object.entries({ ...process.env, ...overrides }).filter(
+      (entry): entry is [string, string] => entry[1] !== undefined,
+    ),
   );
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
-
-function unknownArray(value: unknown): unknown[] {
-  if (!Array.isArray(value)) return [];
-  return value;
-}
-
-function isTextContent(
-  value: unknown,
-): value is { type: "text"; text: string } {
-  return (
-    isRecord(value) &&
-    value.type === "text" &&
-    typeof value.text === "string"
-  );
-}
-
-type CapabilityCommand = {
-  name: string;
-  argv?: string[];
-};
-
-function isCapabilityCommand(value: unknown): value is CapabilityCommand {
-  return isRecord(value) && typeof value.name === "string";
-}
-
-type TestConfigWithStoredSecrets = ReturnType<typeof makeTestConfig> & {
-  providers: ReturnType<typeof makeTestConfig>["providers"] & {
-    openrouter: ReturnType<
-      typeof makeTestConfig
-    >["providers"]["openrouter"] & {
-      apiKey?: string;
-    };
-  };
-  storage: {
-    libsql: ReturnType<typeof makeTestConfig>["storage"]["libsql"] & {
-      authToken?: string;
-    };
-  };
-  server: ReturnType<typeof makeTestConfig>["server"] & {
-    auth: ReturnType<typeof makeTestConfig>["server"]["auth"] & {
-      token?: string;
-    };
-  };
-};
-
-function makeTestConfigWithStoredSecrets(
-  libraryPath: string,
-): TestConfigWithStoredSecrets {
-  return makeTestConfig(libraryPath);
-}
-
-function insertStoredMarkdownDocumentInChild(
-  libraryPath: string,
-  options: {
-    id?: string;
-    title?: string;
-    path: string;
-    content: string;
-  },
-): void {
-  const payload = JSON.stringify({
-    dbPath: join(libraryPath, "library.db"),
-    id: options.id ?? "doc-1",
-    title: options.title ?? "Source",
-    path: options.path,
-    sizeBytes: Buffer.byteLength(options.content),
-  });
-  const script = `
-    import { createClient } from "@libsql/client";
-    const payload = ${payload};
-    const db = createClient({ url: "file:" + payload.dbPath });
-    try {
-      await db.execute({
-        sql: \`INSERT INTO documents
-                (id, title, path, added_at, page_count, size_bytes, tags,
-                 file_type, metadata)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)\`,
-        args: [
-          payload.id,
-          payload.title,
-          payload.path,
-          "2026-01-01T00:00:00.000Z",
-          1,
-          payload.sizeBytes,
-          "[]",
-          "markdown",
-          "{}",
-        ],
-      });
-    } finally {
-      db.close();
-    }
-  `;
-  const proc = spawnSync(process.execPath, ["--input-type=module", "--eval", script], {
+function runCli(argv: string[], options: RunOptions = {}): CliResult {
+  const proc = spawnSync(process.execPath, nodeTsxArgs(argv), {
+    cwd: options.cwd,
+    env: childEnv(options.env),
     encoding: "utf-8",
+    timeout: 30_000,
   });
-  if (proc.status !== 0) {
-    throw new Error(
-      `Failed to seed markdown document: ${proc.stderr || proc.stdout}`,
-    );
+  if (proc.error) throw proc.error;
+  return { exitCode: proc.status ?? 1, stdout: proc.stdout, stderr: proc.stderr };
+}
+
+function setupLibrary(
+  root: string,
+  options: TestConfigOptions & { librarySubdir?: string } = {},
+): TestLibrary {
+  const libraryPath =
+    options.librarySubdir === undefined ? root : join(root, options.librarySubdir);
+  const configPath = join(root, "config.json");
+  writeFileSync(
+    configPath,
+    JSON.stringify(makeTestConfig(libraryPath, options), null, 2),
+    "utf-8",
+  );
+  const env = { POINK_CONFIG: configPath, POINK_LOG_LEVEL: "silent" };
+  return {
+    root,
+    libraryPath,
+    configPath,
+    env,
+    run: (argv, runOptions) =>
+      runCli(argv, { cwd: runOptions?.cwd, env: { ...env, ...runOptions?.env } }),
+  };
+}
+
+// `tmp` is a fresh temp dir; `lib` is a default-configured library inside it.
+const test = baseTest.extend<{ tmp: string; lib: TestLibrary }>({
+  tmp: async ({}, use) => {
+    const dir = mkdtempSync(join(tmpdir(), "poink-cli-contract-"));
+    await use(dir);
+    await removeDirWithRetries(dir);
+  },
+  lib: async ({ tmp }, use) => {
+    await use(setupLibrary(tmp));
+  },
+});
+
+function readSavedConfig(lib: TestLibrary): unknown {
+  return JSON.parse(readFileSync(lib.configPath, "utf-8"));
+}
+
+function valueAtPath(value: unknown, path: string): unknown {
+  return path
+    .split(".")
+    .reduce<unknown>((current, key) => (isRecord(current) ? current[key] : undefined), value);
+}
+
+function openLibraryDb(libraryPath: string) {
+  return createClient({ url: `file:${join(libraryPath, "library.db")}` });
+}
+
+type StoredDocument = {
+  id: string;
+  title: string;
+  path: string;
+  pageCount: number;
+  sizeBytes: number;
+  fileType: "markdown" | "pdf";
+  metadata?: Record<string, unknown>;
+  sourceHash?: string;
+};
+
+/** Initializes the library schema via the CLI, then inserts a document row directly. */
+async function seedDocument(lib: TestLibrary, doc: StoredDocument): Promise<void> {
+  expect(lib.run(["stats"]).exitCode).toBe(0);
+  const db = openLibraryDb(lib.libraryPath);
+  try {
+    await db.execute({
+      sql: `INSERT INTO documents
+              (id, title, path, added_at, page_count, size_bytes, tags,
+               file_type, metadata, source_hash_algorithm, source_hash)
+            VALUES (?, ?, ?, '2026-01-01T00:00:00.000Z', ?, ?, '[]', ?, ?, ?, ?)`,
+      args: [
+        doc.id,
+        doc.title,
+        doc.path,
+        doc.pageCount,
+        doc.sizeBytes,
+        doc.fileType,
+        JSON.stringify(doc.metadata ?? {}),
+        doc.sourceHash === undefined ? null : "sha256",
+        doc.sourceHash ?? null,
+      ],
+    });
+  } finally {
+    db.close();
   }
 }
 
-function runCli(
-  argv: string[],
-  opts?: { cwd?: string; env?: Record<string, string | undefined> },
-): { exitCode: number; stdout: string; stderr: string } {
-  const proc = spawnSync(process.execPath, nodeTsxArgs(argv), {
-    cwd: opts?.cwd,
-    env: childEnv(opts?.env),
-    encoding: "utf-8",
-  });
-
-  return {
-    exitCode: proc.status ?? 0,
-    stdout: proc.stdout,
-    stderr: proc.stderr,
-  };
-}
-
-type TimingMetadata = {
-  totalMs: number;
-  commandMs?: number;
-};
-
 function expectDuration(value: unknown): number {
-  expect(typeof value).toBe("number");
   if (typeof value !== "number") {
-    throw new Error("Expected duration to be a number");
+    throw new Error(`Expected a duration, got ${String(value)}`);
   }
   expect(Number.isFinite(value)).toBe(true);
   expect(value).toBeGreaterThanOrEqual(0);
-  const fractionalDigits = String(value).split(".")[1]?.length ?? 0;
-  expect(fractionalDigits).toBeLessThanOrEqual(3);
+  expect(String(value).split(".")[1]?.length ?? 0).toBeLessThanOrEqual(3);
   return value;
 }
 
+/** Asserts verbose `meta` holds the version and millisecond timings (at most 3 decimals). */
 function expectTimingMetadata(
   meta: unknown,
   options: { command: boolean },
-): TimingMetadata {
-  expect(meta).toBeDefined();
-  if (typeof meta !== "object" || meta === null) {
-    throw new Error("Expected metadata object");
-  }
-  const metaRecord = meta as Record<string, unknown>;
-  expect(typeof metaRecord.poinkVersion).toBe("string");
-  expect("timingMs" in metaRecord).toBe(false);
-  expect("protocolVersion" in metaRecord).toBe(false);
-
-  if (typeof metaRecord.timing !== "object" || metaRecord.timing === null) {
-    throw new Error("Expected timing metadata object");
-  }
-  const timingRecord = metaRecord.timing as Record<string, unknown>;
-  const totalMs = expectDuration(timingRecord.totalMs);
-
-  if (!options.command) {
-    expect("commandMs" in timingRecord).toBe(false);
-    return { totalMs };
+): { totalMs: number; commandMs?: number } {
+  const duration = expect.any(Number);
+  expect(meta).toStrictEqual({
+    poinkVersion: expect.any(String),
+    timing: options.command
+      ? { totalMs: duration, commandMs: duration }
+      : { totalMs: duration },
+  });
+  if (!isRecord(meta) || !isRecord(meta.timing)) {
+    throw new Error("Expected timing metadata");
   }
 
-  const commandMs = expectDuration(timingRecord.commandMs);
+  const totalMs = expectDuration(meta.timing.totalMs);
+  if (!options.command) return { totalMs };
+
+  const commandMs = expectDuration(meta.timing.commandMs);
   expect(totalMs).toBeGreaterThanOrEqual(commandMs);
   return { totalMs, commandMs };
 }
 
-function withTempLibraryPath<T>(fn: (libraryPath: string) => T): T {
-  const dir = mkdtempSync(join(tmpdir(), "poink-cli-contract-"));
+describe("Node Build Smoke", () => {
+  test(
+    "dist CLI runs with node",
+    ({ lib }) => {
+      // npm is a .cmd shim on Windows, which Node only spawns through a shell.
+      const build = spawnSync("npm run build", { encoding: "utf-8", shell: true });
+      if (build.error) throw build.error;
+      if (build.status !== 0) throw new Error(build.stderr || build.stdout);
+
+      const proc = spawnSync(
+        process.execPath,
+        ["dist/cli.js", "help", "--format", "json"],
+        { env: childEnv(lib.env), encoding: "utf-8" },
+      );
+
+      expect(proc.status).toBe(0);
+      expect(JSON.parse(proc.stdout)).toMatchObject({ ok: true, command: "help" });
+    },
+    60_000,
+  );
+});
+
+describe("CLI JSON Envelope Contract", () => {
+  test("page extract uses exact IDs and returns only published absolute paths", async ({ lib }) => {
+    const outputPath = join(lib.root, "exports");
+    const sourcePath = join(lib.root, "source.pdf");
+    const pdf = await PDFDocument.create();
+    pdf.addPage([200, 300]);
+    pdf.addPage([300, 200]);
+    const sourceBytes = await pdf.save();
+    writeFileSync(sourcePath, sourceBytes);
+    await seedDocument(lib, {
+      id: "abc123-extra",
+      title: "Stored PDF",
+      path: sourcePath,
+      pageCount: 2,
+      sizeBytes: sourceBytes.length,
+      fileType: "pdf",
+      sourceHash: createHash("sha256").update(sourceBytes).digest("hex"),
+    });
+
+    const prefix = lib.run(["page", "extract", "abc123", "1", "--format", "json"]);
+    expect(prefix.exitCode).toBe(1);
+    expect(JSON.parse(prefix.stdout).error.code).toBe("NOT_FOUND");
+
+    const json = lib.run([
+      "page", "extract", "abc123-extra", "2,1",
+      "--output-dir", outputPath, "--format", "json",
+    ]);
+    expect(json.exitCode).toBe(0);
+    const envelope = JSON.parse(json.stdout);
+    expect(envelope).toStrictEqual({
+      ok: true,
+      command: "page",
+      result: {
+        docId: "abc123-extra",
+        exportId: expect.any(String),
+        pages: [1, 2],
+        outputDirectory: outputPath,
+        files: [expect.stringMatching(/abc123-extra-[a-z0-9]{8}\.pdf$/)],
+      },
+    });
+    const [file] = envelope.result.files;
+    expect(isAbsolute(file)).toBe(true);
+    expect(file).not.toContain(".stage");
+    expect(existsSync(file)).toBe(true);
+
+    const text = lib.run([
+      "page", "extract", "abc123-extra", "2", "--output-dir", outputPath,
+    ]);
+    expect(text.exitCode).toBe(0);
+    const lines = text.stdout.trim().split(/\r?\n/);
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toBe("Exported pages: 2");
+    expect(existsSync(lines[1]!)).toBe(true);
+  });
+
+  test("stats emits text output by default", ({ lib }) => {
+    const res = lib.run(["stats"]);
+
+    expect(res.exitCode).toBe(0);
+    expect(res.stdout).toContain("PDF Library Stats");
+    expect(res.stdout).toContain("Documents:  0");
+  });
+
+  test("list is compact by default and retains legacy payload in verbose mode", ({ lib }) => {
+    const compact = lib.run(["list", "--format", "json"]);
+    expect(compact.exitCode).toBe(0);
+    expect(JSON.parse(compact.stdout).result).toEqual({ documents: [] });
+
+    const verbose = lib.run(["list", "--format", "json", "--verbose"]);
+    expect(verbose.exitCode).toBe(0);
+    expect(JSON.parse(verbose.stdout).result).toEqual({ tag: null, documents: [] });
+  });
+
+  test("stats emits a minimal JSON envelope by default", ({ lib }) => {
+    const res = lib.run(["stats", "--format", "json"]);
+
+    expect(res.exitCode).toBe(0);
+    expect(JSON.parse(res.stdout)).toStrictEqual({
+      ok: true,
+      command: "stats",
+      result: expect.objectContaining({
+        libraryPath: lib.libraryPath,
+        documents: 0,
+        chunks: 0,
+        embeddings: 0,
+      }),
+    });
+  });
+
+  test("stats with --verbose includes timing metadata and nextActions", ({ lib }) => {
+    const res = lib.run(["stats", "--format", "json", "--verbose"]);
+
+    expect(res.exitCode).toBe(0);
+    const obj = JSON.parse(res.stdout);
+    expect(obj).toMatchObject({ ok: true, command: "stats" });
+    expect(Object.keys(obj).sort()).toEqual(["command", "meta", "nextActions", "ok", "result"]);
+    const timing = expectTimingMetadata(obj.meta, { command: true });
+    if (timing.commandMs === undefined) throw new Error("Expected command timing");
+    // Total timing covers process startup, not just the command body.
+    expect(timing.totalMs - timing.commandMs).toBeGreaterThan(10);
+    expect(Array.isArray(obj.nextActions)).toBe(true);
+    expect(obj.nextActions.length).toBeGreaterThan(0);
+  });
+
+  test("verbose text output does not expose timing metadata", ({ lib }) => {
+    const compact = lib.run(["stats", "--format", "text"]);
+    const verbose = lib.run(["stats", "--format", "text", "--verbose"]);
+
+    expect(verbose.exitCode).toBe(0);
+    expect(verbose.stdout).toBe(compact.stdout);
+    expect(verbose.stdout).not.toContain("timing");
+  });
+
+  test("configured default format applies unless --format overrides it", ({ tmp }) => {
+    const lib = setupLibrary(tmp, { format: "json" });
+
+    const configured = lib.run(["stats"]);
+    expect(configured.exitCode).toBe(0);
+    expect(JSON.parse(configured.stdout)).toMatchObject({ ok: true, command: "stats" });
+
+    const overridden = lib.run(["stats", "--format", "text"]);
+    expect(overridden.exitCode).toBe(0);
+    expect(overridden.stdout).toContain("PDF Library Stats");
+    expect(() => JSON.parse(overridden.stdout)).toThrow();
+  });
+
+  test("root-level --format is rejected by default", ({ lib }) => {
+    const res = lib.run(["--format", "json", "stats"]);
+
+    expect(res.exitCode).not.toBe(0);
+    expect(res.stdout).toBe("");
+    expect(res.stderr).toContain("INVALID_FLAG");
+    expect(res.stderr).toContain("unknown option");
+  });
+
+  test("root-level --format returns a structured error envelope when configured for JSON", ({ tmp }) => {
+    const lib = setupLibrary(tmp, { format: "json" });
+
+    const res = lib.run(["--format", "text", "stats"]);
+
+    expect(res.exitCode).not.toBe(0);
+    const obj = JSON.parse(res.stdout);
+    expect(Object.keys(obj).sort()).toEqual(["command", "error", "ok"]);
+    expect(obj).toMatchObject({ ok: false, error: { code: "INVALID_FLAG" } });
+  });
+
+  test("unknown command option returns a structured INVALID_FLAG envelope", ({ lib }) => {
+    const res = lib.run(["stats", "--bogus", "--format", "json"]);
+
+    expect(res.exitCode).not.toBe(0);
+    expect(JSON.parse(res.stdout)).toMatchObject({
+      ok: false,
+      command: "stats",
+      error: { code: "INVALID_FLAG", message: expect.stringContaining("--bogus") },
+    });
+  });
+
+  test("verbose parse errors include timing metadata", ({ lib }) => {
+    const res = lib.run(["stats", "--bogus", "--format", "json", "--verbose"]);
+
+    expect(res.exitCode).not.toBe(0);
+    expectTimingMetadata(JSON.parse(res.stdout).meta, { command: false });
+  });
+
+  test("verbose command failures include command timing", ({ lib }) => {
+    const res = lib.run(["read", "missing-document", "--format", "json", "--verbose"]);
+
+    expect(res.exitCode).not.toBe(0);
+    const obj = JSON.parse(res.stdout);
+    expect(obj).toMatchObject({ ok: false, error: { code: "NOT_FOUND" } });
+    expect(Object.keys(obj).sort()).toEqual(["command", "error", "meta", "ok"]);
+    expectTimingMetadata(obj.meta, { command: true });
+  });
+
+  test("missing required command argument returns a structured INVALID_ARGS envelope", ({ lib }) => {
+    const res = lib.run(["search", "--format", "json"]);
+
+    expect(res.exitCode).not.toBe(0);
+    expect(JSON.parse(res.stdout)).toMatchObject({
+      ok: false,
+      command: "search",
+      error: { code: "INVALID_ARGS", message: expect.stringContaining("query") },
+    });
+  });
+
+  test.for([
+    { command: "search", args: ["--limit", "invalid", "--", "--help"] },
+    { command: "search", args: ["--limit", "invalid", "--tag", "--help", "alpha"] },
+    { command: "search-pack", args: ["--limit", "invalid", "--", "--version"] },
+  ])("literal help text does not bypass malformed config: $command $args", ({ command, args }, { lib }) => {
+    writeFileSync(lib.configPath, "{invalid");
+
+    // An invalid limit prevents a failing implementation from opening the default library.
+    const response = lib.run([command, "--format", "json", ...args]);
+
+    expect(response.exitCode).toBe(1);
+    expect(JSON.parse(response.stdout).error).toMatchObject({
+      code: "UNKNOWN_ERROR",
+      message: expect.stringContaining("JSON"),
+    });
+  });
+
+  test("search keeps flag-like option values out of output settings", ({ lib }) => {
+    const response = lib.run([
+      "search", "--fts", "--docs-only", "--tag", "--verbose", "alpha", "--format", "json",
+    ]);
+
+    expect(response.exitCode).toBe(0);
+    expect(JSON.parse(response.stdout)).toEqual({
+      ok: true,
+      command: "search",
+      result: { retrievalMode: "fts", concepts: [], documents: [] },
+    });
+  });
+
+  test("search omits echoed input by default and restores it in verbose mode", ({ lib }) => {
+    const compact = lib.run(["search", "absent", "--fts", "--docs-only", "--format", "json"]);
+    expect(compact.exitCode).toBe(0);
+    expect(JSON.parse(compact.stdout).result).toEqual({
+      retrievalMode: "fts",
+      concepts: [],
+      documents: [],
+    });
+
+    // Options before the query must not swallow it.
+    const verbose = lib.run([
+      "search", "--fts", "absent", "--docs-only", "--format", "json", "--verbose",
+    ]);
+    expect(verbose.exitCode).toBe(0);
+    expect(JSON.parse(verbose.stdout).result).toMatchObject({
+      query: "absent",
+      retrievalMode: "fts",
+      options: { ftsOnly: true },
+      concepts: [],
+      documents: [],
+    });
+  });
+
+  test("search-pack preserves queries around options and after the option terminator", ({ lib }) => {
+    const response = lib.run([
+      "search-pack", "alpha", "--fts", "beta", "--limit=2", "--format", "json", "--", "--draft",
+    ]);
+
+    expect(response.exitCode).toBe(0);
+    expect(JSON.parse(response.stdout).result.perQuery).toEqual([
+      { query: "alpha", documents: [] },
+      { query: "beta", documents: [] },
+      { query: "--draft", documents: [] },
+    ]);
+  });
+
+  test("search-pack omits echoed top-level input by default", ({ lib }) => {
+    const compact = lib.run(["search-pack", "absent", "--fts", "--format", "json"]);
+    expect(compact.exitCode).toBe(0);
+    expect(JSON.parse(compact.stdout).result).toEqual({
+      retrievalMode: "fts",
+      perQuery: [{ query: "absent", documents: [] }],
+      deduped: [],
+    });
+
+    const verbose = lib.run([
+      "search-pack", "absent", "--fts", "--format", "json", "--verbose",
+    ]);
+    expect(verbose.exitCode).toBe(0);
+    expect(JSON.parse(verbose.stdout).result).toMatchObject({
+      queries: ["absent"],
+      retrievalMode: "fts",
+      options: { ftsOnly: true },
+    });
+  });
+
+  test("semantic search reports provider failure instead of falling back to FTS", ({ lib }) => {
+    const res = lib.run(["search", "absent", "--docs-only", "--format", "json", "--verbose"]);
+
+    expect(res.exitCode).not.toBe(0);
+    expect(JSON.parse(res.stdout)).toMatchObject({
+      ok: false,
+      command: "search",
+      error: {
+        code: "PROVIDER_NOT_READY",
+        details: { provider: "ollama", requestedRetrievalMode: "hybrid" },
+      },
+    });
+  });
+
+  test("rechunk flag validation: --max-docs requires a numeric value", ({ lib }) => {
+    const res = lib.run(["rechunk", "--max-docs", "--format", "json"]);
+
+    expect(res.exitCode).not.toBe(0);
+    expect(JSON.parse(res.stdout)).toMatchObject({
+      ok: false,
+      error: { code: "INVALID_ARGS", message: expect.stringContaining("--max-docs") },
+    });
+  });
+
+  test(
+    "source integrity drives rechunk planning and deep doctor without exposing hashes",
+    async ({ lib }) => {
+      const sourcePath = join(lib.libraryPath, "source.md");
+      const content = "# Source\n\noriginal\n";
+      writeFileSync(sourcePath, content);
+      await seedDocument(lib, {
+        id: "doc-1",
+        title: "Source",
+        path: sourcePath,
+        pageCount: 1,
+        sizeBytes: Buffer.byteLength(content),
+        fileType: "markdown",
+        metadata: {
+          chunker: {
+            id: "markdown-extractor:shared-context-v4",
+            version: 4,
+            unit: "chars",
+            chunkSize: 2000,
+            chunkOverlap: 200,
+          },
+        },
+      });
+      const runJson = (argv: string[]) =>
+        JSON.parse(lib.run([...argv, "--format", "json"]).stdout);
+
+      const bulk = runJson(["rechunk", "--dry-run"]);
+      expect(bulk.result.planned).toBe(0);
+      expect(bulk.result.skippedMissing).toBe(1);
+
+      const includeMissing = runJson(["rechunk", "--dry-run", "--include-missing"]);
+      expect(includeMissing.result.planned).toBe(1);
+      expect(includeMissing.result.docs[0].code).toBe("missing_identity");
+
+      const explicitMissing = runJson(["rechunk", "--dry-run", "--doc", "doc-1"]);
+      expect(explicitMissing.result.planned).toBe(1);
+
+      const sourceHash = createHash("sha256").update(content).digest("hex");
+      const db = openLibraryDb(lib.libraryPath);
+      try {
+        await db.execute({
+          sql: `UPDATE documents
+                SET source_hash_algorithm = 'sha256', source_hash = ?
+                WHERE id = 'doc-1'`,
+          args: [sourceHash],
+        });
+      } finally {
+        db.close();
+      }
+      writeFileSync(sourcePath, "# Source\n\nchanged\n");
+
+      const explicitChanged = runJson(["rechunk", "--dry-run", "--doc", "doc-1"]);
+      expect(explicitChanged.result.docs[0].code).toBe("source_changed");
+      expect(JSON.stringify(explicitChanged)).not.toContain(sourceHash);
+      expect(JSON.stringify(explicitChanged)).not.toContain("sha256");
+
+      const normalDoctor = runJson(["doctor"]);
+      expect(normalDoctor.result.sourceIntegrity).toMatchObject({ checked: 0, changed: 0 });
+
+      const deepDoctor = runJson(["doctor", "--deep"]);
+      expect(deepDoctor.result.sourceIntegrity).toMatchObject({ checked: 1, changed: 1 });
+      expect(deepDoctor.result.sourceIntegrity.sample[0]).toMatchObject({
+        id: "doc-1",
+        title: "Source",
+        codes: ["source_changed"],
+      });
+      expect(JSON.stringify(deepDoctor)).not.toContain(sourceHash);
+      expect(JSON.stringify(deepDoctor)).not.toContain("sha256");
+      expect(JSON.stringify(deepDoctor)).not.toContain(sourcePath);
+    },
+    60_000,
+  );
+
+  describe("doc relocate", () => {
+    const content = "# Source\n\noriginal\n";
+
+    /** Seeds doc-1 stored at `<root>/old.md` and returns that path. */
+    async function seedMarkdownDocument(lib: TestLibrary): Promise<string> {
+      const oldPath = join(lib.root, "old.md");
+      writeFileSync(oldPath, content);
+      await seedDocument(lib, {
+        id: "doc-1",
+        title: "Source",
+        path: oldPath,
+        pageCount: 1,
+        sizeBytes: Buffer.byteLength(content),
+        fileType: "markdown",
+      });
+      return oldPath;
+    }
+
+    test.for([
+      ["absolute", (path: string) => path],
+      ["cwd-relative", (path: string) => relative(process.cwd(), path)],
+    ] as const)(
+      "updates only the stored document path given an %s target",
+      async ([, toArgument], { lib }) => {
+        const oldPath = await seedMarkdownDocument(lib);
+        const newPath = join(lib.root, "relocated", "new.md");
+        mkdirSync(join(lib.root, "relocated"));
+        renameSync(oldPath, newPath);
+
+        const res = lib.run([
+          "doc", "relocate", "doc-1", toArgument(newPath), "--format", "json",
+        ]);
+
+        expect(res.exitCode).toBe(0);
+        expect(JSON.parse(res.stdout)).toStrictEqual({
+          ok: true,
+          command: "doc relocate",
+          result: { docId: "doc-1", title: "Source", oldPath, newPath, changed: true },
+        });
+
+        const readRes = lib.run(["read", "doc-1", "--format", "json"]);
+        expect(readRes.exitCode).toBe(0);
+        expect(JSON.parse(readRes.stdout).result).toMatchObject({
+          title: "Source",
+          path: newPath,
+          pageCount: 1,
+          tags: [],
+          fileType: "markdown",
+        });
+      },
+    );
+
+    test("dry-run reports metadata without updating the database", async ({ lib }) => {
+      const oldPath = await seedMarkdownDocument(lib);
+      const newPath = join(lib.root, "new.md");
+      writeFileSync(newPath, "# Source\n\nmodified\n");
+
+      const res = lib.run([
+        "doc", "relocate", "doc-1", newPath, "--dry-run", "--format", "json",
+      ]);
+
+      expect(res.exitCode).toBe(0);
+      expect(JSON.parse(res.stdout)).toStrictEqual({
+        ok: true,
+        command: "doc relocate",
+        result: {
+          docId: "doc-1",
+          title: "Source",
+          oldPath,
+          newPath,
+          changed: false,
+          dryRun: true,
+        },
+      });
+
+      const readRes = lib.run(["read", "doc-1", "--format", "json"]);
+      expect(readRes.exitCode).toBe(0);
+      expect(JSON.parse(readRes.stdout).result.path).toBe(oldPath);
+    });
+
+    test("rejects missing target paths", ({ lib }) => {
+      const missingPath = join(lib.root, "missing.md");
+
+      const res = lib.run(["doc", "relocate", "doc-1", missingPath, "--format", "json"]);
+
+      expect(res.exitCode).not.toBe(0);
+      expect(JSON.parse(res.stdout)).toMatchObject({
+        ok: false,
+        command: "doc",
+        error: {
+          code: "NEW_PATH_NOT_FOUND",
+          message: expect.stringContaining(missingPath),
+        },
+      });
+    });
+  });
+
+  test("capabilities is self-describing without embedding JSON Schemas", ({ lib }) => {
+    const res = lib.run(["capabilities", "--format", "json"]);
+
+    expect(res.exitCode).toBe(0);
+    const obj = JSON.parse(res.stdout);
+    expect(obj).toMatchObject({ ok: true, command: "capabilities" });
+    const result = obj.result;
+    expect(Object.keys(result).sort()).toEqual([
+      "commands",
+      "globalFlags",
+      "outputFormats",
+      "poinkVersion",
+    ]);
+    expect(typeof result.poinkVersion).toBe("string");
+    expect(result.outputFormats).toEqual(["text", "json", "ndjson"]);
+    expect(result.globalFlags["--config"]).toMatchObject({
+      type: "path",
+      placement: "after-command",
+    });
+    expect(result.globalFlags["--verbose"]).toBeDefined();
+
+    // Agent discovery depends on these names; the interactive setup wizard stays hidden.
+    const commands: { name: string; argv: string[] }[] = result.commands;
+    const names = commands.map((command) => command.name);
+    expect(names).toEqual(
+      expect.arrayContaining([
+        "search", "search-pack", "chunk", "doc", "doc relocate", "page", "add",
+        "stats", "rechunk", "reindex", "mcp", "serve", "providers",
+      ]),
+    );
+    expect(names).not.toContain("setup");
+    expect(commands.find((command) => command.name === "providers")?.argv).toEqual([
+      "providers", "login", "--provider", "openai-codex", "--format", "text", "[--device-auth]",
+    ]);
+  });
+
+  test("config schema exposes the config schema outside capabilities", ({ lib }) => {
+    const fetched = lib.run(["config", "schema", "--format", "json"]);
+
+    expect(fetched.exitCode).toBe(0);
+    expect(JSON.parse(fetched.stdout).result).toMatchObject({
+      type: "object",
+      properties: {
+        models: expect.any(Object),
+        providers: expect.any(Object),
+        storage: { properties: { libsql: expect.any(Object) } },
+      },
+    });
+  });
+
+  test("taxonomy list is compact and taxonomy get returns details", async ({ lib }) => {
+    expect(lib.run(["stats"]).exitCode).toBe(0);
+    const db = openLibraryDb(lib.libraryPath);
+    const insertConcept = `INSERT INTO concepts
+                             (id, pref_label, alt_labels, definition, created_at)
+                           VALUES (?, ?, ?, ?, '2026-01-01T00:00:00.000Z')`;
+    try {
+      await db.batch(
+        [
+          {
+            sql: insertConcept,
+            args: ["programming", "Programming", "[]", "Software development and programming topics"],
+          },
+          {
+            sql: insertConcept,
+            args: ["programming/typescript", "TypeScript", "[\"TS\"]", "TypeScript language and ecosystem"],
+          },
+          {
+            sql: "INSERT INTO concept_hierarchy (concept_id, broader_id) VALUES (?, ?)",
+            args: ["programming/typescript", "programming"],
+          },
+        ],
+        "write",
+      );
+    } finally {
+      db.close();
+    }
+
+    const listed = lib.run(["taxonomy", "list", "--format", "json"]);
+    expect(listed.exitCode).toBe(0);
+    const concepts = JSON.parse(listed.stdout).result.concepts;
+    expect(concepts).toContainEqual({ id: "programming", prefLabel: "Programming" });
+    expect(concepts[0]).not.toHaveProperty("definition");
+    expect(concepts[0]).not.toHaveProperty("createdAt");
+
+    const verboseList = lib.run(["taxonomy", "list", "--format", "json", "--verbose"]);
+    expect(verboseList.exitCode).toBe(0);
+    const verboseConcepts = JSON.parse(verboseList.stdout).result.concepts;
+    expect(verboseConcepts[0]).toHaveProperty("altLabels");
+    expect(verboseConcepts[0]).not.toHaveProperty("createdAt");
+
+    const fetched = lib.run(["taxonomy", "get", "programming/typescript", "--format", "json"]);
+    expect(fetched.exitCode).toBe(0);
+    const detail = JSON.parse(fetched.stdout).result;
+    expect(detail).toMatchObject({
+      id: "programming/typescript",
+      definition: "TypeScript language and ecosystem",
+      broader: [{ id: "programming", prefLabel: "Programming" }],
+      narrower: [],
+      related: [],
+    });
+    expect(detail).not.toHaveProperty("createdAt");
+
+    const treeRes = lib.run(["taxonomy", "tree", "--format", "json"]);
+    expect(treeRes.exitCode).toBe(0);
+    const tree = JSON.parse(treeRes.stdout).result.tree;
+    expect(tree[0]).not.toHaveProperty("concept");
+    expect(tree).toContainEqual(
+      expect.objectContaining({
+        id: "programming",
+        children: expect.arrayContaining([
+          expect.objectContaining({ id: "programming/typescript", prefLabel: "TypeScript" }),
+        ]),
+      }),
+    );
+  });
+
+  test("setup lists available subcommands without running the wizard", ({ lib }) => {
+    const res = lib.run(["setup", "--format", "text"]);
+
+    expect(res.exitCode).toBe(0);
+    expect(res.stdout).toContain("Usage: poink setup <command>");
+    expect(res.stdout).toContain("Initialize Poink and run the configuration wizard");
+    expect(res.stdout).toContain("Run the configuration wizard for an initialized library");
+  });
+
+  test("setup interactive commands require text format, including dry-run", ({ lib }) => {
+    for (const argv of [
+      ["setup", "init"],
+      ["setup", "config"],
+      ["setup", "init", "--dry-run"],
+      ["setup", "config", "--dry-run"],
+    ]) {
+      const res = lib.run([...argv, "--format", "json"]);
+
+      expect(res.exitCode).not.toBe(0);
+      expect(JSON.parse(res.stdout)).toMatchObject({
+        ok: false,
+        command: "setup",
+        error: { code: "INVALID_ARGS", message: expect.stringContaining("--format text") },
+      });
+    }
+  });
+
+  test("setup config fails before prompting when library is not initialized", ({ tmp }) => {
+    const lib = setupLibrary(tmp, { librarySubdir: "missing-library" });
+
+    const res = lib.run(["setup", "config", "--format", "text"]);
+
+    expect(res.exitCode).not.toBe(0);
+    expect(res.stderr).toContain("NOT_INITIALIZED");
+    expect(res.stderr).toContain("poink setup init");
+  });
+
+  test("providers login requires text format because it is interactive", ({ lib }) => {
+    const res = lib.run([
+      "providers", "login", "--provider", "openai-codex", "--format", "json", "--verbose",
+    ]);
+
+    expect(res.exitCode).not.toBe(0);
+    expect(JSON.parse(res.stdout)).toMatchObject({
+      ok: false,
+      command: "providers",
+      error: {
+        code: "INVALID_ARGS",
+        message: expect.stringContaining("--format text"),
+        details: { hint: "poink providers login --provider openai-codex --format text" },
+      },
+    });
+  });
+
+  test("providers login rejects unsupported provider login flags", ({ lib }) => {
+    const res = lib.run([
+      "providers", "login", "--provider", "openai-codex", "--device-code",
+      "--format", "json", "--verbose",
+    ]);
+
+    expect(res.exitCode).not.toBe(0);
+    const obj = JSON.parse(res.stdout);
+    expect(obj).toMatchObject({
+      ok: false,
+      command: "providers",
+      error: { code: "INVALID_ARGS", message: expect.stringContaining("--device-code") },
+    });
+    expect(obj.error.details.available).toContain("--device-auth");
+  });
+
+  test("service-free command help does not require runtime services", ({ lib }) => {
+    for (const command of ["config", "providers", "setup"]) {
+      const res = lib.run([command, "--help", "--format", "json"]);
+
+      expect(res.exitCode).toBe(0);
+      const obj = JSON.parse(res.stdout);
+      expect(obj).toMatchObject({ ok: true, command: "help" });
+      expect(obj.result.help).toContain(
+        "poink providers login --provider openai-codex --format text",
+      );
+      expect(obj.result.help).toContain("poink setup init --format text");
+    }
+  });
+
+  test("config show text output works before the library exists and includes libSQL details", ({ tmp }) => {
+    const lib = setupLibrary(tmp, { librarySubdir: "missing-library" });
+
+    const res = lib.run(["config", "show", "--format", "text"]);
+
+    expect(res.exitCode).toBe(0);
+    for (const text of ["PDF Library Config", "Storage:", "libSQL", "Database:", "OpenAI Codex:"]) {
+      expect(res.stdout).toContain(text);
+    }
+  });
+
+  describe("stored secrets", () => {
+    const secrets = {
+      openrouterApiKey: "openrouter-secret",
+      libsqlAuthToken: "libsql-secret",
+      serverToken: "server-secret",
+    };
+
+    test("config show redacts stored secrets unless --show-secrets is passed", ({ tmp }) => {
+      const lib = setupLibrary(tmp, { secrets });
+
+      const redacted = lib.run(["config", "show", "--format", "json"]);
+      expect(redacted.exitCode).toBe(0);
+      for (const secret of Object.values(secrets)) {
+        expect(redacted.stdout).not.toContain(secret);
+      }
+      const config = JSON.parse(redacted.stdout).result.config;
+      expect(config.providers.openrouter).toMatchObject({
+        apiKey: "[redacted]",
+        apiKeyEnv: "OPENROUTER_API_KEY",
+      });
+      expect(config.storage.libsql.authToken).toBe("[redacted]");
+      expect(config.server.auth).toMatchObject({
+        token: "[redacted]",
+        tokenEnv: "POINK_SERVER_TOKEN",
+      });
+
+      const raw = lib.run(["config", "show", "--show-secrets", "--format", "json"]);
+      expect(raw.exitCode).toBe(0);
+      const rawConfig = JSON.parse(raw.stdout).result.config;
+      expect(rawConfig.providers.openrouter.apiKey).toBe("openrouter-secret");
+      expect(rawConfig.server.auth.token).toBe("server-secret");
+    });
+
+    test("config get redacts secrets at and below the requested path unless --show-secrets is passed", ({ tmp }) => {
+      const lib = setupLibrary(tmp, { secrets });
+      const getRedacted = (path: string) => {
+        const res = lib.run(["config", "get", path, "--format", "json"]);
+        expect(res.exitCode).toBe(0);
+        for (const secret of Object.values(secrets)) {
+          expect(res.stdout).not.toContain(secret);
+        }
+        return JSON.parse(res.stdout).result.value;
+      };
+
+      expect(getRedacted("providers.openrouter.apiKey")).toBe("[redacted]");
+      expect(getRedacted("providers.openrouter").apiKey).toBe("[redacted]");
+      expect(getRedacted("server.auth").token).toBe("[redacted]");
+
+      const raw = lib.run([
+        "config", "get", "providers.openrouter.apiKey", "--show-secrets", "--format", "json",
+      ]);
+      expect(raw.exitCode).toBe(0);
+      expect(JSON.parse(raw.stdout).result.value).toBe("openrouter-secret");
+    });
+
+    // The openrouter config starts without a key, so the set must not require a valid current config.
+    test("config set redacts stored secrets in output but persists raw values", ({ tmp }) => {
+      const lib = setupLibrary(tmp, { modelProvider: "openrouter" });
+      const apiKeyPath = "providers.openrouter.apiKey";
+
+      const redacted = lib.run(["config", "set", apiKeyPath, "test-openrouter-key", "--format", "json"]);
+      expect(redacted.exitCode).toBe(0);
+      expect(redacted.stdout).not.toContain("test-openrouter-key");
+      expect(JSON.parse(redacted.stdout)).toMatchObject({
+        ok: true,
+        command: "config",
+        result: { path: apiKeyPath, value: "[redacted]" },
+      });
+      expect(valueAtPath(readSavedConfig(lib), apiKeyPath)).toBe("test-openrouter-key");
+
+      const raw = lib.run([
+        "config", "set", apiKeyPath, "replacement-openrouter-key", "--show-secrets", "--format", "json",
+      ]);
+      expect(raw.exitCode).toBe(0);
+      expect(JSON.parse(raw.stdout).result.value).toBe("replacement-openrouter-key");
+      expect(valueAtPath(readSavedConfig(lib), apiKeyPath)).toBe("replacement-openrouter-key");
+    });
+  });
+
+  test.for([
+    ["models.enrichment.reasoning", "xhigh", "xhigh"],
+    ["models.judge.reasoning", "null", null],
+    ["cli.globalFlags.format", "json", "json"],
+    ["ingest.urlDownloads.maxFileSize", "250mb", "250mb"],
+    ["ingest.urlDownloads.allowedPrivateNetworkHosts", "docs.internal,repo.internal", ["docs.internal", "repo.internal"]],
+    ["ingest.include", "docs/**/*.md,papers/**/*.pdf", ["docs/**/*.md", "papers/**/*.pdf"]],
+    ["ingest.exclude", "docs/archive/**,papers/drafts/**", ["docs/archive/**", "papers/drafts/**"]],
+    ["ingest.visuals.maxImageBytes", "10mb", "10mb"],
+  ] as const)("config set %s %s parses and persists the value", ([path, input, expected], { lib }) => {
+    const res = lib.run(["config", "set", path, input, "--format", "json"]);
+
+    expect(res.exitCode).toBe(0);
+    expect(JSON.parse(res.stdout)).toMatchObject({
+      ok: true,
+      command: "config",
+      result: { path, value: expected },
+    });
+    expect(valueAtPath(readSavedConfig(lib), path)).toEqual(expected);
+  });
+
+  test("config set fills defaults for a newly created config section", ({ lib }) => {
+    const res = lib.run(["config", "set", "ingest.visuals.enabled", "true", "--format", "json"]);
+
+    expect(res.exitCode).toBe(0);
+    expect(valueAtPath(readSavedConfig(lib), "ingest.visuals")).toMatchObject({
+      enabled: true,
+      maxImagesPerDocument: 100,
+    });
+  });
+
+  test.for([
+    ["ingest.urlDownloads.maxFileSize", "100"],
+    ["cli.globalFlags.format", "xml"],
+    ["models.enrichment.reasoning", "max"],
+    ["providers.openrouter.apiKeyyyyy", "123"],
+    ["chunking.overlap", "2000"],
+  ] as const)("config set rejects %s=%s without touching the config file", ([path, input], { lib }) => {
+    const before = readFileSync(lib.configPath, "utf-8");
+
+    const res = lib.run(["config", "set", path, input, "--format", "json"]);
+
+    expect(res.exitCode).not.toBe(0);
+    expect(JSON.parse(res.stdout)).toMatchObject({
+      ok: false,
+      error: { code: "INVALID_ARGS", message: expect.stringContaining(path) },
+    });
+    expect(readFileSync(lib.configPath, "utf-8")).toBe(before);
+  });
+
+  test("init creates a missing library directory before opening the database", ({ tmp }) => {
+    const lib = setupLibrary(tmp, { librarySubdir: "missing-library", modelProvider: "openrouter" });
+
+    const res = lib.run(["init", "--format", "json"]);
+
+    expect(res.exitCode).toBe(0);
+    expect(JSON.parse(res.stdout)).toMatchObject({
+      ok: true,
+      command: "init",
+      result: {
+        libraryPath: lib.libraryPath,
+        dbPath: join(lib.libraryPath, "library.db"),
+      },
+    });
+  });
+
+  describe("ingest file selection", () => {
+    test("--no-recursive with filters does not scan nested directories", ({ lib }) => {
+      const docs = join(lib.root, "docs");
+      mkdirSync(join(docs, "nested"), { recursive: true });
+      writeFileSync(join(docs, "nested", "note.md"), "# Nested note\n\nNot discovered.", "utf-8");
+
+      const res = lib.run([
+        "ingest", docs, "--include", "**/*.md", "--exclude", "**/archive/**",
+        "--no-recursive", "--format", "json",
+      ]);
+
+      expect(res.exitCode).toBe(0);
+      expect(JSON.parse(res.stdout)).toMatchObject({
+        ok: true,
+        command: "ingest",
+        result: { foundFiles: 0 },
+      });
+      expect(JSON.parse(res.stdout).result.selection).toEqual({
+        include: ["**/*.md"],
+        exclude: ["**/archive/**"],
+        discovered: 0,
+        included: 0,
+        excluded: 0,
+        selected: 0,
+        sampled: 0,
+      });
+    });
+
+    test("include globs filter selected files in JSON output", ({ lib }) => {
+      const docs = join(lib.root, "docs");
+      mkdirSync(docs);
+      writeFileSync(join(docs, "paper.pdf"), "%PDF-1.7", "utf-8");
+
+      const res = lib.run(["ingest", docs, "--include", "**/*.md", "--format", "json"]);
+
+      expect(res.exitCode).toBe(0);
+      const result = JSON.parse(res.stdout).result;
+      expect(result.foundFiles).toBe(0);
+      expect(result.selection).toEqual({
+        include: ["**/*.md"],
+        exclude: [],
+        discovered: 1,
+        included: 0,
+        excluded: 0,
+        selected: 0,
+        sampled: 0,
+      });
+    });
+
+    test("explains cwd-relative filters rejecting an external directory", ({ lib }) => {
+      const projectRoot = join(lib.root, "project");
+      const docs = join(lib.root, "external-docs");
+      mkdirSync(projectRoot);
+      mkdirSync(docs);
+      writeFileSync(join(docs, "paper.pdf"), "%PDF-1.7", "utf-8");
+
+      const res = lib.run(["ingest", docs, "--include", "**/*.pdf"], { cwd: projectRoot });
+
+      expect(res.exitCode).toBe(0);
+      expect(res.stdout).toContain("No files matched the include filters");
+      expect(res.stdout).toContain(
+        `Filter paths are relative to the working directory: ${projectRoot}`,
+      );
+      expect(res.stdout).not.toContain("No supported document files found");
+    });
+
+    test("uses config include and exclude when CLI filters are absent", ({ tmp }) => {
+      const lib = setupLibrary(tmp, { ingest: { include: ["**/*.md"], exclude: ["**/*.md"] } });
+      const docs = join(lib.root, "docs");
+      mkdirSync(docs);
+      writeFileSync(join(docs, "note.md"), "# Note", "utf-8");
+
+      const res = lib.run(["ingest", ".", "--format", "json"], { cwd: docs });
+
+      expect(res.exitCode).toBe(0);
+      expect(JSON.parse(res.stdout).result.selection).toEqual({
+        include: ["**/*.md"],
+        exclude: ["**/*.md"],
+        discovered: 1,
+        included: 1,
+        excluded: 1,
+        selected: 0,
+        sampled: 0,
+      });
+    });
+
+    test("matches configured filters relative to the working directory", ({ tmp }) => {
+      const pattern = "companies/*/sources/**/*";
+      const lib = setupLibrary(tmp, { ingest: { include: [pattern], exclude: [pattern] } });
+      const projectRoot = join(lib.root, "project");
+      const reportDirectories = [
+        "companies/kruk/sources/2026/2026-h1/reports",
+        "companies/synektik/sources/2025/2025-q3/reports",
+        "companies/xtb/sources/2026/2026-h1/reports",
+      ];
+      for (const [index, reportDirectory] of reportDirectories.entries()) {
+        const absoluteDirectory = join(projectRoot, reportDirectory);
+        mkdirSync(absoluteDirectory, { recursive: true });
+        writeFileSync(join(absoluteDirectory, `report-${index + 1}.md`), `# Report ${index + 1}`, "utf-8");
+      }
+
+      const res = lib.run(["ingest", ...reportDirectories, "--format", "json"], { cwd: projectRoot });
+
+      expect(res.exitCode).toBe(0);
+      expect(JSON.parse(res.stdout).result.selection).toEqual({
+        include: [pattern],
+        exclude: [pattern],
+        discovered: 3,
+        included: 3,
+        excluded: 3,
+        selected: 0,
+        sampled: 0,
+      });
+    });
+
+    test("CLI include overrides config include and CLI exclude extends config exclude", ({ tmp }) => {
+      const lib = setupLibrary(tmp, { ingest: { include: ["**/*.pdf"], exclude: ["archive/**"] } });
+      const docs = join(lib.root, "docs");
+      mkdirSync(join(docs, "drafts"), { recursive: true });
+      writeFileSync(join(docs, "paper.pdf"), "%PDF-1.7", "utf-8");
+      writeFileSync(join(docs, "drafts", "note.md"), "# Draft", "utf-8");
+
+      const res = lib.run(
+        ["ingest", ".", "--include", "**/*.md", "--exclude", "drafts/**", "--format", "json"],
+        { cwd: docs },
+      );
+
+      expect(res.exitCode).toBe(0);
+      expect(JSON.parse(res.stdout).result.selection).toEqual({
+        include: ["**/*.md"],
+        exclude: ["archive/**", "drafts/**"],
+        discovered: 2,
+        included: 1,
+        excluded: 1,
+        selected: 0,
+        sampled: 0,
+      });
+    });
+
+    test("excludes win over includes and text prints selection counters", ({ lib }) => {
+      const docs = join(lib.root, "docs");
+      mkdirSync(join(docs, "archive"), { recursive: true });
+      writeFileSync(join(docs, "archive", "note.md"), "# Archived", "utf-8");
+
+      const res = lib.run(
+        ["ingest", ".", "--include", "**/*.md", "--exclude", "**/archive/**"],
+        { cwd: docs },
+      );
+
+      expect(res.exitCode).toBe(0);
+      expect(res.stdout).toContain("Selection: discovered 1, included 1, excluded 1, selected 0");
+      expect(res.stdout).toContain("Include:\n  **/*.md");
+      expect(res.stdout).toContain("Exclude:\n  **/archive/**");
+    });
+  });
+});
+
+function isTextContent(value: unknown): value is { type: "text"; text: string } {
+  return isRecord(value) && value.type === "text" && typeof value.text === "string";
+}
+
+/** Runs `fn` against a stdio `poink mcp` child process; its stderr is piped and discarded. */
+async function withMcpClient<T>(
+  lib: TestLibrary,
+  args: string[],
+  fn: (client: Client) => Promise<T>,
+): Promise<T> {
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: nodeTsxArgs(["mcp", ...args]),
+    cwd: process.cwd(),
+    stderr: "pipe",
+    env: childEnv(lib.env),
+  });
+  const client = new Client({ name: "poink-contract-test", version: "0.0.0" });
   try {
-    return fn(dir);
+    await client.connect(transport);
+    return await fn(client);
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    await client.close().catch(() => undefined);
+    await transport.close().catch(() => undefined);
   }
 }
 
-async function withTempLibraryPathAsync<T>(
-  fn: (libraryPath: string) => Promise<T>,
-): Promise<T> {
-  const dir = mkdtempSync(join(tmpdir(), "poink-cli-contract-"));
-  try {
-    return await fn(dir);
-  } finally {
-    await removeDirWithRetries(dir);
-  }
-}
+describe("MCP Tool Output Contract", () => {
+  test(
+    "mcp tools return structuredContent matching the agent envelope schema",
+    ({ lib }) =>
+      withMcpClient(lib, [], async (client) => {
+        const { tools } = await client.listTools();
+        expect(tools.map((tool) => tool.name)).toEqual(
+          expect.arrayContaining(["capabilities", "config_schema", "stats", "search", "taxonomy_get"]),
+        );
+
+        const stats = await client.callTool({ name: "stats", arguments: {} });
+        expect(Boolean(stats.isError)).toBe(false);
+        expect(stats.structuredContent).toStrictEqual({
+          ok: true,
+          command: "stats",
+          result: expect.objectContaining({ libraryPath: lib.libraryPath }),
+        });
+        const textContent = (Array.isArray(stats.content) ? stats.content : []).find(isTextContent);
+        if (!textContent) throw new Error("Expected text tool content");
+        expect(JSON.parse(textContent.text)).toEqual(stats.structuredContent);
+
+        const ftsSearch = await client.callTool({
+          name: "search",
+          arguments: { query: "absent", docsOnly: true, fts: true },
+        });
+        expect(ftsSearch.structuredContent).toMatchObject({
+          ok: true,
+          result: { retrievalMode: "fts", documents: [] },
+        });
+
+        // Flag-like queries stay queries, and the output matches the CLI byte for byte.
+        const queries = ["alpha", "--help", "--format", "text", "--verbose", "--config"];
+        const pack = await client.callTool({
+          name: "search_pack",
+          arguments: { queries, fts: true, limit: 2, withContent: true, globalLimit: 3 },
+        });
+        expect(pack.structuredContent).toMatchObject({
+          ok: true,
+          command: "search-pack",
+          result: {
+            retrievalMode: "fts",
+            perQuery: queries.map((query) => ({ query, documents: [] })),
+            deduped: [],
+          },
+        });
+        const cliPack = lib.run([
+          "search-pack", "--fts", "--limit", "2", "--with-content",
+          "--global-limit", "3", "--format", "json", "--", ...queries,
+        ]);
+        expect(cliPack.exitCode).toBe(0);
+        expect(JSON.parse(cliPack.stdout)).toEqual(pack.structuredContent);
+
+        const semanticSearch = await client.callTool({
+          name: "search",
+          arguments: { query: "absent", docsOnly: true },
+        });
+        expect(semanticSearch.isError).toBe(true);
+        expect(semanticSearch.structuredContent).toMatchObject({
+          ok: false,
+          error: { code: "PROVIDER_NOT_READY" },
+        });
+      }),
+    20_000,
+  );
+
+  test(
+    "verbose MCP results and errors include timing metadata",
+    ({ lib }) =>
+      withMcpClient(lib, ["--verbose"], async (client) => {
+        const callEnvelope = async (name: string, args: Record<string, unknown>) => {
+          const { structuredContent } = await client.callTool({ name, arguments: args });
+          if (!isRecord(structuredContent)) throw new Error(`Expected ${name} envelope`);
+          return structuredContent;
+        };
+
+        const success = await callEnvelope("stats", {});
+        expect(success.ok).toBe(true);
+        expect(Object.keys(success).sort()).toEqual(["command", "meta", "nextActions", "ok", "result"]);
+        expectTimingMetadata(success.meta, { command: true });
+
+        const failure = await callEnvelope("read", { idOrTitle: "missing-document" });
+        expect(failure.ok).toBe(false);
+        expect(Object.keys(failure).sort()).toEqual(["command", "error", "meta", "ok"]);
+        expectTimingMetadata(failure.meta, { command: true });
+      }),
+    20_000,
+  );
+});
 
 async function getAvailablePort(): Promise<number> {
   return await new Promise((resolve, reject) => {
@@ -373,2472 +1401,102 @@ async function getAvailablePort(): Promise<number> {
   });
 }
 
-describe("Node Build Smoke", () => {
-  test(
-    "dist CLI runs with node",
-    () =>
-      withTempLibraryPath((libraryPath) => {
-        const configPath = join(libraryPath, "config.json");
-        writeTestConfig(configPath, libraryPath);
-
-        const build = spawnSync(npmCommand(), ["run", "build"], {
-          encoding: "utf-8",
-        });
-        if ((build.status ?? 0) !== 0) {
-          throw new Error(build.stderr || build.stdout);
-        }
-
-        const proc = spawnSync(process.execPath, ["dist/cli.js", "help", "--format", "json"], {
-          env: childEnv(envForConfig(configPath)),
-          encoding: "utf-8",
-        });
-
-        expect(proc.status ?? 0).toBe(0);
-        const envelope = JSON.parse(proc.stdout);
-        expect(envelope.ok).toBe(true);
-        expect(envelope.command).toBe("help");
-      }),
-    30000,
+/**
+ * Starts `poink serve` on a free port, waits for /health to answer, and passes its port and
+ * health body to `fn`. The server is killed afterwards.
+ */
+async function withServer(
+  lib: TestLibrary,
+  options: { host: string; env?: Record<string, string> },
+  fn: (port: number, health: unknown) => Promise<void>,
+): Promise<void> {
+  const port = await getAvailablePort();
+  const proc = spawn(
+    process.execPath,
+    nodeTsxArgs(["serve", "--host", options.host, "--port", String(port)]),
+    {
+      cwd: process.cwd(),
+      stdio: ["ignore", "pipe", "pipe"],
+      env: childEnv({ ...lib.env, ...options.env }),
+    },
   );
-});
+  const exited = new Promise<void>((resolve) => proc.once("exit", () => resolve()));
 
-describe("CLI JSON Envelope Contract", () => {
-  test("page extract uses exact IDs and returns only published absolute paths", async () =>
-    withTempLibraryPathAsync(async (libraryRoot) => {
-      const libraryPath = join(libraryRoot, "library");
-      const outputPath = join(libraryRoot, "exports");
-      const sourcePath = join(libraryRoot, "source.pdf");
-      const configPath = join(libraryRoot, "config.json");
-      writeTestConfig(configPath, libraryPath);
-      const env = envForConfig(configPath);
-
-      const pdf = await PDFDocument.create();
-      pdf.addPage([200, 300]);
-      pdf.addPage([300, 200]);
-      const sourceBytes = await pdf.save();
-      writeFileSync(sourcePath, sourceBytes);
-
-      expect(runCli(["stats"], { env }).exitCode).toBe(0);
-      const client = createClient({
-        url: `file:${join(libraryPath, "library.db")}`,
-      });
-      await client.execute({
-        sql: `INSERT INTO documents
-                (id, title, path, added_at, page_count, size_bytes, tags,
-                 metadata, file_type, source_hash_algorithm, source_hash)
-              VALUES (?, ?, ?, ?, ?, ?, '[]', '{}', 'pdf', 'sha256', ?)`,
-        args: [
-          "abc123-extra",
-          "Stored PDF",
-          sourcePath,
-          "2026-01-01T00:00:00.000Z",
-          2,
-          sourceBytes.length,
-          createHash("sha256").update(sourceBytes).digest("hex"),
-        ],
-      });
-      client.close();
-
-      const prefix = runCli(
-        ["page", "extract", "abc123", "1", "--format", "json"],
-        { env },
-      );
-      expect(prefix.exitCode).toBe(1);
-      expect(JSON.parse(prefix.stdout).error.code).toBe("NOT_FOUND");
-
-      const result = runCli(
-        [
-          "page",
-          "extract",
-          "abc123-extra",
-          "2,1",
-          "--output-dir",
-          outputPath,
-          "--format",
-          "json",
-        ],
-        { env },
-      );
-      expect(result.exitCode).toBe(0);
-      const envelope = JSON.parse(result.stdout);
-      expect(envelope.ok).toBe(true);
-      expect(envelope.command).toBe("page");
-      expect(Object.keys(envelope.result).sort()).toEqual([
-        "docId",
-        "exportId",
-        "files",
-        "outputDirectory",
-        "pages",
-      ]);
-      expect(envelope.result.docId).toBe("abc123-extra");
-      expect(envelope.result.pages).toEqual([1, 2]);
-      expect(envelope.result.outputDirectory).toBe(outputPath);
-      expect(envelope.result.files).toHaveLength(1);
-      expect(envelope.result.files[0]).toMatch(
-        /^.*abc123-extra-[a-z0-9]{8}\.pdf$/,
-      );
-      expect(existsSync(envelope.result.files[0])).toBe(true);
-      expect(envelope.result.files[0]).not.toContain(".stage");
-
-      const text = runCli(
-        [
-          "page",
-          "extract",
-          "abc123-extra",
-          "2",
-          "--output-dir",
-          outputPath,
-        ],
-        { env },
-      );
-      expect(text.exitCode).toBe(0);
-      const lines = text.stdout.trim().split(/\r?\n/);
-      expect(lines[0]).toBe("Exported pages: 2");
-      expect(lines).toHaveLength(2);
-      expect(existsSync(lines[1]!)).toBe(true);
-    }));
-
-  test("stats emits text output by default", () =>
-    withTempLibraryPath((libraryPath) => {
-      const configPath = join(libraryPath, "config.json");
-      writeTestConfig(configPath, libraryPath);
-
-      const res = runCli(["stats"], {
-        env: envForConfig(configPath),
-      });
-
-      expect(res.exitCode).toBe(0);
-      expect(res.stdout).toContain("PDF Library Stats");
-      expect(res.stdout).toContain("Documents:  0");
-    }));
-
-  test("list is compact by default and retains legacy payload in verbose mode", () =>
-    withTempLibraryPath((libraryPath) => {
-      const configPath = join(libraryPath, "config.json");
-      writeTestConfig(configPath, libraryPath);
-      const env = envForConfig(configPath);
-
-      const compact = runCli(["list", "--format", "json"], { env });
-      expect(compact.exitCode).toBe(0);
-      expect(JSON.parse(compact.stdout).result).toEqual({ documents: [] });
-
-      const verbose = runCli(["list", "--format", "json", "--verbose"], {
-        env,
-      });
-      expect(verbose.exitCode).toBe(0);
-      expect(JSON.parse(verbose.stdout).result).toEqual({
-        tag: null,
-        documents: [],
-      });
-    }));
-
-  test("stats emits a minimal JSON envelope by default", () =>
-    withTempLibraryPath((libraryPath) => {
-      const configPath = join(libraryPath, "config.json");
-      writeTestConfig(configPath, libraryPath);
-
-      const res = runCli(["stats", "--format", "json"], {
-        env: envForConfig(configPath),
-      });
-
-      expect(res.exitCode).toBe(0);
-      expect(res.stdout.trim().startsWith("{")).toBe(true);
-
-      const obj = JSON.parse(res.stdout);
-      expect(obj.ok).toBe(true);
-      expect(obj.command).toBe("stats");
-      expect(obj.result).toBeDefined();
-      expect(obj.result.libraryPath).toBe(libraryPath);
-      expect(obj.result.documents).toBe(0);
-      expect(obj.result.chunks).toBe(0);
-      expect(obj.result.embeddings).toBe(0);
-      expect(Object.keys(obj).sort()).toEqual(["command", "ok", "result"]);
-    }));
-
-  test("stats with --verbose includes timing metadata and nextActions", () =>
-    withTempLibraryPath((libraryPath) => {
-      const configPath = join(libraryPath, "config.json");
-      writeTestConfig(configPath, libraryPath);
-
-      const res = runCli(["stats", "--format", "json", "--verbose"], {
-        env: envForConfig(configPath),
-      });
-
-      expect(res.exitCode).toBe(0);
-      const obj = JSON.parse(res.stdout);
-      expect(obj.ok).toBe(true);
-      expect(obj.command).toBe("stats");
-      expect("protocolVersion" in obj).toBe(false);
-      const timing = expectTimingMetadata(obj.meta, { command: true });
-      if (timing.commandMs === undefined) {
-        throw new Error("Expected command timing");
+  try {
+    for (let attempt = 0; attempt < 100; attempt++) {
+      const health = await fetch(`http://127.0.0.1:${port}/health`).catch(() => undefined);
+      if (health?.ok) {
+        await fn(port, await health.json());
+        return;
       }
-      expect(timing.totalMs - timing.commandMs).toBeGreaterThan(10);
-      expect(Array.isArray(obj.nextActions)).toBe(true);
-      expect(obj.nextActions.length).toBeGreaterThan(0);
-    }));
-
-  test("verbose text output does not expose timing metadata", () =>
-    withTempLibraryPath((libraryPath) => {
-      const configPath = join(libraryPath, "config.json");
-      writeTestConfig(configPath, libraryPath);
-      const env = envForConfig(configPath);
-
-      const compact = runCli(["stats", "--format", "text"], { env });
-      const verbose = runCli(["stats", "--format", "text", "--verbose"], {
-        env,
-      });
-
-      expect(verbose.exitCode).toBe(0);
-      expect(verbose.stdout).toBe(compact.stdout);
-      expect(verbose.stdout).not.toContain("timing");
-    }));
-
-  test("removed hint flags are rejected", () =>
-    withTempLibraryPath((libraryPath) => {
-      const configPath = join(libraryPath, "config.json");
-      writeTestConfig(configPath, libraryPath);
-
-      for (const flag of ["--quiet", "--no-hints"]) {
-        const res = runCli(["stats", flag, "--format", "json"], {
-          env: envForConfig(configPath),
-        });
-        expect(res.exitCode).not.toBe(0);
-        expect(JSON.parse(res.stdout).error.code).toBe("INVALID_FLAG");
-      }
-    }));
-
-  test("configured default format is used when --format is omitted", () =>
-    withTempLibraryPath((libraryPath) => {
-      const configPath = join(libraryPath, "config.json");
-      writeTestConfig(configPath, libraryPath, "ollama", "json");
-
-      const res = runCli(["stats"], {
-        env: envForConfig(configPath),
-      });
-
-      expect(res.exitCode).toBe(0);
-      const obj = JSON.parse(res.stdout);
-      expect(obj.ok).toBe(true);
-      expect(obj.command).toBe("stats");
-    }));
-
-  test("--format overrides the configured default format", () =>
-    withTempLibraryPath((libraryPath) => {
-      const configPath = join(libraryPath, "config.json");
-      writeTestConfig(configPath, libraryPath, "ollama", "json");
-
-      const res = runCli(["stats", "--format", "text"], {
-        env: envForConfig(configPath),
-      });
-
-      expect(res.exitCode).toBe(0);
-      expect(res.stdout).toContain("PDF Library Stats");
-      expect(() => JSON.parse(res.stdout)).toThrow();
-    }));
-
-  test("root-level --format is rejected by default", () =>
-    withTempLibraryPath((libraryPath) => {
-      const configPath = join(libraryPath, "config.json");
-      writeTestConfig(configPath, libraryPath);
-
-      const res = runCli(["--format", "json", "stats"], {
-        env: envForConfig(configPath),
-      });
-
-      expect(res.exitCode).not.toBe(0);
-      expect(res.stdout).toBe("");
-      expect(res.stderr).toContain("INVALID_FLAG");
-      expect(res.stderr).toContain("unknown option");
-    }));
-
-  test("root-level --format returns a structured error envelope when configured for JSON", () =>
-    withTempLibraryPath((libraryPath) => {
-      const configPath = join(libraryPath, "config.json");
-      writeTestConfig(configPath, libraryPath, "ollama", "json");
-
-      const res = runCli(["--format", "text", "stats"], {
-        env: envForConfig(configPath),
-      });
-
-      expect(res.exitCode).not.toBe(0);
-      const obj = JSON.parse(res.stdout);
-      expect(obj.ok).toBe(false);
-      expect(obj.error).toBeDefined();
-      expect(obj.error.code).toBe("INVALID_FLAG");
-      expect(Object.keys(obj).sort()).toEqual(["command", "error", "ok"]);
-    }));
-
-  test("unknown command option returns a structured INVALID_FLAG envelope", () =>
-    withTempLibraryPath((libraryPath) => {
-      const configPath = join(libraryPath, "config.json");
-      writeTestConfig(configPath, libraryPath);
-
-      const res = runCli(["stats", "--bogus", "--format", "json"], {
-        env: envForConfig(configPath),
-      });
-
-      expect(res.exitCode).not.toBe(0);
-      const obj = JSON.parse(res.stdout);
-      expect(obj.ok).toBe(false);
-      expect(obj.command).toBe("stats");
-      expect(obj.error.code).toBe("INVALID_FLAG");
-      expect(String(obj.error.message)).toContain("--bogus");
-    }));
-
-  test("verbose parse errors include timing metadata", () =>
-    withTempLibraryPath((libraryPath) => {
-      const configPath = join(libraryPath, "config.json");
-      writeTestConfig(configPath, libraryPath);
-
-      const res = runCli(
-        ["stats", "--bogus", "--format", "json", "--verbose"],
-        { env: envForConfig(configPath) },
-      );
-
-      expect(res.exitCode).not.toBe(0);
-      const obj = JSON.parse(res.stdout);
-      expect("protocolVersion" in obj).toBe(false);
-      expectTimingMetadata(obj.meta, { command: false });
-    }));
-
-  test("verbose command failures include command timing", () =>
-    withTempLibraryPath((libraryPath) => {
-      const configPath = join(libraryPath, "config.json");
-      writeTestConfig(configPath, libraryPath);
-
-      const res = runCli(
-        ["read", "missing-document", "--format", "json", "--verbose"],
-        { env: envForConfig(configPath) },
-      );
-
-      expect(res.exitCode).not.toBe(0);
-      const obj = JSON.parse(res.stdout);
-      expect(obj.ok).toBe(false);
-      expect(obj.error.code).toBe("NOT_FOUND");
-      expectTimingMetadata(obj.meta, { command: true });
-    }));
-
-  test("missing required command argument returns a structured INVALID_ARGS envelope", () =>
-    withTempLibraryPath((libraryPath) => {
-      const configPath = join(libraryPath, "config.json");
-      writeTestConfig(configPath, libraryPath);
-
-      const res = runCli(["search", "--format", "json"], {
-        env: envForConfig(configPath),
-      });
-
-      expect(res.exitCode).not.toBe(0);
-      const obj = JSON.parse(res.stdout);
-      expect(obj.ok).toBe(false);
-      expect(obj.command).toBe("search");
-      expect(obj.error.code).toBe("INVALID_ARGS");
-      expect(String(obj.error.message)).toContain("query");
-    }));
-
-  test.each([
-    ["search", "--limit", "invalid", "--", "--help"],
-    ["search", "--limit", "invalid", "--tag", "--help", "alpha"],
-    ["search-pack", "--limit", "invalid", "--", "--version"],
-  ])("literal help text does not bypass malformed config: %j", (...args) =>
-    withTempLibraryPath((libraryPath) => {
-      const configPath = join(libraryPath, "config.json");
-      writeFileSync(configPath, "{invalid");
-
-      // An invalid limit prevents a failing implementation from opening the default library.
-      const response = runCli(
-        [args[0]!, "--format", "json", ...args.slice(1)],
-        { env: envForConfig(configPath) },
-      );
-
-      expect(response.exitCode).toBe(1);
-      expect(JSON.parse(response.stdout).error).toMatchObject({
-        code: "UNKNOWN_ERROR",
-        message: expect.stringContaining("JSON"),
-      });
-    }));
-
-  test("search accepts options before its query", () =>
-    withTempLibraryPath((libraryPath) => {
-      const configPath = join(libraryPath, "config.json");
-      writeTestConfig(configPath, libraryPath);
-
-      const response = runCli(
-        ["search", "--fts", "alpha", "--docs-only", "--format", "json", "--verbose"],
-        { env: envForConfig(configPath) },
-      );
-
-      expect(response.exitCode).toBe(0);
-      expect(JSON.parse(response.stdout).result).toMatchObject({
-        query: "alpha",
-        retrievalMode: "fts",
-        documents: [],
-      });
-    }));
-
-  test("search keeps flag-like option values out of output settings", () =>
-    withTempLibraryPath((libraryPath) => {
-      const configPath = join(libraryPath, "config.json");
-      writeTestConfig(configPath, libraryPath);
-
-      const response = runCli(
-        ["search", "--fts", "--docs-only", "--tag", "--verbose", "alpha", "--format", "json"],
-        { env: envForConfig(configPath) },
-      );
-
-      expect(response.exitCode).toBe(0);
-      expect(JSON.parse(response.stdout)).toEqual({
-        ok: true,
-        command: "search",
-        result: { retrievalMode: "fts", concepts: [], documents: [] },
-      });
-    }));
-
-  test("search omits echoed input by default and restores it in verbose mode", () =>
-    withTempLibraryPath((libraryPath) => {
-      const configPath = join(libraryPath, "config.json");
-      writeTestConfig(configPath, libraryPath);
-      const env = envForConfig(configPath);
-
-      const compact = runCli(
-        ["search", "absent", "--fts", "--docs-only", "--format", "json"],
-        { env },
-      );
-      expect(compact.exitCode).toBe(0);
-      expect(JSON.parse(compact.stdout).result).toEqual({
-        retrievalMode: "fts",
-        concepts: [],
-        documents: [],
-      });
-
-      const verbose = runCli(
-        ["search", "absent", "--fts", "--docs-only", "--format", "json", "--verbose"],
-        { env },
-      );
-      expect(verbose.exitCode).toBe(0);
-      const result = JSON.parse(verbose.stdout).result;
-      expect(result.query).toBe("absent");
-      expect(result.retrievalMode).toBe("fts");
-      expect(result.options.ftsOnly).toBe(true);
-      expect(result.concepts).toEqual([]);
-      expect(result.documents).toEqual([]);
-    }));
-
-  test("search-pack preserves queries around options and after the option terminator", () =>
-    withTempLibraryPath((libraryPath) => {
-      const configPath = join(libraryPath, "config.json");
-      writeTestConfig(configPath, libraryPath);
-
-      const response = runCli(
-        ["search-pack", "alpha", "--fts", "beta", "--limit=2", "--format", "json", "--", "--draft"],
-        { env: envForConfig(configPath) },
-      );
-
-      expect(response.exitCode).toBe(0);
-      expect(JSON.parse(response.stdout).result.perQuery).toEqual([
-        { query: "alpha", documents: [] },
-        { query: "beta", documents: [] },
-        { query: "--draft", documents: [] },
-      ]);
-    }));
-
-  test("search-pack omits echoed top-level input by default", () =>
-    withTempLibraryPath((libraryPath) => {
-      const configPath = join(libraryPath, "config.json");
-      writeTestConfig(configPath, libraryPath);
-      const env = envForConfig(configPath);
-
-      const compact = runCli(
-        ["search-pack", "absent", "--fts", "--format", "json"],
-        { env },
-      );
-      expect(compact.exitCode).toBe(0);
-      const compactResult = JSON.parse(compact.stdout).result;
-      expect(Object.keys(compactResult).sort()).toEqual([
-        "deduped",
-        "perQuery",
-        "retrievalMode",
-      ]);
-      expect(compactResult.retrievalMode).toBe("fts");
-      expect(compactResult.perQuery[0]).toEqual({
-        query: "absent",
-        documents: [],
-      });
-
-      const verbose = runCli(
-        [
-          "search-pack",
-          "absent",
-          "--fts",
-          "--format",
-          "json",
-          "--verbose",
-        ],
-        { env },
-      );
-      expect(verbose.exitCode).toBe(0);
-      const verboseResult = JSON.parse(verbose.stdout).result;
-      expect(verboseResult.queries).toEqual(["absent"]);
-      expect(verboseResult.retrievalMode).toBe("fts");
-      expect(verboseResult.options.ftsOnly).toBe(true);
-    }));
-
-  test("semantic search reports provider failure instead of falling back to FTS", () =>
-    withTempLibraryPath((libraryPath) => {
-      const configPath = join(libraryPath, "config.json");
-      writeTestConfig(configPath, libraryPath);
-
-      const res = runCli(
-        [
-          "search",
-          "absent",
-          "--docs-only",
-          "--format",
-          "json",
-          "--verbose",
-        ],
-        { env: envForConfig(configPath) },
-      );
-
-      expect(res.exitCode).not.toBe(0);
-      const obj = JSON.parse(res.stdout);
-      expect(obj.ok).toBe(false);
-      expect(obj.command).toBe("search");
-      expect(obj.error.code).toBe("PROVIDER_NOT_READY");
-      expect(obj.error.details).toMatchObject({
-        provider: "ollama",
-        requestedRetrievalMode: "hybrid",
-      });
-    }));
-
-  test("rechunk flag validation: --max-docs requires a numeric value", () =>
-    withTempLibraryPath((libraryPath) => {
-      const configPath = join(libraryPath, "config.json");
-      writeTestConfig(configPath, libraryPath);
-
-      const res = runCli(["rechunk", "--max-docs", "--format", "json"], {
-        env: envForConfig(configPath),
-      });
-
-      expect(res.exitCode).not.toBe(0);
-      const obj = JSON.parse(res.stdout);
-      expect(obj.ok).toBe(false);
-      expect(obj.error.code).toBe("INVALID_ARGS");
-      expect(String(obj.error.message)).toContain("--max-docs");
-    }));
-
-  test(
-    "source integrity drives rechunk planning and deep doctor without exposing hashes",
-    async () =>
-      withTempLibraryPathAsync(async (libraryPath) => {
-      const configPath = join(libraryPath, "config.json");
-      const sourcePath = join(libraryPath, "source.md");
-      writeTestConfig(configPath, libraryPath);
-      writeFileSync(sourcePath, "# Source\n\noriginal\n");
-      const env = envForConfig(configPath);
-
-      expect(runCli(["stats", "--format", "json"], { env }).exitCode).toBe(0);
-
-      const db = createClient({
-        url: `file:${join(libraryPath, "library.db")}`,
-      });
-      const chunker = {
-        id: "markdown-extractor:shared-context-v4",
-        version: 4,
-        unit: "chars",
-        chunkSize: 2000,
-        chunkOverlap: 200,
-      };
-      await db.execute({
-        sql: `INSERT INTO documents
-                (id, title, path, added_at, page_count, size_bytes, tags,
-                 file_type, metadata)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        args: [
-          "doc-1",
-          "Source",
-          sourcePath,
-          "2026-01-01T00:00:00.000Z",
-          1,
-          Buffer.byteLength("# Source\n\noriginal\n"),
-          "[]",
-          "markdown",
-          JSON.stringify({ chunker }),
-        ],
-      });
-      db.close();
-
-      const bulk = JSON.parse(
-        runCli(["rechunk", "--dry-run", "--format", "json"], { env }).stdout,
-      );
-      expect(bulk.result.planned).toBe(0);
-      expect(bulk.result.skippedMissing).toBe(1);
-
-      const includeMissing = JSON.parse(
-        runCli(
-          [
-            "rechunk",
-            "--dry-run",
-            "--include-missing",
-            "--format",
-            "json",
-          ],
-          { env },
-        ).stdout,
-      );
-      expect(includeMissing.result.planned).toBe(1);
-      expect(includeMissing.result.docs[0].code).toBe("missing_identity");
-
-      const explicitMissing = JSON.parse(
-        runCli(
-          ["rechunk", "--dry-run", "--doc", "doc-1", "--format", "json"],
-          { env },
-        ).stdout,
-      );
-      expect(explicitMissing.result.planned).toBe(1);
-
-      const sourceHash = createHash("sha256")
-        .update(readFileSync(sourcePath))
-        .digest("hex");
-      const identityDb = createClient({
-        url: `file:${join(libraryPath, "library.db")}`,
-      });
-      await identityDb.execute({
-        sql: `UPDATE documents
-              SET source_hash_algorithm = 'sha256', source_hash = ?
-              WHERE id = 'doc-1'`,
-        args: [sourceHash],
-      });
-      identityDb.close();
-
-      writeFileSync(sourcePath, "# Source\n\nchanged\n");
-
-      const explicitChanged = JSON.parse(
-        runCli(
-          ["rechunk", "--dry-run", "--doc", "doc-1", "--format", "json"],
-          { env },
-        ).stdout,
-      );
-      expect(explicitChanged.result.docs[0].code).toBe("source_changed");
-      expect(JSON.stringify(explicitChanged)).not.toContain(sourceHash);
-      expect(JSON.stringify(explicitChanged)).not.toContain("sha256");
-
-      const normalDoctor = JSON.parse(
-        runCli(["doctor", "--format", "json"], { env }).stdout,
-      );
-      expect(normalDoctor.result.sourceIntegrity.checked).toBe(0);
-      expect(normalDoctor.result.sourceIntegrity.changed).toBe(0);
-
-      const deepDoctor = JSON.parse(
-        runCli(["doctor", "--deep", "--format", "json"], { env }).stdout,
-      );
-      expect(deepDoctor.result.sourceIntegrity.checked).toBe(1);
-      expect(deepDoctor.result.sourceIntegrity.changed).toBe(1);
-      expect(deepDoctor.result.sourceIntegrity.sample[0]).toMatchObject({
-        id: "doc-1",
-        title: "Source",
-        codes: ["source_changed"],
-      });
-      expect(JSON.stringify(deepDoctor)).not.toContain(sourceHash);
-      expect(JSON.stringify(deepDoctor)).not.toContain("sha256");
-      expect(JSON.stringify(deepDoctor)).not.toContain(sourcePath);
-      }),
-    60_000,
-  );
-
-  test("doc relocate updates only the stored document path", async () =>
-    withTempLibraryPathAsync(async (libraryPath) => {
-      const configPath = join(libraryPath, "config.json");
-      const oldPath = join(libraryPath, "old.md");
-      const relocatedDir = join(libraryPath, "relocated");
-      const newPath = join(relocatedDir, "new.md");
-      writeTestConfig(configPath, libraryPath);
-      writeFileSync(oldPath, "# Source\n\noriginal\n");
-      mkdirSync(relocatedDir, { recursive: true });
-      renameSync(oldPath, newPath);
-      const env = envForConfig(configPath);
-
-      expect(runCli(["stats", "--format", "json"], { env }).exitCode).toBe(0);
-
-      insertStoredMarkdownDocumentInChild(libraryPath, {
-        path: oldPath,
-        content: "# Source\n\noriginal\n",
-      });
-
-      const res = runCli(
-        ["doc", "relocate", "doc-1", newPath, "--format", "json"],
-        { env },
-      );
-
-      expect(res.exitCode).toBe(0);
-      const obj = JSON.parse(res.stdout);
-      expect(Object.keys(obj).sort()).toEqual(["command", "ok", "result"]);
-      expect(obj).toMatchObject({
-        ok: true,
-        command: "doc relocate",
-        result: {
-          docId: "doc-1",
-          title: "Source",
-          oldPath,
-          newPath,
-          changed: true,
-        },
-      });
-      expect("protocolVersion" in obj).toBe(false);
-      expect("dryRun" in obj.result).toBe(false);
-
-      const readRes = runCli(["read", "doc-1", "--format", "json"], { env });
-      expect(readRes.exitCode).toBe(0);
-      expect(JSON.parse(readRes.stdout).result).toMatchObject({
-        title: "Source",
-        path: newPath,
-        pageCount: 1,
-        tags: [],
-        fileType: "markdown",
-      });
-    }));
-
-  test("doc relocate resolves relative target paths before storing", async () =>
-    withTempLibraryPathAsync(async (libraryPath) => {
-      const configPath = join(libraryPath, "config.json");
-      const oldPath = join(libraryPath, "old.md");
-      const relocatedDir = join(libraryPath, "relocated");
-      const newPath = join(relocatedDir, "new.md");
-      const relativeNewPath = relative(process.cwd(), newPath);
-      writeTestConfig(configPath, libraryPath);
-      writeFileSync(oldPath, "# Source\n\noriginal\n");
-      mkdirSync(relocatedDir, { recursive: true });
-      renameSync(oldPath, newPath);
-      const env = envForConfig(configPath);
-
-      expect(runCli(["stats", "--format", "json"], { env }).exitCode).toBe(0);
-
-      insertStoredMarkdownDocumentInChild(libraryPath, {
-        path: oldPath,
-        content: "# Source\n\noriginal\n",
-      });
-
-      const res = runCli(
-        ["doc", "relocate", "doc-1", relativeNewPath, "--format", "json"],
-        { env },
-      );
-
-      expect(res.exitCode).toBe(0);
-      const obj = JSON.parse(res.stdout);
-      expect(obj).toMatchObject({
-        ok: true,
-        command: "doc relocate",
-        result: {
-          docId: "doc-1",
-          oldPath,
-          newPath,
-          changed: true,
-        },
-      });
-
-      const readRes = runCli(["read", "doc-1", "--format", "json"], { env });
-      expect(readRes.exitCode).toBe(0);
-      expect(JSON.parse(readRes.stdout).result.path).toBe(newPath);
-    }));
-
-  test("doc relocate dry-run reports metadata without updating the database", async () =>
-    withTempLibraryPathAsync(async (libraryPath) => {
-      const configPath = join(libraryPath, "config.json");
-      const oldPath = join(libraryPath, "old.md");
-      const newPath = join(libraryPath, "new.md");
-      writeTestConfig(configPath, libraryPath);
-      writeFileSync(oldPath, "# Source\n\noriginal\n");
-      writeFileSync(newPath, "# Source\n\nmodified\n");
-      const env = envForConfig(configPath);
-
-      expect(runCli(["stats", "--format", "json"], { env }).exitCode).toBe(0);
-
-      insertStoredMarkdownDocumentInChild(libraryPath, {
-        path: oldPath,
-        content: "# Source\n\noriginal\n",
-      });
-
-      const res = runCli(
-        [
-          "doc",
-          "relocate",
-          "doc-1",
-          newPath,
-          "--dry-run",
-          "--format",
-          "json",
-        ],
-        { env },
-      );
-
-      expect(res.exitCode).toBe(0);
-      const obj = JSON.parse(res.stdout);
-      expect(obj).toMatchObject({
-        ok: true,
-        command: "doc relocate",
-        result: {
-          docId: "doc-1",
-          title: "Source",
-          oldPath,
-          newPath,
-          changed: false,
-          dryRun: true,
-        },
-      });
-
-      const readRes = runCli(["read", "doc-1", "--format", "json"], { env });
-      expect(readRes.exitCode).toBe(0);
-      expect(JSON.parse(readRes.stdout).result.path).toBe(oldPath);
-    }));
-
-  test("doc relocate rejects missing target paths", () =>
-    withTempLibraryPath((libraryPath) => {
-      const configPath = join(libraryPath, "config.json");
-      const missingPath = join(libraryPath, "missing.md");
-      writeTestConfig(configPath, libraryPath);
-
-      const res = runCli(
-        ["doc", "relocate", "doc-1", missingPath, "--format", "json"],
-        { env: envForConfig(configPath) },
-      );
-
-      expect(res.exitCode).not.toBe(0);
-      const obj = JSON.parse(res.stdout);
-      expect(obj).toMatchObject({
-        ok: false,
-        command: "doc",
-        error: {
-          code: "NEW_PATH_NOT_FOUND",
-        },
-      });
-      expect(String(obj.error.message)).toContain(missingPath);
-      expect("protocolVersion" in obj).toBe(false);
-    }));
-
-  test("capabilities is self-describing without embedding JSON Schemas", () =>
-    withTempLibraryPath((libraryPath) => {
-      const configPath = join(libraryPath, "config.json");
-      writeTestConfig(configPath, libraryPath);
-
-      const res = runCli(["capabilities", "--format", "json"], {
-        env: envForConfig(configPath),
-      });
-
-      expect(res.exitCode).toBe(0);
-      const obj = JSON.parse(res.stdout);
-      expect(obj.ok).toBe(true);
-      expect(obj.command).toBe("capabilities");
-
-      const result = obj.result;
-      expect(result).toBeDefined();
-      expect(typeof result.poinkVersion).toBe("string");
-      expect(result.outputFormats).toEqual(["text", "json", "ndjson"]);
-      expect(result.globalFlags["--config"]).toMatchObject({
-        type: "path",
-        placement: "after-command",
-      });
-      expect(result.globalFlags["--verbose"]).toBeDefined();
-      expect(result.globalFlags["--quiet"]).toBeUndefined();
-      expect(result.globalFlags["--no-hints"]).toBeUndefined();
-      expect("defaultFormat" in result).toBe(false);
-      expect("factoryDefaultFormat" in result).toBe(false);
-      expect("configurableDefaultFormat" in result).toBe(false);
-
-      // Command list invariants (agent discovery depends on these names)
-      const commands = unknownArray(result.commands).filter(isCapabilityCommand);
-      const commandNames = new Set(commands.map((command) => command.name));
-      expect(commandNames.has("search")).toBe(true);
-      expect(commandNames.has("search-pack")).toBe(true);
-      expect(commandNames.has("chunk")).toBe(true);
-      expect(commandNames.has("doc")).toBe(true);
-      expect(commandNames.has("doc relocate")).toBe(true);
-      expect(commandNames.has("page")).toBe(true);
-      expect(commandNames.has("add")).toBe(true);
-      expect(commandNames.has("stats")).toBe(true);
-      expect(commandNames.has("rechunk")).toBe(true);
-      expect(commandNames.has("reindex")).toBe(true);
-      expect(commandNames.has("mcp")).toBe(true);
-      expect(commandNames.has("serve")).toBe(true);
-      expect(commandNames.has("providers")).toBe(true);
-      expect(commandNames.has("setup")).toBe(false);
-      const providersCommand = commands.find(
-        (command) => command.name === "providers",
-      );
-      expect(providersCommand?.argv).toEqual([
-        "providers",
-        "login",
-        "--provider",
-        "openai-codex",
-        "--format",
-        "text",
-        "[--device-auth]",
-      ]);
-
-      expect("schemas" in result).toBe(false);
-    }));
-
-  test("config schema exposes the config schema outside capabilities", () =>
-    withTempLibraryPath((libraryPath) => {
-      const configPath = join(libraryPath, "config.json");
-      writeTestConfig(configPath, libraryPath);
-
-      const fetched = runCli(["config", "schema", "--format", "json"], {
-        env: envForConfig(configPath),
-      });
-      expect(fetched.exitCode).toBe(0);
-      const schema = JSON.parse(fetched.stdout).result;
-      expect(schema.type).toBe("object");
-      expect(schema.properties.models).toBeDefined();
-      expect(schema.properties.providers).toBeDefined();
-      expect(schema.properties.storage).toBeDefined();
-      expect(schema.properties.storage.properties.libsql).toBeDefined();
-      expect(schema.properties.storage.properties.backend).toBeUndefined();
-      expect(schema.properties.storage.properties.qdrant).toBeUndefined();
-    }));
-
-  test("taxonomy list is compact and taxonomy get returns details", async () =>
-    withTempLibraryPathAsync(async (libraryPath) => {
-      const configPath = join(libraryPath, "config.json");
-      writeTestConfig(configPath, libraryPath);
-      const env = envForConfig(configPath);
-
-      expect(runCli(["stats", "--format", "json"], { env }).exitCode).toBe(0);
-      const db = createClient({
-        url: `file:${join(libraryPath, "library.db")}`,
-      });
-      try {
-        await db.batch(
-          [
-            {
-              sql: `INSERT INTO concepts
-                    (id, pref_label, alt_labels, definition, created_at)
-                    VALUES (?, ?, ?, ?, ?)`,
-              args: [
-                "programming",
-                "Programming",
-                "[]",
-                "Software development and programming topics",
-                "2026-01-01T00:00:00.000Z",
-              ],
-            },
-            {
-              sql: `INSERT INTO concepts
-                    (id, pref_label, alt_labels, definition, created_at)
-                    VALUES (?, ?, ?, ?, ?)`,
-              args: [
-                "programming/typescript",
-                "TypeScript",
-                "[\"TS\"]",
-                "TypeScript language and ecosystem",
-                "2026-01-01T00:00:00.000Z",
-              ],
-            },
-            {
-              sql: `INSERT INTO concept_hierarchy (concept_id, broader_id)
-                    VALUES (?, ?)`,
-              args: ["programming/typescript", "programming"],
-            },
-          ],
-          "write",
-        );
-      } finally {
-        await db.close();
-      }
-
-      const listed = runCli(["taxonomy", "list", "--format", "json"], {
-        env,
-      });
-      expect(listed.exitCode).toBe(0);
-      const concepts = JSON.parse(listed.stdout).result.concepts;
-      expect(concepts).toContainEqual({
-        id: "programming",
-        prefLabel: "Programming",
-      });
-      expect(concepts[0]).not.toHaveProperty("definition");
-      expect(concepts[0]).not.toHaveProperty("createdAt");
-
-      const verboseList = runCli(
-        ["taxonomy", "list", "--format", "json", "--verbose"],
-        { env },
-      );
-      expect(verboseList.exitCode).toBe(0);
-      const verboseConcepts = JSON.parse(verboseList.stdout).result.concepts;
-      expect(verboseConcepts[0]).toHaveProperty("altLabels");
-      expect(verboseConcepts[0]).not.toHaveProperty("createdAt");
-
-      const removedTreeFlag = runCli(
-        ["taxonomy", "list", "--tree", "--format", "json"],
-        { env },
-      );
-      expect(removedTreeFlag.exitCode).not.toBe(0);
-      expect(JSON.parse(removedTreeFlag.stdout).error.code).toBe("INVALID_FLAG");
-
-      const fetched = runCli(
-        ["taxonomy", "get", "programming/typescript", "--format", "json"],
-        { env },
-      );
-      expect(fetched.exitCode).toBe(0);
-      const detail = JSON.parse(fetched.stdout).result;
-      expect(detail.id).toBe("programming/typescript");
-      expect(detail.definition).toBe("TypeScript language and ecosystem");
-      expect(detail.broader).toEqual([
-        { id: "programming", prefLabel: "Programming" },
-      ]);
-      expect(detail.narrower).toEqual([]);
-      expect(detail.related).toEqual([]);
-      expect(detail).not.toHaveProperty("createdAt");
-
-      const tree = runCli(["taxonomy", "tree", "--format", "json"], { env });
-      expect(tree.exitCode).toBe(0);
-      const taxonomyResult = JSON.parse(tree.stdout).result;
-      const taxonomyTree = unknownArray(taxonomyResult.tree);
-      const root = taxonomyTree[0];
-      expect(root).not.toHaveProperty("concept");
-      const programmingRoot = taxonomyTree.find(
-        (node) => isRecord(node) && node.id === "programming",
-      );
-      expect(isRecord(programmingRoot)).toBe(true);
-      if (!isRecord(programmingRoot)) {
-        throw new Error("Expected programming taxonomy root");
-      }
-      expect(programmingRoot.children).toContainEqual(
-        expect.objectContaining({
-          id: "programming/typescript",
-          prefLabel: "TypeScript",
-        }),
-      );
-      await sleep(250);
-    }));
-
-  test("setup lists available subcommands without running the wizard", () =>
-    withTempLibraryPath((libraryPath) => {
-      const configPath = join(libraryPath, "config.json");
-      writeTestConfig(configPath, libraryPath);
-
-      const res = runCli(["setup", "--format", "text"], {
-        env: envForConfig(configPath),
-      });
-
-      expect(res.exitCode).toBe(0);
-      expect(res.stdout).toContain("Usage: poink setup <command>");
-      expect(res.stdout).toContain("Initialize Poink and run the configuration wizard");
-      expect(res.stdout).toContain("Run the configuration wizard for an initialized library");
-    }));
-
-  test("setup interactive commands require text format, including dry-run", () =>
-    withTempLibraryPath((libraryPath) => {
-      const configPath = join(libraryPath, "config.json");
-      writeTestConfig(configPath, libraryPath);
-
-      for (const argv of [
-        ["setup", "init", "--format", "json"],
-        ["setup", "config", "--format", "json"],
-        ["setup", "init", "--dry-run", "--format", "json"],
-        ["setup", "config", "--dry-run", "--format", "json"],
-      ]) {
-        const res = runCli(argv, {
-          env: envForConfig(configPath),
-        });
-
-        expect(res.exitCode).not.toBe(0);
-        const obj = JSON.parse(res.stdout);
-        expect(obj.ok).toBe(false);
-        expect(obj.command).toBe("setup");
-        expect(obj.error.code).toBe("INVALID_ARGS");
-        expect(String(obj.error.message)).toContain("--format text");
-      }
-    }));
-
-  test("setup config fails before prompting when library is not initialized", () =>
-    withTempLibraryPath((libraryRoot) => {
-      const libraryPath = join(libraryRoot, "missing-library");
-      const configPath = join(libraryRoot, "config.json");
-      writeTestConfig(configPath, libraryPath);
-
-      const res = runCli(["setup", "config", "--format", "text"], {
-        env: envForConfig(configPath),
-      });
-
-      expect(res.exitCode).not.toBe(0);
-      expect(res.stderr).toContain("NOT_INITIALIZED");
-      expect(res.stderr).toContain("poink setup init");
-    }));
-
-  test("capabilities does not expose configured default format", () =>
-    withTempLibraryPath((libraryPath) => {
-      const configPath = join(libraryPath, "config.json");
-      writeTestConfig(configPath, libraryPath, "ollama", "ndjson");
-
-      const res = runCli(["capabilities", "--format", "json"], {
-        env: envForConfig(configPath),
-      });
-
-      expect(res.exitCode).toBe(0);
-      const obj = JSON.parse(res.stdout);
-      expect(obj.ok).toBe(true);
-      expect("defaultFormat" in obj.result).toBe(false);
-      expect("factoryDefaultFormat" in obj.result).toBe(false);
-      expect("configurableDefaultFormat" in obj.result).toBe(false);
-    }));
-
-  test("providers login requires text format because it is interactive", () =>
-    withTempLibraryPath((libraryPath) => {
-      const configPath = join(libraryPath, "config.json");
-      writeTestConfig(configPath, libraryPath);
-
-      const res = runCli(["providers", "login", "--provider", "openai-codex", "--format", "json", "--verbose"], {
-        env: envForConfig(configPath),
-      });
-
-      expect(res.exitCode).not.toBe(0);
-      const obj = JSON.parse(res.stdout);
-      expect(obj.ok).toBe(false);
-      expect(obj.command).toBe("providers");
-      expect(obj.error.code).toBe("INVALID_ARGS");
-      expect(String(obj.error.message)).toContain("--format text");
-      expect(obj.error.details.hint).toBe(
-        "poink providers login --provider openai-codex --format text",
-      );
-    }));
-
-  test("providers login rejects unsupported provider login flags", () =>
-    withTempLibraryPath((libraryPath) => {
-      const configPath = join(libraryPath, "config.json");
-      writeTestConfig(configPath, libraryPath);
-
-      const res = runCli(
-        [
-          "providers",
-          "login",
-          "--provider",
-          "openai-codex",
-          "--device-code",
-          "--format",
-          "json",
-          "--verbose",
-        ],
-        {
-          env: envForConfig(configPath),
-        },
-      );
-
-      expect(res.exitCode).not.toBe(0);
-      const obj = JSON.parse(res.stdout);
-      expect(obj.ok).toBe(false);
-      expect(obj.command).toBe("providers");
-      expect(obj.error.code).toBe("INVALID_ARGS");
-      expect(String(obj.error.message)).toContain("--device-code");
-      expect(obj.error.details.available).toContain("--device-auth");
-    }));
-
-  test("service-free command help does not require runtime services", () =>
-    withTempLibraryPath((libraryPath) => {
-      const configPath = join(libraryPath, "config.json");
-      writeTestConfig(configPath, libraryPath);
-
-      for (const command of ["config", "providers", "setup"]) {
-        const res = runCli([command, "--help", "--format", "json"], {
-          env: envForConfig(configPath),
-        });
-
-        expect(res.exitCode).toBe(0);
-        const obj = JSON.parse(res.stdout);
-        expect(obj.ok).toBe(true);
-        expect(obj.command).toBe("help");
-        expect(obj.result.help).toContain(
-          "poink providers login --provider openai-codex --format text",
-        );
-        expect(obj.result.help).toContain("poink setup init --format text");
-      }
-    }));
-
-  test("config show text output includes libSQL database details", () =>
-    withTempLibraryPath((libraryPath) => {
-      const configPath = join(libraryPath, "config.json");
-      writeTestConfig(configPath, libraryPath);
-
-      const res = runCli(["config", "show", "--format", "text"], {
-        env: envForConfig(configPath),
-      });
-
-      expect(res.exitCode).toBe(0);
-      expect(res.stdout).toContain("Storage:");
-      expect(res.stdout).toContain("libSQL");
-      expect(res.stdout).toContain("Database:");
-      expect(res.stdout).toContain("OpenAI Codex:");
-    }));
-
-  test("config show succeeds when configured library path does not exist yet", () =>
-    withTempLibraryPath((libraryRoot) => {
-      const libraryPath = join(libraryRoot, "missing-library");
-      const configPath = join(libraryRoot, "config.json");
-      writeTestConfig(configPath, libraryPath);
-
-      const res = runCli(["config", "show", "--format", "text"], {
-        env: envForConfig(configPath),
-      });
-
-      expect(res.exitCode).toBe(0);
-      expect(res.stdout).toContain("PDF Library Config");
-      expect(res.stdout).toContain("Storage:");
-    }));
-
-  test("config show redacts stored secrets in JSON output by default", () =>
-    withTempLibraryPath((libraryPath) => {
-      const configPath = join(libraryPath, "config.json");
-      const config = makeTestConfigWithStoredSecrets(libraryPath);
-      config.providers.openrouter.apiKey = "openrouter-secret";
-      config.storage.libsql.authToken = "libsql-secret";
-      config.server.auth.token = "server-secret";
-      writeFileSync(configPath, JSON.stringify(config, null, 2), "utf-8");
-
-      const res = runCli(["config", "show", "--format", "json"], {
-        env: envForConfig(configPath),
-      });
-
-      expect(res.exitCode).toBe(0);
-      expect(res.stdout).not.toContain("openrouter-secret");
-      expect(res.stdout).not.toContain("libsql-secret");
-      expect(res.stdout).not.toContain("server-secret");
-
-      const obj = JSON.parse(res.stdout);
-      expect(obj.result.config.providers.openrouter.apiKey).toBe("[redacted]");
-      expect(obj.result.config.storage.libsql.authToken).toBe("[redacted]");
-      expect(obj.result.config.server.auth.token).toBe("[redacted]");
-      expect(obj.result.config.providers.openrouter.apiKeyEnv).toBe("OPENROUTER_API_KEY");
-      expect(obj.result.config.server.auth.tokenEnv).toBe("POINK_SERVER_TOKEN");
-    }));
-
-  test("config show returns stored secrets when explicitly requested", () =>
-    withTempLibraryPath((libraryPath) => {
-      const configPath = join(libraryPath, "config.json");
-      const config = makeTestConfigWithStoredSecrets(libraryPath);
-      config.providers.openrouter.apiKey = "openrouter-secret";
-      config.server.auth.token = "server-secret";
-      writeFileSync(configPath, JSON.stringify(config, null, 2), "utf-8");
-
-      const res = runCli(
-        ["config", "show", "--show-secrets", "--format", "json"],
-        {
-          env: envForConfig(configPath),
-        },
-      );
-
-      expect(res.exitCode).toBe(0);
-      const obj = JSON.parse(res.stdout);
-      expect(obj.result.config.providers.openrouter.apiKey).toBe("openrouter-secret");
-      expect(obj.result.config.server.auth.token).toBe("server-secret");
-    }));
-
-  test("config get redacts stored secrets unless explicitly requested", () =>
-    withTempLibraryPath((libraryPath) => {
-      const configPath = join(libraryPath, "config.json");
-      const config = makeTestConfigWithStoredSecrets(libraryPath);
-      config.providers.openrouter.apiKey = "openrouter-secret";
-      writeFileSync(configPath, JSON.stringify(config, null, 2), "utf-8");
-
-      const redacted = runCli(
-        ["config", "get", "providers.openrouter.apiKey", "--format", "json"],
-        {
-          env: envForConfig(configPath),
-        },
-      );
-      expect(redacted.exitCode).toBe(0);
-      expect(redacted.stdout).not.toContain("openrouter-secret");
-      expect(JSON.parse(redacted.stdout).result.value).toBe("[redacted]");
-
-      const raw = runCli(
-        [
-          "config",
-          "get",
-          "providers.openrouter.apiKey",
-          "--show-secrets",
-          "--format",
-          "json",
-        ],
-        {
-          env: envForConfig(configPath),
-        },
-      );
-      expect(raw.exitCode).toBe(0);
-      expect(JSON.parse(raw.stdout).result.value).toBe("openrouter-secret");
-    }));
-
-  test("config get redacts secrets inside parent object paths", () =>
-    withTempLibraryPath((libraryPath) => {
-      const configPath = join(libraryPath, "config.json");
-      const config = makeTestConfigWithStoredSecrets(libraryPath);
-      config.providers.openrouter.apiKey = "openrouter-secret";
-      config.server.auth.token = "server-secret";
-      writeFileSync(configPath, JSON.stringify(config, null, 2), "utf-8");
-
-      const provider = runCli(
-        ["config", "get", "providers.openrouter", "--format", "json"],
-        {
-          env: envForConfig(configPath),
-        },
-      );
-      expect(provider.exitCode).toBe(0);
-      expect(provider.stdout).not.toContain("openrouter-secret");
-      expect(JSON.parse(provider.stdout).result.value.apiKey).toBe("[redacted]");
-
-      const auth = runCli(["config", "get", "server.auth", "--format", "json"], {
-        env: envForConfig(configPath),
-      });
-      expect(auth.exitCode).toBe(0);
-      expect(auth.stdout).not.toContain("server-secret");
-      expect(JSON.parse(auth.stdout).result.value.token).toBe("[redacted]");
-    }));
-
-  test("config set providers.openrouter.apiKey succeeds even when current config uses openrouter without a key", () =>
-    withTempLibraryPath((libraryRoot) => {
-      const libraryPath = join(libraryRoot, "library");
-      const configPath = join(libraryRoot, "config.json");
-
-      writeTestConfig(configPath, libraryPath, "openrouter");
-
-      const res = runCli(
-        [
-          "config",
-          "set",
-          "providers.openrouter.apiKey",
-          "test-openrouter-key",
-          "--format",
-          "json",
-        ],
-        {
-          env: envForConfig(configPath),
-        },
-      );
-
-      expect(res.exitCode).toBe(0);
-      const obj = JSON.parse(res.stdout);
-      expect(obj.ok).toBe(true);
-      expect(obj.command).toBe("config");
-      expect(obj.result.path).toBe("providers.openrouter.apiKey");
-      expect(obj.result.value).toBe("[redacted]");
-
-      const saved = JSON.parse(readFileSync(configPath, "utf-8"));
-      expect(saved.providers.openrouter.apiKey).toBe("test-openrouter-key");
-    }));
-
-  test("config set redacts stored secrets in output but persists raw values", () =>
-    withTempLibraryPath((libraryRoot) => {
-      const libraryPath = join(libraryRoot, "library");
-      const configPath = join(libraryRoot, "config.json");
-      writeTestConfig(configPath, libraryPath, "openrouter");
-
-      const redacted = runCli(
-        [
-          "config",
-          "set",
-          "providers.openrouter.apiKey",
-          "test-openrouter-key",
-          "--format",
-          "json",
-        ],
-        {
-          env: envForConfig(configPath),
-        },
-      );
-
-      expect(redacted.exitCode).toBe(0);
-      expect(redacted.stdout).not.toContain("test-openrouter-key");
-      expect(JSON.parse(redacted.stdout).result.value).toBe("[redacted]");
-      let saved = JSON.parse(readFileSync(configPath, "utf-8"));
-      expect(saved.providers.openrouter.apiKey).toBe("test-openrouter-key");
-
-      const raw = runCli(
-        [
-          "config",
-          "set",
-          "providers.openrouter.apiKey",
-          "replacement-openrouter-key",
-          "--show-secrets",
-          "--format",
-          "json",
-        ],
-        {
-          env: envForConfig(configPath),
-        },
-      );
-
-      expect(raw.exitCode).toBe(0);
-      expect(JSON.parse(raw.stdout).result.value).toBe("replacement-openrouter-key");
-      saved = JSON.parse(readFileSync(configPath, "utf-8"));
-      expect(saved.providers.openrouter.apiKey).toBe("replacement-openrouter-key");
-    }));
-
-  test("config set accepts language model reasoning levels and null", () =>
-    withTempLibraryPath((libraryRoot) => {
-      const libraryPath = join(libraryRoot, "library");
-      const configPath = join(libraryRoot, "config.json");
-      writeTestConfig(configPath, libraryPath);
-
-      const xhighRes = runCli(
-        ["config", "set", "models.enrichment.reasoning", "xhigh", "--format", "json"],
-        {
-          env: envForConfig(configPath),
-        },
-      );
-
-      expect(xhighRes.exitCode).toBe(0);
-      const xhighObj = JSON.parse(xhighRes.stdout);
-      expect(xhighObj.ok).toBe(true);
-      expect(xhighObj.result.path).toBe("models.enrichment.reasoning");
-      expect(xhighObj.result.value).toBe("xhigh");
-
-      const nullRes = runCli(
-        ["config", "set", "models.judge.reasoning", "null", "--format", "json"],
-        {
-          env: envForConfig(configPath),
-        },
-      );
-
-      expect(nullRes.exitCode).toBe(0);
-      const nullObj = JSON.parse(nullRes.stdout);
-      expect(nullObj.ok).toBe(true);
-      expect(nullObj.result.path).toBe("models.judge.reasoning");
-      expect(nullObj.result.value).toBeNull();
-
-      const saved = JSON.parse(readFileSync(configPath, "utf-8"));
-      expect(saved.models.enrichment.reasoning).toBe("xhigh");
-      expect(saved.models.judge.reasoning).toBeNull();
-    }));
-
-  test("config set accepts CLI default format values", () =>
-    withTempLibraryPath((libraryRoot) => {
-      const libraryPath = join(libraryRoot, "library");
-      const configPath = join(libraryRoot, "config.json");
-      writeTestConfig(configPath, libraryPath);
-
-      const res = runCli(
-        ["config", "set", "cli.globalFlags.format", "json", "--format", "json"],
-        {
-          env: envForConfig(configPath),
-        },
-      );
-
-      expect(res.exitCode).toBe(0);
-      const obj = JSON.parse(res.stdout);
-      expect(obj.ok).toBe(true);
-      expect(obj.result.path).toBe("cli.globalFlags.format");
-      expect(obj.result.value).toBe("json");
-
-      const saved = JSON.parse(readFileSync(configPath, "utf-8"));
-      expect(saved.cli.globalFlags.format).toBe("json");
-    }));
-
-  test("config set accepts URL download settings", () =>
-    withTempLibraryPath((libraryRoot) => {
-      const libraryPath = join(libraryRoot, "library");
-      const configPath = join(libraryRoot, "config.json");
-      writeTestConfig(configPath, libraryPath);
-
-      const sizeRes = runCli(
-        ["config", "set", "ingest.urlDownloads.maxFileSize", "250mb", "--format", "json"],
-        {
-          env: envForConfig(configPath),
-        },
-      );
-      expect(sizeRes.exitCode).toBe(0);
-
-      const hostsRes = runCli(
-        [
-          "config",
-          "set",
-          "ingest.urlDownloads.allowedPrivateNetworkHosts",
-          "docs.internal,repo.internal",
-          "--format",
-          "json",
-        ],
-        {
-          env: envForConfig(configPath),
-        },
-      );
-      expect(hostsRes.exitCode).toBe(0);
-      const hostsObj = JSON.parse(hostsRes.stdout);
-      expect(hostsObj.ok).toBe(true);
-      expect(hostsObj.result.value).toEqual(["docs.internal", "repo.internal"]);
-
-      const saved = JSON.parse(readFileSync(configPath, "utf-8"));
-      expect(saved.ingest.urlDownloads.maxFileSize).toBe("250mb");
-      expect(saved.ingest.urlDownloads.allowedPrivateNetworkHosts).toEqual([
-        "docs.internal",
-        "repo.internal",
-      ]);
-    }));
-
-  test("config set accepts ingest include and exclude patterns", () =>
-    withTempLibraryPath((libraryRoot) => {
-      const libraryPath = join(libraryRoot, "library");
-      const configPath = join(libraryRoot, "config.json");
-      writeTestConfig(configPath, libraryPath);
-
-      const includeRes = runCli(
-        [
-          "config",
-          "set",
-          "ingest.include",
-          "docs/**/*.md,papers/**/*.pdf",
-          "--format",
-          "json",
-        ],
-        {
-          env: envForConfig(configPath),
-        },
-      );
-      expect(includeRes.exitCode).toBe(0);
-
-      const excludeRes = runCli(
-        [
-          "config",
-          "set",
-          "ingest.exclude",
-          "docs/archive/**,papers/drafts/**",
-          "--format",
-          "json",
-        ],
-        {
-          env: envForConfig(configPath),
-        },
-      );
-      expect(excludeRes.exitCode).toBe(0);
-      const excludeObj = JSON.parse(excludeRes.stdout);
-      expect(excludeObj.ok).toBe(true);
-      expect(excludeObj.result.value).toEqual([
-        "docs/archive/**",
-        "papers/drafts/**",
-      ]);
-
-      const saved = JSON.parse(readFileSync(configPath, "utf-8"));
-      expect(saved.ingest.include).toEqual([
-        "docs/**/*.md",
-        "papers/**/*.pdf",
-      ]);
-      expect(saved.ingest.exclude).toEqual([
-        "docs/archive/**",
-        "papers/drafts/**",
-      ]);
-    }));
-
-  test("config set accepts visual enrichment settings", () =>
-    withTempLibraryPath((libraryRoot) => {
-      const libraryPath = join(libraryRoot, "library");
-      const configPath = join(libraryRoot, "config.json");
-      writeTestConfig(configPath, libraryPath);
-
-      const enabledRes = runCli(
-        ["config", "set", "ingest.visuals.enabled", "true", "--format", "json"],
-        {
-          env: envForConfig(configPath),
-        },
-      );
-      expect(enabledRes.exitCode).toBe(0);
-
-      const sizeRes = runCli(
-        [
-          "config",
-          "set",
-          "ingest.visuals.maxImageBytes",
-          "10mb",
-          "--format",
-          "json",
-        ],
-        {
-          env: envForConfig(configPath),
-        },
-      );
-      expect(sizeRes.exitCode).toBe(0);
-
-      const saved = JSON.parse(readFileSync(configPath, "utf-8"));
-      expect(saved.ingest.visuals.enabled).toBe(true);
-      expect(saved.ingest.visuals.maxImageBytes).toBe("10mb");
-      expect(saved.ingest.visuals.maxImagesPerDocument).toBe(100);
-    }));
-
-  test("config set rejects unitless URL download max file size", () =>
-    withTempLibraryPath((libraryRoot) => {
-      const libraryPath = join(libraryRoot, "library");
-      const configPath = join(libraryRoot, "config.json");
-      writeTestConfig(configPath, libraryPath);
-
-      const res = runCli(
-        ["config", "set", "ingest.urlDownloads.maxFileSize", "100", "--format", "json"],
-        {
-          env: envForConfig(configPath),
-        },
-      );
-
-      expect(res.exitCode).not.toBe(0);
-      const obj = JSON.parse(res.stdout);
-      expect(obj.ok).toBe(false);
-      expect(obj.error.code).toBe("INVALID_ARGS");
-    }));
-
-  test("config set rejects invalid CLI default format values", () =>
-    withTempLibraryPath((libraryRoot) => {
-      const libraryPath = join(libraryRoot, "library");
-      const configPath = join(libraryRoot, "config.json");
-      writeTestConfig(configPath, libraryPath);
-
-      const res = runCli(
-        ["config", "set", "cli.globalFlags.format", "xml", "--format", "json"],
-        {
-          env: envForConfig(configPath),
-        },
-      );
-
-      expect(res.exitCode).not.toBe(0);
-      const obj = JSON.parse(res.stdout);
-      expect(obj.ok).toBe(false);
-      expect(obj.error.code).toBe("INVALID_ARGS");
-
-      const saved = JSON.parse(readFileSync(configPath, "utf-8"));
-      expect(saved.cli.globalFlags.format).toBe("text");
-    }));
-
-  test("config set rejects invalid language model reasoning levels", () =>
-    withTempLibraryPath((libraryRoot) => {
-      const libraryPath = join(libraryRoot, "library");
-      const configPath = join(libraryRoot, "config.json");
-      writeTestConfig(configPath, libraryPath);
-
-      const res = runCli(
-        ["config", "set", "models.enrichment.reasoning", "max", "--format", "json"],
-        {
-          env: envForConfig(configPath),
-        },
-      );
-
-      expect(res.exitCode).not.toBe(0);
-      const obj = JSON.parse(res.stdout);
-      expect(obj.ok).toBe(false);
-      expect(obj.error.code).toBe("INVALID_ARGS");
-
-      const saved = JSON.parse(readFileSync(configPath, "utf-8"));
-      expect(saved.models.enrichment.reasoning).toBeUndefined();
-    }));
-
-  test("config set rejects invalid config keys and does not persist them", () =>
-    withTempLibraryPath((libraryRoot) => {
-      const libraryPath = join(libraryRoot, "library");
-      const configPath = join(libraryRoot, "config.json");
-      writeTestConfig(configPath, libraryPath);
-
-      const res = runCli(
-        ["config", "set", "providers.openrouter.apiKeyyyyy", "123", "--format", "json"],
-        {
-          env: envForConfig(configPath),
-        },
-      );
-
-      expect(res.exitCode).not.toBe(0);
-      const obj = JSON.parse(res.stdout);
-      expect(obj.ok).toBe(false);
-      expect(obj.error.code).toBe("INVALID_ARGS");
-      expect(String(obj.error.message)).toContain("providers.openrouter.apiKeyyyyy");
-
-      const saved = JSON.parse(readFileSync(configPath, "utf-8"));
-      expect(saved.providers?.openrouter?.apiKeyyyyy).toBeUndefined();
-    }));
-
-  test("config set rejects invalid chunking combinations", () =>
-    withTempLibraryPath((libraryRoot) => {
-      const libraryPath = join(libraryRoot, "library");
-      const configPath = join(libraryRoot, "config.json");
-      writeTestConfig(configPath, libraryPath);
-
-      const res = runCli(["config", "set", "chunking.overlap", "2000", "--format", "json"], {
-        env: envForConfig(configPath),
-      });
-
-      expect(res.exitCode).not.toBe(0);
-      const obj = JSON.parse(res.stdout);
-      expect(obj.ok).toBe(false);
-      expect(obj.error.code).toBe("INVALID_ARGS");
-      expect(String(obj.error.message)).toContain("chunking.overlap");
-
-      const saved = JSON.parse(readFileSync(configPath, "utf-8"));
-      expect(saved.chunking.overlap).toBe(200);
-    }));
-
-  test("init creates a missing library directory before opening the database", () =>
-    withTempLibraryPath((libraryRoot) => {
-      const libraryPath = join(libraryRoot, "missing-library");
-      const configPath = join(libraryRoot, "config.json");
-      writeTestConfig(configPath, libraryPath, "openrouter");
-
-      const res = runCli(["init", "--format", "json"], {
-        env: envForConfig(configPath),
-      });
-
-      expect(res.exitCode).toBe(0);
-
-      const obj = JSON.parse(res.stdout);
-      expect(obj.ok).toBe(true);
-      expect(obj.command).toBe("init");
-      expect(obj.result.libraryPath).toBe(libraryPath);
-      expect(obj.result.dbPath).toBe(join(libraryPath, "library.db"));
-    }));
-
-  test("ingest with JSON output emits a single machine-readable envelope", () =>
-    withTempLibraryPath((libraryRoot) => {
-      const libraryPath = join(libraryRoot, "library");
-      const emptyDocs = join(libraryRoot, "empty-docs");
-      const configPath = join(libraryRoot, "config.json");
-      writeTestConfig(configPath, libraryPath);
-      mkdirSync(emptyDocs);
-
-      const res = runCli(["ingest", emptyDocs, "--format", "json"], {
-        env: envForConfig(configPath),
-      });
-
-      expect(res.exitCode).toBe(0);
-      const obj = JSON.parse(res.stdout);
-      expect(obj.ok).toBe(true);
-      expect(obj.command).toBe("ingest");
-      expect(obj.result.foundFiles).toBe(0);
-      expect(obj.result.selection).toEqual({
-        include: [],
-        exclude: [],
-        discovered: 0,
-        included: 0,
-        excluded: 0,
-        selected: 0,
-        sampled: 0,
-      });
-    }));
-
-  test("ingest --no-recursive with filters does not scan nested directories", () =>
-    withTempLibraryPath((libraryRoot) => {
-      const libraryPath = join(libraryRoot, "library");
-      const docs = join(libraryRoot, "docs");
-      const nested = join(docs, "nested");
-      const configPath = join(libraryRoot, "config.json");
-      writeTestConfig(configPath, libraryPath);
-      mkdirSync(nested, { recursive: true });
-      writeFileSync(join(nested, "note.md"), "# Nested note\n\nNot discovered.", "utf-8");
-
-      const res = runCli(
-        [
-          "ingest",
-          docs,
-          "--include",
-          "**/*.md",
-          "--exclude",
-          "**/archive/**",
-          "--no-recursive",
-          "--format",
-          "json",
-        ],
-        {
-          env: envForConfig(configPath),
-        },
-      );
-
-      expect(res.exitCode).toBe(0);
-      const obj = JSON.parse(res.stdout);
-      expect(obj.ok).toBe(true);
-      expect(obj.command).toBe("ingest");
-      expect(obj.result.foundFiles).toBe(0);
-      expect(obj.result.selection).toEqual({
-        include: ["**/*.md"],
-        exclude: ["**/archive/**"],
-        discovered: 0,
-        included: 0,
-        excluded: 0,
-        selected: 0,
-        sampled: 0,
-      });
-    }));
-
-  test("ingest include globs filter selected files in JSON output", () =>
-    withTempLibraryPath((libraryRoot) => {
-      const libraryPath = join(libraryRoot, "library");
-      const docs = join(libraryRoot, "docs");
-      const configPath = join(libraryRoot, "config.json");
-      writeTestConfig(configPath, libraryPath);
-      mkdirSync(docs);
-      writeFileSync(join(docs, "paper.pdf"), "%PDF-1.7", "utf-8");
-
-      const res = runCli(
-        ["ingest", docs, "--include", "**/*.md", "--format", "json"],
-        { env: envForConfig(configPath) },
-      );
-
-      expect(res.exitCode).toBe(0);
-      const obj = JSON.parse(res.stdout);
-      expect(obj.ok).toBe(true);
-      expect(obj.result.foundFiles).toBe(0);
-      expect(obj.result.selection).toEqual({
-        include: ["**/*.md"],
-        exclude: [],
-        discovered: 1,
-        included: 0,
-        excluded: 0,
-        selected: 0,
-        sampled: 0,
-      });
-    }));
-
-  test("ingest explains cwd-relative filters rejecting an external directory", () =>
-    withTempLibraryPath((libraryRoot) => {
-      const projectRoot = join(libraryRoot, "project");
-      const libraryPath = join(libraryRoot, "library");
-      const docs = join(libraryRoot, "external-docs");
-      const configPath = join(libraryRoot, "config.json");
-      writeTestConfig(configPath, libraryPath);
-      mkdirSync(projectRoot);
-      mkdirSync(docs);
-      writeFileSync(join(docs, "paper.pdf"), "%PDF-1.7", "utf-8");
-
-      const res = runCli(["ingest", docs, "--include", "**/*.pdf"], {
-        cwd: projectRoot,
-        env: envForConfig(configPath),
-      });
-
-      expect(res.exitCode).toBe(0);
-      expect(res.stdout).toContain("No files matched the include filters");
-      expect(res.stdout).toContain(
-        `Filter paths are relative to the working directory: ${projectRoot}`,
-      );
-      expect(res.stdout).not.toContain("No supported document files found");
-    }));
-
-  test("ingest uses config include and exclude when CLI filters are absent", () =>
-    withTempLibraryPath((libraryRoot) => {
-      const libraryPath = join(libraryRoot, "library");
-      const docs = join(libraryRoot, "docs");
-      const configPath = join(libraryRoot, "config.json");
-      writeTestConfigWithIngestSelection(configPath, libraryPath, {
-        include: ["**/*.md"],
-        exclude: ["**/*.md"],
-      });
-      mkdirSync(docs);
-      writeFileSync(join(docs, "note.md"), "# Note", "utf-8");
-
-      const res = runCli(["ingest", ".", "--format", "json"], {
-        cwd: docs,
-        env: envForConfig(configPath),
-      });
-
-      expect(res.exitCode).toBe(0);
-      const obj = JSON.parse(res.stdout);
-      expect(obj.ok).toBe(true);
-      expect(obj.result.selection).toEqual({
-        include: ["**/*.md"],
-        exclude: ["**/*.md"],
-        discovered: 1,
-        included: 1,
-        excluded: 1,
-        selected: 0,
-        sampled: 0,
-      });
-    }));
-
-  test("ingest matches configured filters relative to the working directory", () =>
-    withTempLibraryPath((libraryRoot) => {
-      const projectRoot = join(libraryRoot, "project");
-      const libraryPath = join(libraryRoot, "library");
-      const configPath = join(libraryRoot, "config.json");
-      const reportDirectories = [
-        "companies/kruk/sources/2026/2026-h1/reports",
-        "companies/synektik/sources/2025/2025-q3/reports",
-        "companies/xtb/sources/2026/2026-h1/reports",
-      ];
-      writeTestConfigWithIngestSelection(configPath, libraryPath, {
-        include: ["companies/*/sources/**/*"],
-        exclude: ["companies/*/sources/**/*"],
-      });
-      for (const [index, reportDirectory] of reportDirectories.entries()) {
-        const absoluteDirectory = join(projectRoot, reportDirectory);
-        mkdirSync(absoluteDirectory, { recursive: true });
-        writeFileSync(
-          join(absoluteDirectory, `report-${index + 1}.md`),
-          `# Report ${index + 1}`,
-          "utf-8",
-        );
-      }
-
-      const res = runCli(
-        ["ingest", ...reportDirectories, "--format", "json"],
-        {
-          cwd: projectRoot,
-          env: envForConfig(configPath),
-        },
-      );
-
-      expect(res.exitCode).toBe(0);
-      const obj = JSON.parse(res.stdout);
-      expect(obj.ok).toBe(true);
-      expect(obj.result.selection).toEqual({
-        include: ["companies/*/sources/**/*"],
-        exclude: ["companies/*/sources/**/*"],
-        discovered: 3,
-        included: 3,
-        excluded: 3,
-        selected: 0,
-        sampled: 0,
-      });
-    }));
-
-  test("ingest CLI include overrides config include and CLI exclude extends config exclude", () =>
-    withTempLibraryPath((libraryRoot) => {
-      const libraryPath = join(libraryRoot, "library");
-      const docs = join(libraryRoot, "docs");
-      const configPath = join(libraryRoot, "config.json");
-      writeTestConfigWithIngestSelection(configPath, libraryPath, {
-        include: ["**/*.pdf"],
-        exclude: ["archive/**"],
-      });
-      mkdirSync(join(docs, "drafts"), { recursive: true });
-      writeFileSync(join(docs, "paper.pdf"), "%PDF-1.7", "utf-8");
-      writeFileSync(join(docs, "drafts", "note.md"), "# Draft", "utf-8");
-
-      const res = runCli(
-        [
-          "ingest",
-          ".",
-          "--include",
-          "**/*.md",
-          "--exclude",
-          "drafts/**",
-          "--format",
-          "json",
-        ],
-        { cwd: docs, env: envForConfig(configPath) },
-      );
-
-      expect(res.exitCode).toBe(0);
-      const obj = JSON.parse(res.stdout);
-      expect(obj.ok).toBe(true);
-      expect(obj.result.selection).toEqual({
-        include: ["**/*.md"],
-        exclude: ["archive/**", "drafts/**"],
-        discovered: 2,
-        included: 1,
-        excluded: 1,
-        selected: 0,
-        sampled: 0,
-      });
-    }));
-
-  test("ingest excludes win over includes and text prints selection counters", () =>
-    withTempLibraryPath((libraryRoot) => {
-      const libraryPath = join(libraryRoot, "library");
-      const docs = join(libraryRoot, "docs");
-      const configPath = join(libraryRoot, "config.json");
-      writeTestConfig(configPath, libraryPath);
-      mkdirSync(join(docs, "archive"), { recursive: true });
-      writeFileSync(join(docs, "archive", "note.md"), "# Archived", "utf-8");
-
-      const res = runCli(
-        [
-          "ingest",
-          ".",
-          "--include",
-          "**/*.md",
-          "--exclude",
-          "**/archive/**",
-        ],
-        { cwd: docs, env: envForConfig(configPath) },
-      );
-
-      expect(res.exitCode).toBe(0);
-      expect(res.stdout).toContain(
-        "Selection: discovered 1, included 1, excluded 1, selected 0",
-      );
-      expect(res.stdout).toContain("Include:\n  **/*.md");
-      expect(res.stdout).toContain("Exclude:\n  **/archive/**");
-    }));
-
-  test("CLI package dependencies do not include Ink or React", () => {
-    const pkg = JSON.parse(readFileSync("package.json", "utf-8"));
-    expect(pkg.dependencies?.ink).toBeUndefined();
-    expect(pkg.dependencies?.["ink-spinner"]).toBeUndefined();
-    expect(pkg.dependencies?.react).toBeUndefined();
-    expect(pkg.devDependencies?.["@types/react"]).toBeUndefined();
-  });
-
-  test("commander refactor has concrete module entrypoints for planned CLI domains", () => {
-    for (const path of [
-      "src/cli/mcp.ts",
-      "src/cli/serve.ts",
-      "src/cli/runtime.ts",
-      "src/cli/envelope.ts",
-      "src/cli/health.ts",
-      "src/cli/ingestProgress.ts",
-      "src/cli/commands/capabilities.ts",
-      "src/cli/commands/add.ts",
-      "src/cli/commands/docRelocate.ts",
-      "src/cli/commands/search.ts",
-      "src/cli/commands/taxonomy.ts",
-      "src/cli/commands/doctor.ts",
-      "src/cli/commands/init.ts",
-      "src/cli/commands/setup.ts",
-      "src/cli/commands/repair.ts",
-      "src/cli/commands/ingest.ts",
-      "src/cli/commands/reindex.ts",
-      "src/cli/commands/rechunk.ts",
-      "src/cli/families/lightweight.ts",
-      "src/cli/families/store.ts",
-      "src/cli/families/search.ts",
-      "src/cli/families/ingestion.ts",
-      "src/cli/families/setup.ts",
-      "src/cli/families/diagnostics.ts",
-      "src/cli/families/server.ts",
-    ]) {
-      expect(existsSync(path), path).toBe(true);
+      await sleep(100);
     }
-  });
-});
-
-describe("MCP Tool Output Contract", () => {
-  test(
-    "mcp tools return structuredContent matching the agent envelope schema",
-    async () =>
-      withTempLibraryPathAsync(async (libraryPath) => {
-        const configPath = join(libraryPath, "config.json");
-        writeTestConfig(configPath, libraryPath);
-
-        const transport = new StdioClientTransport({
-          command: process.execPath,
-          args: nodeTsxArgs(["mcp"]),
-          cwd: process.cwd(),
-          stderr: "pipe",
-          env: childEnv(envForConfig(configPath)),
-        });
-
-        const client = new Client({
-          name: "poink-contract-test",
-          version: "0.0.0",
-        });
-
-        try {
-          await client.connect(transport);
-
-          const tools = await client.listTools();
-          const toolNames = new Set(tools.tools.map((t) => t.name));
-          expect(toolNames.has("capabilities")).toBe(true);
-          expect(toolNames.has("config_schema")).toBe(true);
-          expect(toolNames.has("stats")).toBe(true);
-          expect(toolNames.has("search")).toBe(true);
-          expect(toolNames.has("taxonomy_get")).toBe(true);
-
-          const call = await client.callTool({ name: "stats", arguments: {} });
-          expect(Boolean(call.isError)).toBe(false);
-          expect(call.structuredContent).toBeDefined();
-          expect(call.content).toBeDefined();
-
-          const content = Array.isArray(call.content) ? call.content : [];
-          const textContent = content.find(isTextContent);
-          expect(textContent).toBeDefined();
-          if (!textContent) throw new Error("Expected text tool content");
-          expect(JSON.parse(textContent.text).ok).toBe(true);
-
-          const envelope = call.structuredContent;
-          expect(isRecord(envelope)).toBe(true);
-          if (!isRecord(envelope)) {
-            throw new Error("Expected structuredContent envelope");
-          }
-          const result = envelope.result;
-          expect(isRecord(result)).toBe(true);
-          if (!isRecord(result)) {
-            throw new Error("Expected stats result object");
-          }
-          expect(envelope.ok).toBe(true);
-          expect(envelope.command).toBe("stats");
-          expect(result.libraryPath).toBe(libraryPath);
-          expect("protocolVersion" in envelope).toBe(false);
-          expect("meta" in envelope).toBe(false);
-          expect(JSON.parse(textContent.text)).toEqual(envelope);
-
-          const ftsSearchCall = await client.callTool({
-            name: "search",
-            arguments: {
-              query: "absent",
-              docsOnly: true,
-              fts: true,
-            },
-          });
-          const ftsSearchEnvelope =
-            ftsSearchCall.structuredContent as Record<string, unknown>;
-          expect(ftsSearchEnvelope.ok).toBe(true);
-          expect(ftsSearchEnvelope.result).toMatchObject({
-            retrievalMode: "fts",
-            documents: [],
-          });
-
-          const packCall = await client.callTool({
-            name: "search_pack",
-            arguments: {
-              queries: ["alpha", "--help", "--format", "text", "--verbose", "--config"],
-              fts: true,
-              limit: 2,
-              withContent: true,
-              globalLimit: 3,
-            },
-          });
-          expect(packCall.structuredContent).toMatchObject({
-            ok: true,
-            command: "search-pack",
-            result: {
-              retrievalMode: "fts",
-              perQuery: [
-                { query: "alpha", documents: [] },
-                { query: "--help", documents: [] },
-                { query: "--format", documents: [] },
-                { query: "text", documents: [] },
-                { query: "--verbose", documents: [] },
-                { query: "--config", documents: [] },
-              ],
-              deduped: [],
-            },
-          });
-
-          const cliPack = runCli(
-            [
-              "search-pack", "--fts", "--limit", "2", "--with-content",
-              "--global-limit", "3", "--format", "json", "--",
-              "alpha", "--help", "--format", "text", "--verbose", "--config",
-            ],
-            { env: envForConfig(configPath) },
-          );
-          expect(cliPack.exitCode).toBe(0);
-          expect(JSON.parse(cliPack.stdout)).toEqual(packCall.structuredContent);
-
-          const semanticSearchCall = await client.callTool({
-            name: "search",
-            arguments: {
-              query: "absent",
-              docsOnly: true,
-            },
-          });
-          const semanticSearchEnvelope =
-            semanticSearchCall.structuredContent as Record<string, unknown>;
-          expect(semanticSearchCall.isError).toBe(true);
-          expect(semanticSearchEnvelope.ok).toBe(false);
-          expect(semanticSearchEnvelope.error).toMatchObject({
-            code: "PROVIDER_NOT_READY",
-          });
-        } finally {
-          try {
-            await client.close();
-          } catch {
-            // ignore
-          }
-          try {
-            await transport.close();
-          } catch {
-            // ignore
-          }
-        }
-      }),
-    20000,
-  );
-
-  test(
-    "verbose MCP errors include timing metadata",
-    async () =>
-      withTempLibraryPathAsync(async (libraryPath) => {
-        const configPath = join(libraryPath, "config.json");
-        writeTestConfig(configPath, libraryPath);
-
-        const transport = new StdioClientTransport({
-          command: process.execPath,
-          args: nodeTsxArgs(["mcp", "--verbose"]),
-          cwd: process.cwd(),
-          stderr: "pipe",
-          env: Object.fromEntries(
-            Object.entries({
-              ...process.env,
-              ...envForConfig(configPath),
-            }).filter((entry): entry is [string, string] => entry[1] !== undefined),
-          ),
-        });
-        const client = new Client({
-          name: "poink-verbose-error-test",
-          version: "0.0.0",
-        });
-
-        try {
-          await client.connect(transport);
-          const successCall = await client.callTool({
-            name: "stats",
-            arguments: {},
-          });
-          const successEnvelope =
-            successCall.structuredContent as Record<string, unknown>;
-          expect(successEnvelope.ok).toBe(true);
-          expect("protocolVersion" in successEnvelope).toBe(false);
-          expectTimingMetadata(successEnvelope.meta, { command: true });
-
-          const call = await client.callTool({
-            name: "read",
-            arguments: { idOrTitle: "missing-document" },
-          });
-          const envelope = call.structuredContent as Record<string, unknown>;
-
-          expect(envelope.ok).toBe(false);
-          expect("protocolVersion" in envelope).toBe(false);
-          expectTimingMetadata(envelope.meta, { command: true });
-        } finally {
-          try {
-            await client.close();
-          } catch {
-            // ignore
-          }
-          try {
-            await transport.close();
-          } catch {
-            // ignore
-          }
-        }
-      }),
-    20000,
-  );
-});
+    throw new Error("serve did not become healthy");
+  } finally {
+    proc.kill();
+    await exited;
+  }
+}
 
 describe("HTTP MCP Server", () => {
-  test(
-    "serve refuses non-loopback binds without bearer auth",
-    async () =>
-      withTempLibraryPathAsync(async (libraryPath) => {
-        const configPath = join(libraryPath, "config.json");
-        writeTestConfig(configPath, libraryPath);
+  const withoutServerToken = { POINK_SERVER_TOKEN: undefined };
 
-        const port = await getAvailablePort();
-        const env = {
-          ...process.env,
-          ...envForConfig(configPath),
-        } as Record<string, string>;
-        delete env.POINK_SERVER_TOKEN;
+  test("serve refuses non-loopback binds without bearer auth", async ({ lib }) => {
+    const port = await getAvailablePort();
 
-        const proc = spawn(
-          process.execPath,
-          nodeTsxArgs([
-            "serve",
-            "--host",
-            "0.0.0.0",
-            "--port",
-            String(port),
-          ]),
-          {
-            cwd: process.cwd(),
-            stdio: ["ignore", "pipe", "pipe"],
-            env,
-          },
-        );
+    const res = lib.run(["serve", "--host", "0.0.0.0", "--port", String(port)], {
+      env: withoutServerToken,
+    });
 
-        let stderr = "";
-        let stdout = "";
-        let timedOut = false;
-        const rejectionTimeoutMs = 20_000;
-        proc.stdout.on("data", (chunk) => {
-          stdout += String(chunk);
+    expect(res.exitCode).toBe(1);
+    expect(res.stderr).toContain("Refusing to bind HTTP MCP server");
+  });
+
+  test("verbose serve startup failures include total timing only", async ({ lib }) => {
+    const port = await getAvailablePort();
+
+    const res = lib.run(
+      ["serve", "--host", "0.0.0.0", "--port", String(port), "--format", "json", "--verbose"],
+      { env: withoutServerToken },
+    );
+
+    expect(res.exitCode).toBe(1);
+    expect(res.stderr).toBe("");
+    const obj = JSON.parse(res.stdout);
+    expect(obj).toMatchObject({
+      ok: false,
+      command: "serve",
+      error: {
+        code: "INVALID_CONFIG",
+        message: expect.stringContaining("Refusing to bind HTTP MCP server"),
+      },
+    });
+    expectTimingMetadata(obj.meta, { command: false });
+  });
+
+  test("serve starts the HTTP MCP server and exposes /health", ({ lib }) =>
+    withServer(lib, { host: "127.0.0.1" }, async (port, health) => {
+      expect(health).toEqual({
+        ok: true,
+        host: "127.0.0.1",
+        port,
+        auth: { enabled: false },
+      });
+    }));
+
+  test("serve enables bearer auth for non-loopback binds with env token", ({ lib }) =>
+    withServer(
+      lib,
+      { host: "0.0.0.0", env: { POINK_SERVER_TOKEN: "env-token" } },
+      async (port, health) => {
+        expect(health).toEqual({
+          ok: true,
+          host: "0.0.0.0",
+          port,
+          auth: { enabled: true },
         });
-        proc.stderr.on("data", (chunk) => {
-          stderr += String(chunk);
-        });
-
-        const exit = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
-          (resolve, reject) => {
-            const timeout = setTimeout(() => {
-              timedOut = true;
-              proc.kill();
-            }, rejectionTimeoutMs);
-            proc.once("exit", (code, signal) => {
-              clearTimeout(timeout);
-              if (timedOut) {
-                reject(
-                  new Error(
-                    `serve did not reject unauthenticated remote bind within ${rejectionTimeoutMs}ms\nstdout:\n${stdout}\nstderr:\n${stderr}`,
-                  ),
-                );
-                return;
-              }
-              resolve({ code, signal });
-            });
-          },
-        );
-
-        expect(exit.code).toBe(1);
-        expect(exit.signal).toBeNull();
-        expect(stderr).toContain("Refusing to bind HTTP MCP server");
-      }),
-    30000,
-  );
-
-  test(
-    "verbose serve startup failures include total timing only",
-    async () =>
-      withTempLibraryPathAsync(async (libraryPath) => {
-        const configPath = join(libraryPath, "config.json");
-        writeTestConfig(configPath, libraryPath);
-
-        const port = await getAvailablePort();
-        const env = {
-          ...process.env,
-          ...envForConfig(configPath),
-        } as Record<string, string>;
-        delete env.POINK_SERVER_TOKEN;
-
-        const proc = spawnSync(
-          process.execPath,
-          nodeTsxArgs([
-            "serve",
-            "--host",
-            "0.0.0.0",
-            "--port",
-            String(port),
-            "--format",
-            "json",
-            "--verbose",
-          ]),
-          {
-            cwd: process.cwd(),
-            encoding: "utf-8",
-            env,
-          },
-        );
-
-        expect(proc.status).toBe(1);
-        expect(proc.stderr).toBe("");
-        const obj = JSON.parse(proc.stdout);
-        expect(obj.ok).toBe(false);
-        expect(obj.command).toBe("serve");
-        expect("protocolVersion" in obj).toBe(false);
-        expectTimingMetadata(obj.meta, { command: false });
-        expect(obj.error.code).toBe("INVALID_CONFIG");
-        expect(String(obj.error.message)).toContain("Refusing to bind HTTP MCP server");
-      }),
-    30000,
-  );
-
-  test(
-    "serve starts the HTTP MCP server and exposes /health",
-    async () =>
-      withTempLibraryPathAsync(async (libraryPath) => {
-        const configPath = join(libraryPath, "config.json");
-        writeTestConfig(configPath, libraryPath);
-
-        const port = await getAvailablePort();
-        const proc = spawn(
-          process.execPath,
-          nodeTsxArgs([
-            "serve",
-            "--host",
-            "127.0.0.1",
-            "--port",
-            String(port),
-          ]),
-          {
-            cwd: process.cwd(),
-            stdio: ["ignore", "pipe", "pipe"],
-            env: childEnv(envForConfig(configPath)),
-          },
-        );
-
-        try {
-          let health: Response | undefined;
-          for (let i = 0; i < 100; i++) {
-            try {
-              health = await fetch(`http://127.0.0.1:${port}/health`);
-              if (health.ok) break;
-            } catch {
-              // server not ready yet
-            }
-            await sleep(100);
-          }
-
-          expect(health).toBeDefined();
-          expect(health?.ok).toBe(true);
-
-          const body = await health!.json();
-          expect(body).toEqual({
-            ok: true,
-            host: "127.0.0.1",
-            port,
-            auth: { enabled: false },
-          });
-        } finally {
-          proc.kill();
-          await new Promise<void>((resolve) => {
-            if (proc.exitCode !== null || proc.signalCode !== null) {
-              resolve();
-              return;
-            }
-            proc.once("exit", () => resolve());
-          });
-        }
-      }),
-    20000,
-  );
-
-  test(
-    "serve enables bearer auth for non-loopback binds with env token",
-    async () =>
-      withTempLibraryPathAsync(async (libraryPath) => {
-        const configPath = join(libraryPath, "config.json");
-        writeTestConfig(configPath, libraryPath);
-
-        const port = await getAvailablePort();
-        const proc = spawn(
-          process.execPath,
-          nodeTsxArgs([
-            "serve",
-            "--host",
-            "0.0.0.0",
-            "--port",
-            String(port),
-          ]),
-          {
-            cwd: process.cwd(),
-            stdio: ["ignore", "pipe", "pipe"],
-            env: childEnv({
-              ...envForConfig(configPath),
-              POINK_SERVER_TOKEN: "env-token",
-            }),
-          },
-        );
-
-        try {
-          let health: Response | undefined;
-          for (let i = 0; i < 100; i++) {
-            try {
-              health = await fetch(`http://127.0.0.1:${port}/health`);
-              if (health.ok) break;
-            } catch {
-              // server not ready yet
-            }
-            await sleep(100);
-          }
-
-          expect(health).toBeDefined();
-          expect(health?.ok).toBe(true);
-
-          const body = await health!.json();
-          expect(body).toEqual({
-            ok: true,
-            host: "0.0.0.0",
-            port,
-            auth: { enabled: true },
-          });
-
-          const unauthorized = await fetch(`http://127.0.0.1:${port}/mcp`);
-          expect(unauthorized.status).toBe(401);
-        } finally {
-          proc.kill();
-          await new Promise<void>((resolve) => {
-            if (proc.exitCode !== null || proc.signalCode !== null) {
-              resolve();
-              return;
-            }
-            proc.once("exit", () => resolve());
-          });
-        }
-      }),
-    20000,
-  );
+        const unauthorized = await fetch(`http://127.0.0.1:${port}/mcp`);
+        expect(unauthorized.status).toBe(401);
+      },
+    ));
 });
