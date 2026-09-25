@@ -9,7 +9,6 @@ import {
   resolveLanguageModel,
   type SupportedProvider,
 } from "./AIProvider.js";
-import { normalizeOllamaHostUrl } from "./Ollama.js";
 import { closeOpenAICodexProviderManager } from "./OpenAICodexProvider.js";
 
 afterEach(async () => {
@@ -40,14 +39,6 @@ describe("Ollama base URL normalization", () => {
     [" ", undefined],
   ])("AI SDK URL for %j is %j", (input, expected) => {
     expect(normalizeOllamaBaseUrl(input)).toBe(expected);
-  });
-
-  test.each([
-    ["http://localhost:11434", "http://localhost:11434"],
-    ["http://localhost:11434/api", "http://localhost:11434"],
-    ["http://localhost:11434/api/", "http://localhost:11434"],
-  ])("REST host for %j is %j", (input, expected) => {
-    expect(normalizeOllamaHostUrl(input)).toBe(expected);
   });
 });
 

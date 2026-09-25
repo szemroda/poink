@@ -1,19 +1,5 @@
 export type ParsedArgs = Record<string, string | boolean>;
 
-const DEFAULT_CHECKPOINT_INTERVAL = 50;
-
-export function getCheckpointInterval(opts: ParsedArgs): number {
-  const interval = opts["checkpoint-interval"];
-  if (typeof interval !== "string") return DEFAULT_CHECKPOINT_INTERVAL;
-
-  const parsedInterval = Number.parseInt(interval, 10);
-  if (Number.isNaN(parsedInterval) || parsedInterval <= 0) {
-    return DEFAULT_CHECKPOINT_INTERVAL;
-  }
-
-  return parsedInterval;
-}
-
 export function shouldCheckpoint(
   processedCount: number,
   interval: number,

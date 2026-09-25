@@ -22,8 +22,7 @@ type ChunkerAssessmentCode =
   | "ok"
   | "missing_metadata"
   | "id_version_mismatch"
-  | "config_mismatch"
-  | "unit_mismatch";
+  | "config_mismatch";
 
 type ChunkerAssessment = {
   needsRechunk: boolean;
@@ -41,8 +40,8 @@ const TXT_EXTENSIONS = [".txt"] as const;
 export const CURRENT_CHUNKER: Record<DocumentFileType, ChunkerIdentity> = {
   // v7: shared chunking preserves short trailing chunks + optional visual enrichment chunks
   pdf: { id: "pdf-extractor:shared-context-v7", version: 7 },
-  // v4: shared chunking preserves short trailing chunks + heading ancestry/table preservation + enriched embedding text
-  markdown: { id: "markdown-extractor:shared-context-v4", version: 4 },
+  // v5: section text keeps source markdown (code fences, lists, quotes) instead of flattened plain text
+  markdown: { id: "markdown-extractor:shared-context-v5", version: 5 },
   // v5: shared chunking preserves short trailing chunks + optional visual enrichment chunks
   docx: { id: "office-extractor:docx-shared-context-v5", version: 5 },
   // v4: shared chunking preserves short trailing chunks + OpenDocument heading/table extraction + enriched embedding text
@@ -365,15 +364,6 @@ export function assessDocChunker(
       actual,
       "config_mismatch",
       `chunkSize/chunkOverlap mismatch (${actual.chunkSize}/${actual.chunkOverlap} != ${expected.chunkSize}/${expected.chunkOverlap})`,
-    );
-  }
-
-  if (actual.unit !== expected.unit) {
-    return chunkerAssessment(
-      expected,
-      actual,
-      "unit_mismatch",
-      `chunk unit mismatch (${actual.unit} != ${expected.unit})`,
     );
   }
 

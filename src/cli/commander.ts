@@ -198,7 +198,6 @@ function registerSearchCommands(
   const search = addSearchOptions(program.command("search <query>"));
   register(search, () => {
     const options = search.opts<Record<string, unknown>>();
-    if (options.help === true) return { args: ["search", "--help"] };
     return {
       args: ["search"],
       search: {
@@ -215,7 +214,6 @@ function registerSearchCommands(
   );
   register(searchPack, () => {
     const options = searchPack.opts<Record<string, unknown>>();
-    if (options.help === true) return { args: ["search-pack", "--help"] };
     return {
       args: ["search-pack"],
       search: {
@@ -408,6 +406,16 @@ export function parseCommandLine(
   try {
     program.parse(rawArgs, { from: "user" });
   } catch (error) {
+    // Commander's native help option runs before required-argument checks
+    // and leaves `-- --help` as a literal operand; poink renders its own help.
+    if (error instanceof CommanderError && error.code === "commander.helpDisplayed") {
+      const options = outputOptionsFromRawArgs(rawArgs);
+      return {
+        args: [...rawArgs.slice(0, 1), "--help"],
+        options,
+        globals: commandGlobals(options, configuredDefaultFormat),
+      };
+    }
     if (error instanceof CommanderError) {
       throw mapCommanderError(error);
     }

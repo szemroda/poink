@@ -596,8 +596,8 @@ describe("CLI JSON Envelope Contract", () => {
         fileType: "markdown",
         metadata: {
           chunker: {
-            id: "markdown-extractor:shared-context-v4",
-            version: 4,
+            id: "markdown-extractor:shared-context-v5",
+            version: 5,
             unit: "chars",
             chunkSize: 2000,
             chunkOverlap: 200,

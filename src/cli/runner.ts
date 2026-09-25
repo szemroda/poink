@@ -35,7 +35,6 @@ import type {
 import type { InvocationTiming } from "./timing.js";
 
 export {
-  getCheckpointInterval,
   parseArgs,
   shouldCheckpoint,
 } from "./args.js";

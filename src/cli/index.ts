@@ -6,7 +6,6 @@ export {
   type WALHealthResult,
 } from "./health.js";
 export {
-  getCheckpointInterval,
   parseArgs,
   shouldCheckpoint,
 } from "./args.js";

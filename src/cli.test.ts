@@ -11,7 +11,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { assessWALHealth } from "./cli/health.js";
 import {
-  getCheckpointInterval,
   shouldCheckpoint,
   parseArgs,
 } from "./cli/args.js";
@@ -335,15 +334,6 @@ describe("WAL health assessment", () => {
 });
 
 describe("automatic checkpoint during batch operations", () => {
-  test.each([
-    [{}, 50],
-    [{ "checkpoint-interval": "25" }, 25],
-    [{ "checkpoint-interval": "0" }, 50],
-    [{ "checkpoint-interval": "abc" }, 50],
-  ])("getCheckpointInterval(%j) is %i", (opts, expected) => {
-    expect(getCheckpointInterval(opts)).toBe(expected);
-  });
-
   test("checkpoints only at positive multiples of the interval", () => {
     const processed = [0, 1, 49, 50, 51, 99, 100, 150];
 

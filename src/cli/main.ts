@@ -74,7 +74,7 @@ export const COMMAND_FAMILIES: Readonly<Record<string, CommandFamily>> = {
 function isHelpOrVersionInvocation(rawArgs: string[]): boolean {
   if (rawArgs[0] === "search" || rawArgs[0] === "search-pack") {
     try {
-      return parseCommandLine(rawArgs).options.help === true;
+      return parseCommandLine(rawArgs).args.includes("--help");
     } catch {
       return false;
     }

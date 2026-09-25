@@ -188,8 +188,25 @@ function renderMarkdownTable(node: RootContent): string | null {
   ].join("\n");
 }
 
-function renderMarkdownNode(node: RootContent): string {
-  return renderMarkdownTable(node) ?? mdastToString(node);
+/**
+ * Render a top-level node back to markdown for chunking. Tables are normalized
+ * for the table splitter, code is normalized to ``` fences for the code-block
+ * handling in chunkText, and everything else keeps its source markdown.
+ */
+function renderMarkdownNode(node: RootContent, source: string): string {
+  const table = renderMarkdownTable(node);
+  if (table !== null) return table;
+  if (node.type === "code") {
+    // The fence must be longer than any backtick run inside the code
+    const longestRun = Math.max(0, ...(node.value.match(/`+/g) ?? []).map((run) => run.length));
+    const fence = "`".repeat(Math.max(3, longestRun + 1));
+    return `${fence}${node.lang ?? ""}\n${node.value}\n${fence}`;
+  }
+
+  const start = node.position?.start.offset;
+  const end = node.position?.end.offset;
+  if (start === undefined || end === undefined) return mdastToString(node);
+  return source.slice(start, end);
 }
 
 function compactHeadingPath(
@@ -222,7 +239,7 @@ function parseMarkdownAST(content: string): ExtractedSection[] {
   function flushSection() {
     if (currentContent.length > 0 || currentHeading) {
       const text = currentContent
-        .map((node) => renderMarkdownNode(node))
+        .map((node) => renderMarkdownNode(node, content))
         .join("\n\n")
         .trim();
 
@@ -269,19 +286,6 @@ function parseMarkdownAST(content: string): ExtractedSection[] {
   // Flush final section
   flushSection();
 
-  // If no sections found, treat entire document as one section
-  if (sections.length === 0 && content.trim()) {
-    // Remove frontmatter for the fallback case
-    const { content: bodyContent } = matter(content);
-    sections.push({
-      section: 1,
-      heading: "",
-      headingLevel: 0,
-      headingPath: [],
-      text: bodyContent.trim(),
-    });
-  }
-
   return sections;
 }
 
@@ -292,13 +296,13 @@ function extractFrontmatterData(content: string): MarkdownFrontmatter {
   try {
     const { data } = matter(content);
     return {
+      ...data,
       title: typeof data.title === "string" ? data.title : undefined,
       description:
         typeof data.description === "string" ? data.description : undefined,
       tags: Array.isArray(data.tags)
         ? data.tags.filter((t): t is string => typeof t === "string")
         : undefined,
-      ...data,
     };
   } catch {
     return {};
@@ -314,7 +318,8 @@ function readMarkdownContent(
   }
 
   return Effect.try({
-    try: () => readFileSync(resolvedPath, "utf-8"),
+    // Strip NULs before parsing; remark would otherwise turn them into U+FFFD.
+    try: () => sanitizeText(readFileSync(resolvedPath, "utf-8")),
     catch: (error) =>
       new MarkdownExtractionError({
         path: resolvedPath,
@@ -397,13 +402,10 @@ function chunkText(
 ): string[] {
   assertValidChunking(chunkSize, chunkOverlap);
 
-  // Sanitize first to remove null bytes
-  const sanitized = sanitizeText(text);
-
   // Pre-process large code blocks and tables BEFORE placeholder extraction
   // Use 80% of chunk size as max to leave room for surrounding context
   const maxElementSize = Math.floor(chunkSize * 0.8);
-  let processed = preprocessLargeCodeBlocks(sanitized, maxElementSize);
+  let processed = preprocessLargeCodeBlocks(text, maxElementSize);
   processed = preprocessLargeMarkdownTables(processed, maxElementSize);
 
   // Now extract code blocks for preservation during text chunking
@@ -423,9 +425,11 @@ function chunkText(
     },
   );
 
-  // Clean up excessive whitespace while preserving paragraph breaks
+  // Clean up excessive whitespace while preserving paragraph breaks and
+  // leading indentation (nested lists)
   const cleaned = withPlaceholders
-    .replace(/[ \t]+/g, " ")
+    .replace(/(?<=\S)[ \t]+/g, " ")
+    .replace(/[ \t]+$/gm, "")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 

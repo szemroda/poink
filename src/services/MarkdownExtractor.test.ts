@@ -91,6 +91,12 @@ describe("frontmatter", () => {
       },
     },
     {
+      name: "only string-typed title, description and tags",
+      markdown:
+        "---\ntitle: 123\ndescription: false\ntags:\n  - a\n  - 1\n---\n\nContent.",
+      expected: { tags: ["a"] },
+    },
+    {
       name: "no frontmatter",
       markdown: "# Just a heading\n\nSome content.",
       expected: {},
@@ -191,7 +197,7 @@ describe("section extraction", () => {
 `);
 
     expect(result.sections.map((section) => section.text)).toEqual([
-      "| Column 1 | Column 2 |\n| --- | --- |\n| Cell 1 | Cell 2 |\n\nstrikethrough and bold.",
+      "| Column 1 | Column 2 |\n| --- | --- |\n| Cell 1 | Cell 2 |\n\n~~strikethrough~~ and **bold**.",
     ]);
   });
 
@@ -257,28 +263,65 @@ Content for section two.
     const result = await processMarkdown("---\ntitle: Only Frontmatter\n---\n");
 
     expect(result).toMatchObject({
+      pageCount: 0,
       chunks: [],
       frontmatter: { title: "Only Frontmatter" },
     });
   });
 
-  test("keeps code block content", async () => {
+  test("keeps markdown structure: code fences, indentation, lists and quotes", async () => {
     const result = await processMarkdown(`# Code Example
+
+Run \`npm i\` first.
 
 \`\`\`javascript
 function hello() {
-  console.log("Hello, world!");
-  return true;
+    return true;
 }
 \`\`\`
 
-Some text after.
+    indented code
+
+- apple
+    - green   apple
+- banana
+
+> quote one
+>
+> quote two
 `);
 
-    expect(result.chunks).toHaveLength(1);
-    expect(result.chunks[0]?.content).toContain("function hello()");
-    expect(result.chunks[0]?.content).toContain('console.log("Hello, world!");');
-    expect(result.chunks[0]?.content).toContain("Some text after.");
+    expect(result.chunks.map((chunk) => chunk.content)).toEqual([
+      `# Code Example
+
+Run \`npm i\` first.
+
+\`\`\`javascript
+function hello() {
+    return true;
+}
+\`\`\`
+
+\`\`\`
+indented code
+\`\`\`
+
+- apple
+    - green apple
+- banana
+
+> quote one
+>
+> quote two`,
+    ]);
+  });
+
+  test("fences code that contains backtick fences with a longer fence", async () => {
+    const block = "````md\n```\ninner\n```\n````";
+
+    const result = await processMarkdown(`${block}\n`);
+
+    expect(result.chunks.map((chunk) => chunk.content)).toEqual([block]);
   });
 
   test("splits large tables into chunks that each repeat the header", async () => {
@@ -311,14 +354,13 @@ Some text after.
     ]);
   });
 
-  test("never emits null bytes", async () => {
+  test("strips null bytes from headings and body", async () => {
     const result = await processMarkdown(
       "# Title with\x00null bytes\n\nContent with\x00\x00multiple\x00null bytes.\n",
     );
 
-    // remark replaces NUL with U+FFFD before our sanitizer sees the text.
     expect(result.chunks.map((chunk) => chunk.content)).toEqual([
-      "# Title with�null bytes\n\nContent with��multiple�null bytes.",
+      "# Title withnull bytes\n\nContent withmultiplenull bytes.",
     ]);
   });
 });

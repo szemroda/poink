@@ -158,6 +158,9 @@ describe("runCli config selection", () => {
   test.each([
     ["providers", "--help"],
     ["stats", "--help"],
+    ["read", "--help"],
+    ["search", "-h"],
+    ["taxonomy", "get", "--help"],
   ])("command-scoped help ignores malformed config: %s %s", async (...args) => {
     writeFileSync(envConfigPath, "{invalid");
 
