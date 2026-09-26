@@ -537,7 +537,9 @@ Custom taxonomy JSON files can be loaded programmatically through the library AP
 
 ### Config File
 
-poink stores configuration in `~/.config/poink/config.json` unless `POINK_CONFIG` is set. Use command-scoped `--config <path>` to override it for one invocation.
+poink stores configuration in `~/.config/poink/config.json` unless `POINK_CONFIG` is set to a non-empty path. Use command-scoped `--config <path>` to override it for one invocation.
+
+A missing default config file means built-in defaults. A missing file named by `POINK_CONFIG` or `--config` is an error, so a typo can't silently point poink at your default library. `poink setup init` is the one command that creates the file at that path.
 
 ```bash
 # Show all config

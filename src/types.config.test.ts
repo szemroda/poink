@@ -4,7 +4,9 @@ import { join } from "path";
 import { tmpdir } from "os";
 import {
   Config,
+  ConfigNotFoundError,
   expandHomePath,
+  getDefaultConfigPath,
   LibraryConfig,
   loadConfig,
   normalizeConfig,
@@ -17,6 +19,8 @@ import { restoreEnvSnapshot, snapshotEnv, withEnv } from "./testUtils.js";
 
 const CONFIG_ENV_NAMES = [
   "POINK_CONFIG",
+  "HOME",
+  "USERPROFILE",
   "OPENROUTER_API_KEY",
   "OPENROUTER_BASE_URL",
   "GOOGLE_GENERATIVE_AI_API_KEY",
@@ -70,14 +74,54 @@ function configWith(
 }
 
 describe("loadConfig path and database defaults", () => {
-  test("uses POINK_CONFIG path without persisting missing defaults", () => {
+  test("rejects a POINK_CONFIG path that does not exist", () => {
     withTempDir((tempDir) => {
-      const configPath = join(tempDir, "custom-config.json");
+      const configPath = join(tempDir, "missing-config.json");
       process.env.POINK_CONFIG = configPath;
+
+      expect(() => loadConfig()).toThrow(ConfigNotFoundError);
+      expect(() => loadConfig()).toThrow(configPath);
+      expect(existsSync(configPath)).toBe(false);
+    });
+  });
+
+  test("treats an empty POINK_CONFIG as unset", () => {
+    process.env.POINK_CONFIG = "";
+
+    expect(resolveConfigPath()).toBe(getDefaultConfigPath());
+  });
+
+  test("rejects a missing --config path even when POINK_CONFIG exists", () => {
+    withTempDir((tempDir) => {
+      const envConfigPath = join(tempDir, "env-config.json");
+      writeFileSync(envConfigPath, JSON.stringify(configWith()), "utf-8");
+      process.env.POINK_CONFIG = envConfigPath;
+
+      expect(() =>
+        withConfigPathOverride(join(tempDir, "missing.json"), () => loadConfig()),
+      ).toThrow(ConfigNotFoundError);
+    });
+  });
+
+  test("allowMissing loads defaults for a missing explicit path without creating it", () => {
+    withTempDir((tempDir) => {
+      const configPath = join(tempDir, "new-config.json");
+      process.env.POINK_CONFIG = configPath;
+
+      expect(loadConfig({ allowMissing: true })).toEqual(Config.Default);
+      expect(existsSync(configPath)).toBe(false);
+    });
+  });
+
+  test("uses in-memory defaults when the default config path is missing", () => {
+    withTempDir((tempDir) => {
+      delete process.env.POINK_CONFIG;
+      process.env.HOME = tempDir;
+      delete process.env.USERPROFILE;
 
       const config = loadConfig();
 
-      expect(existsSync(configPath)).toBe(false);
+      expect(existsSync(resolveConfigPath())).toBe(false);
       expect(config).toMatchObject({
         version: 1,
         storage: { libsql: { url: "file:~/.poink/library.db" } },
@@ -349,9 +393,15 @@ describe("loadConfig path and database defaults", () => {
 describe("LibraryConfig path resolution", () => {
   test("defaults to .poink when config omits a library path", () => {
     withTempDir((tempDir) => {
+      const configPath = join(tempDir, "config.json");
+      writeFileSync(
+        configPath,
+        JSON.stringify(configWith({ "library.path": undefined })),
+        "utf-8",
+      );
       withEnv(
         {
-          POINK_CONFIG: join(tempDir, "config.json"),
+          POINK_CONFIG: configPath,
           HOME: undefined,
           USERPROFILE: "C:\\Users\\tester",
         },

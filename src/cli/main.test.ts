@@ -231,6 +231,8 @@ describe("runCli config selection", () => {
       "INVALID_FLAG: error: unknown option '--config'\n",
     ],
   ])("%s", async (_name, args, stderr) => {
+    writeConfig(envConfigPath);
+
     expect(await runCliCaptured(args)).toEqual({
       exitCode: 1,
       stdout: "",

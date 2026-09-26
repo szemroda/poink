@@ -951,6 +951,39 @@ describe("CLI JSON Envelope Contract", () => {
     expect(res.stderr).toContain("poink setup init");
   });
 
+  test("a missing POINK_CONFIG file fails instead of using the default library", ({ tmp }) => {
+    const configPath = join(tmp, "missing-config.json");
+    const env = { POINK_CONFIG: configPath };
+
+    for (const argv of [
+      ["stats", "--format", "json"],
+      ["config", "set", "cli.globalFlags.format", "json", "--format", "json"],
+      ["setup", "config", "--format", "json"],
+    ]) {
+      const res = runCli(argv, { env });
+
+      expect(res.exitCode).not.toBe(0);
+      expect(JSON.parse(res.stdout)).toMatchObject({
+        ok: false,
+        error: { code: "ConfigNotFoundError", message: expect.stringContaining(configPath) },
+      });
+    }
+    expect(existsSync(configPath)).toBe(false);
+  });
+
+  test("setup init may target a missing POINK_CONFIG file", ({ tmp }) => {
+    const res = runCli(["setup", "init", "--format", "json"], {
+      env: { POINK_CONFIG: join(tmp, "new-config.json") },
+    });
+
+    // Reaching setup's own format check proves config bootstrap let it through.
+    expect(JSON.parse(res.stdout)).toMatchObject({
+      ok: false,
+      command: "setup",
+      error: { code: "INVALID_ARGS", message: expect.stringContaining("--format text") },
+    });
+  });
+
   test("providers login requires text format because it is interactive", ({ lib }) => {
     const res = lib.run([
       "providers", "login", "--provider", "openai-codex", "--format", "json", "--verbose",

@@ -787,15 +787,25 @@ export function withConfigPathOverride<T>(configPath: string, run: () => T): T {
   return configPathOverride.run(configPath, run);
 }
 
+type ConfigSource = "--config" | "POINK_CONFIG" | "default";
+
 /**
- * Resolve the active config path.
+ * Resolve the active config path and where it came from.
  * Priority:
- * 1) Invocation config path override
- * 2) $POINK_CONFIG
+ * 1) Invocation config path override (--config)
+ * 2) $POINK_CONFIG (empty counts as unset)
  * 3) ~/.config/poink/config.json
  */
+function resolveConfigSelection(): { path: string; source: ConfigSource } {
+  const overridePath = configPathOverride.getStore();
+  if (overridePath !== undefined) return { path: overridePath, source: "--config" };
+  const envPath = process.env.POINK_CONFIG;
+  if (envPath) return { path: envPath, source: "POINK_CONFIG" };
+  return { path: getDefaultConfigPath(), source: "default" };
+}
+
 export function resolveConfigPath(): string {
-  return configPathOverride.getStore() ?? process.env.POINK_CONFIG ?? getDefaultConfigPath();
+  return resolveConfigSelection().path;
 }
 
 /**
@@ -848,13 +858,20 @@ function normalizeLegacyStorageConfig(configData: unknown): unknown {
 
 /**
  * Load config from resolved path.
- * Missing config is represented by in-memory defaults and does not write disk.
+ * A missing default config means first run and yields in-memory defaults.
+ * A missing explicitly selected config (--config or $POINK_CONFIG) throws
+ * ConfigNotFoundError unless `allowMissing` is set by a command that creates it.
+ * Never writes to disk.
  */
-export function loadConfig(): Config {
-  const configPath = resolveConfigPath();
+export function loadConfig(options: { allowMissing?: boolean } = {}): Config {
+  const { path: configPath, source } = resolveConfigSelection();
 
   if (!existsSync(configPath)) {
-    return Config.Default;
+    if (source === "default" || options.allowMissing) return Config.Default;
+    throw new ConfigNotFoundError({
+      configPath,
+      reason: `Config file not found: ${configPath} (from ${source}). Create it with: poink setup init --config "${configPath}"`,
+    });
   }
 
   // Read and parse existing config
@@ -958,6 +975,15 @@ export class AddOptions extends Schema.Class<AddOptions>("AddOptions")({
 // ============================================================================
 // Errors
 // ============================================================================
+
+export class ConfigNotFoundError extends Schema.TaggedError<ConfigNotFoundError>()(
+  "ConfigNotFoundError",
+  { configPath: Schema.String, reason: Schema.String }
+) {
+  override get message(): string {
+    return this.reason;
+  }
+}
 
 export class PDFNotFoundError extends Schema.TaggedError<PDFNotFoundError>()(
   "PDFNotFoundError",

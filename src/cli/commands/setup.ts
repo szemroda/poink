@@ -1,6 +1,6 @@
 import { confirm, input, password, select } from "@inquirer/prompts";
 import { Effect } from "effect";
-import { existsSync, readFileSync } from "fs";
+import { existsSync } from "fs";
 import {
   Config,
   LibraryConfig,
@@ -107,6 +107,8 @@ type SetupPlan = {
   config: Config;
   selectedLibraryPath: string;
   shouldInitialize: boolean;
+  /** Config file path that applying the plan creates; null when it already exists. */
+  createsConfigAt: string | null;
   changes: ConfigChange[];
   codexAuthAction: CodexAuthAction | null;
 };
@@ -135,15 +137,6 @@ function isEmbeddingProvider(value: string): value is EmbeddingProviderName {
 
 function isLanguageProvider(value: string): value is ProviderName {
   return (LANGUAGE_PROVIDERS as readonly string[]).includes(value);
-}
-
-function loadConfigForSetup(): Config {
-  const configPath = resolveConfigPath();
-  if (!existsSync(configPath)) {
-    return Config.Default;
-  }
-
-  return normalizeConfig(JSON.parse(readFileSync(configPath, "utf-8")));
 }
 
 function isRecord(value: unknown): value is ConfigDraft {
@@ -481,6 +474,9 @@ function renderSummary(plan: SetupPlan): string {
   }
 
   const actions: string[] = [];
+  if (plan.createsConfigAt !== null) {
+    actions.push(`Create config at ${plan.createsConfigAt}`);
+  }
   if (plan.shouldInitialize) {
     actions.push(`Initialize library at ${plan.selectedLibraryPath}`);
   }
@@ -503,6 +499,7 @@ function renderSummary(plan: SetupPlan): string {
 function isNoopPlan(plan: SetupPlan): boolean {
   return (
     plan.changes.length === 0 &&
+    plan.createsConfigAt === null &&
     !plan.shouldInitialize &&
     (!plan.codexAuthAction || plan.codexAuthAction === "skip")
   );
@@ -516,8 +513,12 @@ function serializeChanges(changes: ConfigChange[]) {
   }));
 }
 
-async function buildSetupPlan(mode: SetupMode, dryRun: boolean): Promise<SetupPlan> {
-  const config = loadConfigForSetup();
+async function buildSetupPlan(
+  config: Config,
+  mode: SetupMode,
+  dryRun: boolean,
+): Promise<SetupPlan> {
+  const configPath = resolveConfigPath();
   const initialLibraryPath = resolveLibraryPath(config);
   const initialDbExists = existsSync(resolveLibraryDbPath(config));
 
@@ -576,14 +577,19 @@ async function buildSetupPlan(mode: SetupMode, dryRun: boolean): Promise<SetupPl
     config: selectedConfig,
     selectedLibraryPath: resolveLibraryPath(selectedConfig),
     shouldInitialize: mode === "init" && !selectedDbExists,
+    createsConfigAt: existsSync(configPath) ? null : configPath,
     changes,
     codexAuthAction,
   };
 }
 
-async function runSetupWizard(mode: SetupMode, dryRun: boolean): Promise<SetupPlan | null> {
+async function runSetupWizard(
+  config: Config,
+  mode: SetupMode,
+  dryRun: boolean,
+): Promise<SetupPlan | null> {
   try {
-    const plan = await buildSetupPlan(mode, dryRun);
+    const plan = await buildSetupPlan(config, mode, dryRun);
     console.log("");
     console.log(renderSummary(plan));
     if (isNoopPlan(plan)) {
@@ -718,7 +724,8 @@ export function runSetupCommand(
         return yield* Effect.fail(formatError);
       }
 
-      const currentConfig = loadConfigForSetup();
+      // Bootstrap already rejected a missing explicit config for everything but `setup init`.
+      const currentConfig = globals.config!;
       const currentDbPath = resolveLibraryDbPath(currentConfig);
       const currentDbExists = existsSync(currentDbPath);
 
@@ -738,7 +745,7 @@ export function runSetupCommand(
       }
 
       const plan = yield* Effect.tryPromise({
-        try: () => runSetupWizard(subcommand, dryRun),
+        try: () => runSetupWizard(currentConfig, subcommand, dryRun),
         catch: (error) =>
           new CLIError("SETUP_FAILED", describeCliFailure(error), { cause: error }),
       });

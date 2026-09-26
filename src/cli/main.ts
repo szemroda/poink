@@ -92,6 +92,16 @@ function isHelpOrVersionInvocation(rawArgs: string[]): boolean {
   );
 }
 
+/** `setup init` creates the selected config file, so it may start without one. */
+function isSetupInitInvocation(rawArgs: string[]): boolean {
+  if (rawArgs[0] !== "setup") return false;
+  try {
+    return parseCommandLine(rawArgs).args[1] === "init";
+  } catch {
+    return false;
+  }
+}
+
 function usesOpenAICodex(
   family: CommandFamily,
   parsed: ParsedCommandLine,
@@ -213,7 +223,7 @@ async function runCliWithNormalizedArgs(
 
   let config: Config;
   try {
-    config = loadConfig();
+    config = loadConfig({ allowMissing: isSetupInitInvocation(normalizedArgs) });
   } catch (error) {
     if (!isHelpOrVersionInvocation(normalizedArgs)) {
       const globals = {
