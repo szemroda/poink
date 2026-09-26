@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { tmpdir } from "node:os";
 import { Context, Effect, Either, Layer } from "effect";
 import {
@@ -85,8 +85,7 @@ function makeDatabase(
     listDocumentsWithSourceIdentity: () => Effect.succeed([]),
     vectorSearch: () => Effect.succeed([]),
     ftsSearch: () => Effect.succeed([]),
-    getExpandedContext: () =>
-      Effect.succeed({ content: "", startChunk: "", endChunk: "" }),
+    getExpandedContext: () => Effect.succeed(null),
     getStats: () =>
       Effect.succeed({ documents: 0, chunks: 0, embeddings: 0 }),
     countChunksByDocumentIds: () => Effect.succeed({}),
@@ -311,6 +310,39 @@ describe("DocumentIngestion.add", () => {
       expect.objectContaining({ content, embeddingContent }),
     ]);
     expect(embeddings.batches).toEqual([[embeddingContent]]);
+  });
+
+  test("stores relative and absolute spellings of a source as the same absolute path", async () => {
+    const docPath = writeSource("notes.md", "# Notes\n\ncontent\n");
+    const addAs = async (inputPath: string) => {
+      const lookups: string[] = [];
+      const { database, replaced } = recordingDatabase({
+        getDocumentByPath: (path) =>
+          Effect.sync(() => {
+            lookups.push(path);
+            return null;
+          }),
+      });
+      await runIngestion(
+        {
+          database,
+          markdownExtractor: markdownExtractorReturning([
+            { page: 1, chunkIndex: 0, content: "content" },
+          ]),
+        },
+        (ingestion) => ingestion.add(inputPath),
+      );
+      return { lookups, doc: replaced[0]?.doc };
+    };
+
+    const fromRelative = await addAs(relative(process.cwd(), docPath));
+    const fromAbsolute = await addAs(docPath);
+
+    expect(fromRelative.lookups).toEqual([docPath]);
+    expect(fromRelative.doc).toMatchObject({
+      id: fromAbsolute.doc?.id,
+      path: docPath,
+    });
   });
 
   test("ingests detected TXT files with txt chunker metadata", async () => {

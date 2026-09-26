@@ -8,6 +8,8 @@ import {
 import type { Concept, ConceptAssignment } from "./TaxonomyService.js";
 import {
   StorageError,
+  type ClusterSummarySource,
+  type ConceptEmbeddingSource,
   type DocumentWithSourceIdentity,
 } from "./StorageRepositories.js";
 import { decodeStoredSourceIdentity } from "./SourceIntegrity.js";
@@ -91,6 +93,17 @@ const ConceptRow = Schema.Struct({
   alt_labels: Schema.String,
   definition: Schema.NullOr(Schema.String),
   created_at: Schema.String,
+});
+
+const ConceptSourceRow = Schema.Struct({
+  id: Schema.String,
+  pref_label: Schema.String,
+  definition: Schema.NullOr(Schema.String),
+});
+
+const ClusterSummarySourceRow = Schema.Struct({
+  id: SqlInteger,
+  summary: Schema.NullOr(Schema.String),
 });
 
 const AssignmentRow = Schema.Struct({
@@ -231,6 +244,7 @@ export function decodeChunkRow(row: unknown, operation: string): PDFChunk {
 export function decodeVectorSearchRow(
   row: unknown,
   operation: string,
+  entityType: DocumentSearchResult["entityType"],
 ): DocumentSearchResult {
   const decoded = decode(SearchRow, row, operation);
   const score = 1 - decoded.distance / 2;
@@ -246,7 +260,7 @@ export function decodeVectorSearchRow(
     scoreType: "cosine_similarity",
     vectorScore: score,
     matchType: "vector",
-    entityType: "document",
+    entityType,
   });
 }
 
@@ -308,6 +322,26 @@ export function decodeMetadataValue(
   operation: string,
 ): string {
   return decode(MetadataValueRow, row, operation).value;
+}
+
+export function decodeConceptSourceRow(
+  row: unknown,
+  operation: string,
+): ConceptEmbeddingSource {
+  const decoded = decode(ConceptSourceRow, row, operation);
+  return {
+    id: decoded.id,
+    prefLabel: decoded.pref_label,
+    ...(decoded.definition === null ? {} : { definition: decoded.definition }),
+  };
+}
+
+export function decodeClusterSummarySourceRow(
+  row: unknown,
+  operation: string,
+): ClusterSummarySource {
+  const decoded = decode(ClusterSummarySourceRow, row, operation);
+  return { id: toNumber(decoded.id), summary: decoded.summary };
 }
 
 export function decodeConceptRow(row: unknown, operation: string): Concept {

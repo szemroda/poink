@@ -5,6 +5,7 @@ import { AddOptions, resolveVisualsConfig } from "../../types.js";
 import { resolveUserPath } from "../../pathUtils.js";
 import {
   AutoTagger,
+  enrichmentMetadata,
   type EnrichmentResult,
 } from "../../services/AutoTagger.js";
 import { PDFExtractor } from "../../services/PDFExtractor.js";
@@ -23,6 +24,7 @@ import {
   type FileStatus,
 } from "../ingestProgress.js";
 import { shouldCheckpoint } from "../args.js";
+import { assignEnrichmentConcepts } from "../enrichment.js";
 import {
   CLIError,
   extractEnrichmentPreview,
@@ -242,6 +244,9 @@ function createAddOptions(
   return new AddOptions({
     title: metadata.title,
     tags: metadata.tags.length > 0 ? metadata.tags : undefined,
+    metadata: metadata.enrichment
+      ? enrichmentMetadata(metadata.enrichment)
+      : undefined,
     visuals: visualsEnabled ? true : undefined,
     visualsMode,
     sourceContext: prepared.source,
@@ -368,24 +373,6 @@ function logEnrichmentDetails(Console: CliConsole, metadata: DocumentMetadata) {
           .join(", ")}`,
       );
     }
-  });
-}
-
-function acceptProposalsAfterCommit(
-  Console: CliConsole,
-  metadata: DocumentMetadata,
-) {
-  return Effect.gen(function* () {
-    const proposals = metadata.enrichment?.proposedConcepts;
-    if (!proposals?.length) return;
-
-    const tagger = yield* AutoTagger;
-    const result = yield* Effect.either(tagger.acceptProposals(proposals));
-    if (result._tag === "Right") return;
-
-    yield* Console.log(
-      "    WARN Document added, but concept acceptance failed",
-    );
   });
 }
 
@@ -613,7 +600,12 @@ export function runIngestCommand(
                     filePath,
                     addOptions,
                   );
-                  yield* acceptProposalsAfterCommit(Console, metadata);
+                  yield* assignEnrichmentConcepts(
+                    Console,
+                    doc.id,
+                    metadata.enrichment,
+                    "    ",
+                  );
 
                   currentFile.status = "done";
                   currentFile.chunks = doc.pageCount;
@@ -747,7 +739,12 @@ export function runIngestCommand(
                   filePath,
                   addOptions,
                 );
-                yield* acceptProposalsAfterCommit(Console, metadata);
+                yield* assignEnrichmentConcepts(
+                  Console,
+                  doc.id,
+                  metadata.enrichment,
+                  "    ",
+                );
                 yield* Console.log(
                   `  OK ${doc.title} (${doc.pageCount} pages)`,
                 );

@@ -1,5 +1,6 @@
 import { Effect } from "effect";
 import type { CommandResult } from "../../agent/hints.js";
+import { conceptEmbeddingText } from "../../embeddingContent.js";
 import { EmbeddingProvider } from "../../services/EmbeddingProvider.js";
 import {
   TaxonomyService,
@@ -239,7 +240,7 @@ function findMatches(
 function storeEmbeddingIfAvailable(
   taxonomy: TaxonomyServiceApi,
   id: string,
-  label: string,
+  concept: { prefLabel: string; definition?: string | undefined },
 ) {
   return Effect.gen(function* () {
     const embedProvider = yield* EmbeddingProvider;
@@ -249,7 +250,7 @@ function storeEmbeddingIfAvailable(
       return false;
     }
 
-    const embedding = yield* embedProvider.embed(label);
+    const embedding = yield* embedProvider.embed(conceptEmbeddingText(concept));
     yield* taxonomy.storeConceptEmbedding(id, embedding);
     return true;
   });
@@ -463,11 +464,10 @@ function runAdd(
       yield* taxonomy.addBroader(id, broader);
     }
 
-    const storedEmbedding = yield* storeEmbeddingIfAvailable(
-      taxonomy,
-      id,
-      label,
-    );
+    const storedEmbedding = yield* storeEmbeddingIfAvailable(taxonomy, id, {
+      prefLabel: label,
+      definition,
+    });
 
     if (context.format === "text") {
       yield* context.Console.log(`OK Added concept: ${label} (${id})`);

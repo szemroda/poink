@@ -1,5 +1,9 @@
 import { Context, Effect, Either, Layer } from "effect";
-import { describe, expect, test } from "vitest";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterAll, describe, expect, test } from "vitest";
+import { removeDirWithRetries } from "../testUtils.js";
 import {
   Config,
   Document,
@@ -7,10 +11,16 @@ import {
   SearchOptions,
   SemanticSearchProviderError,
 } from "../types.js";
+import { LibSQLClient, makeLibSQLClient } from "./LibSQLClient.js";
+import { makeLibSQLRepositories } from "./LibSQLRepositories.js";
+import { makeStorageLayer } from "./StorageLayer.js";
+import { TaxonomyService } from "./TaxonomyService.js";
 import {
+  DocumentIntegrityRepository,
   DocumentRepository,
   LibraryMaintenance,
   SearchRepository,
+  VectorRebuildRepository,
   type DocumentRepositoryService,
   type LibraryMaintenanceService,
   type SearchRepositoryService,
@@ -45,8 +55,7 @@ function makeDatabase(
     addEmbeddings: () => Effect.void,
     vectorSearch: () => Effect.succeed([]),
     ftsSearch: () => Effect.succeed([]),
-    getExpandedContext: () =>
-      Effect.succeed({ content: "", startChunk: "", endChunk: "" }),
+    getExpandedContext: () => Effect.succeed(null),
     getStats: () =>
       Effect.succeed({ documents: 0, chunks: 0, embeddings: 0 }),
     countChunksByDocumentIds: () => Effect.succeed({}),
@@ -82,6 +91,9 @@ function runLibrary<A, E>(
     Layer.succeed(DocumentRepository, database),
     Layer.succeed(SearchRepository, database),
     Layer.succeed(LibraryMaintenance, database),
+    Layer.succeed(VectorRebuildRepository, {
+      rebuildVectors: () => Effect.die("rebuild should not be used"),
+    }),
     Layer.succeed(EmbeddingProvider, embeddingProvider),
   );
   return Effect.runPromise(
@@ -198,5 +210,183 @@ describe("SemanticLibrary.reindexEmbeddings", () => {
         { chunkId: "chunk-2", embedding: [1, 0, 0] },
       ],
     ]);
+  });
+});
+
+describe("SemanticLibrary.search expansion", () => {
+  test("keeps cluster summary text while expanding document hits", async () => {
+    const config = new Config({
+      ...Config.Default,
+      storage: { libsql: { url: ":memory:" } },
+    });
+    const storage = makeLibSQLRepositories().pipe(
+      Layer.provideMerge(makeLibSQLClient(config)),
+    );
+    const layer = makeSemanticLibrary(config).pipe(
+      Layer.provideMerge(
+        Layer.merge(
+          storage,
+          Layer.succeed(EmbeddingProvider, makeEmbeddingProvider()),
+        ),
+      ),
+    );
+    const doc = new Document({
+      id: "doc-1",
+      title: "Doc",
+      path: "/doc.md",
+      addedAt: new Date(),
+      pageCount: 1,
+      sizeBytes: 10,
+      tags: [],
+      fileType: "markdown",
+      metadata: {},
+    });
+
+    const results = await Effect.runPromise(
+      Effect.gen(function* () {
+        const integrity = yield* DocumentIntegrityRepository;
+        yield* integrity.replaceDocument(
+          doc,
+          [
+            { id: "doc-1-0", docId: "doc-1", page: 1, chunkIndex: 0, content: "target" },
+            { id: "doc-1-1", docId: "doc-1", page: 1, chunkIndex: 1, content: "neighbor" },
+          ],
+          [
+            { chunkId: "doc-1-0", embedding: [1, 0, 0] },
+            { chunkId: "doc-1-1", embedding: [0, 1, 0] },
+          ],
+          { algorithm: "sha256", hash: "a".repeat(64) },
+          "add",
+        );
+        const { client } = yield* LibSQLClient;
+        yield* Effect.promise(() =>
+          client.execute(
+            `INSERT INTO cluster_summaries (id, summary, embedding, chunk_count)
+             VALUES (1, 'Useful cluster summary', vector32('[1, 0, 0]'), 2)`,
+          ),
+        );
+        const library = yield* SemanticLibrary;
+        return yield* library.search(
+          "query",
+          new SearchOptions({
+            hybrid: false,
+            expandChars: 1000,
+            includeClusterSummaries: true,
+          }),
+        );
+      }).pipe(Effect.provide(layer), Effect.scoped),
+    );
+
+    const summary = results.find(
+      (result) => result.entityType === "cluster_summary",
+    );
+    expect(summary?.content).toBe("Useful cluster summary");
+    expect(summary?.expandedContent).toBeUndefined();
+    expect(
+      results.find((result) => result.chunkId === "doc-1-0")?.expandedContent,
+    ).toBe("target\nneighbor");
+  });
+});
+
+describe("SemanticLibrary.rebuildEmbeddings", () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), "poink-rebuild-"));
+  afterAll(() => removeDirWithRetries(tempRoot), 60_000);
+
+  const configFor = (url: string, model: string) =>
+    new Config({
+      ...Config.Default,
+      storage: { libsql: { url } },
+      models: {
+        ...Config.Default.models,
+        embedding: { ...Config.Default.models.embedding, model },
+      },
+    });
+
+  test("re-embeds a library built by another model so it can be searched again", async () => {
+    const url = `file:${join(tempRoot, "library.db")}`;
+    const modelA = configFor(url, "model-a");
+    const modelB = configFor(url, "model-b");
+    const doc = new Document({
+      id: "doc-1",
+      title: "Doc",
+      path: "/doc.md",
+      addedAt: new Date(),
+      pageCount: 1,
+      sizeBytes: 10,
+      tags: [],
+      fileType: "markdown",
+      metadata: {},
+    });
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const integrity = yield* DocumentIntegrityRepository;
+        yield* integrity.replaceDocument(
+          doc,
+          [
+            {
+              id: "doc-1-0",
+              docId: "doc-1",
+              page: 1,
+              chunkIndex: 0,
+              content: "Display text",
+              embeddingContent: "Stored embedding text",
+            },
+          ],
+          [{ chunkId: "doc-1-0", embedding: [1, 0, 0] }],
+          { algorithm: "sha256", hash: "a".repeat(64) },
+          "add",
+        );
+        const taxonomy = yield* TaxonomyService;
+        yield* taxonomy.addConcept({
+          id: "concept-1",
+          prefLabel: "Concept",
+          definition: "A definition",
+        });
+        yield* taxonomy.storeConceptEmbedding("concept-1", [1, 0, 0]);
+      }).pipe(Effect.provide(makeStorageLayer(modelA)), Effect.scoped),
+    );
+
+    const embedded: string[] = [];
+    const modelBProvider = makeEmbeddingProvider({
+      embed: () => Effect.succeed([0, 0, 0, 1]),
+      embedBatch: (texts) =>
+        Effect.sync(() => {
+          embedded.push(...texts);
+          return texts.map(() => [0, 0, 0, 1]);
+        }),
+    });
+    const layer = makeSemanticLibrary(modelB).pipe(
+      Layer.provideMerge(
+        Layer.merge(
+          makeStorageLayer(modelB),
+          Layer.succeed(EmbeddingProvider, modelBProvider),
+        ),
+      ),
+    );
+
+    const { rebuilt, hits } = await Effect.runPromise(
+      Effect.gen(function* () {
+        const library = yield* SemanticLibrary;
+        const rebuilt = yield* library.rebuildEmbeddings();
+        const hits = yield* library.search(
+          "query",
+          new SearchOptions({ hybrid: false }),
+        );
+        return { rebuilt, hits };
+      }).pipe(Effect.provide(layer), Effect.scoped),
+    );
+
+    expect(rebuilt).toEqual({
+      documents: 1,
+      chunks: 1,
+      concepts: 1,
+      clusterSummaries: 0,
+      dimensions: 4,
+    });
+    expect(embedded.sort()).toEqual([
+      "Concept: A definition",
+      "Stored embedding text",
+    ]);
+    expect(hits.map((hit) => hit.chunkId)).toEqual(["doc-1-0"]);
   });
 });

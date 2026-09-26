@@ -144,10 +144,7 @@ function mapStorageError(error: StorageError): TaxonomyError {
   return new TaxonomyError(`${error.operation}: ${error.reason}`);
 }
 
-export function makeTaxonomyService(embeddingIdentity: {
-  provider: string;
-  model: string;
-}) {
+export function makeTaxonomyService() {
   return Layer.effect(
     TaxonomyService,
     Effect.gen(function* () {
@@ -443,10 +440,7 @@ export function makeTaxonomyService(embeddingIdentity: {
         storeConceptEmbedding: (conceptId, embedding) =>
           Effect.tryPromise({
             try: async () => {
-              await vectors.ensureForDimension(
-                embedding.length,
-                embeddingIdentity,
-              );
+              await vectors.ensureForDimension(embedding.length);
               await client.execute({
                 sql: `INSERT INTO concept_embeddings (concept_id, embedding)
                       VALUES (?, vector32(?))

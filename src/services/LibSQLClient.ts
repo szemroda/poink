@@ -37,11 +37,11 @@ export function makeLibSQLClient(config: Config) {
           const client = createClient({ url, authToken });
           try {
             await initializeLibSQLSchema(client, mode);
-            const vectors = createVectorSchemaManager(client);
-            const storedDimension = await vectors.readDimension();
-            if (storedDimension !== null) {
-              await vectors.ensureForDimension(storedDimension);
-            }
+            const vectors = createVectorSchemaManager(client, {
+              provider: config.models.embedding.provider,
+              model: config.models.embedding.model,
+            });
+            await vectors.restoreStoredSchema();
             return { client, mode, vectors };
           } catch (error) {
             client.close();

@@ -256,9 +256,16 @@ function runSetConfig(
     saveConfig(validationResult.right);
     const outputValue = redactConfigValue(path, parsedValue, showSecrets);
     yield* Console.log(`Updated ${path}: ${outputValue}`);
+    const before = config.models.embedding;
+    const after = validationResult.right.models.embedding;
     return {
       resultPayload: { path, value: outputValue },
-      agentResult: { _tag: "config" as const, subcommand: "set" },
+      agentResult: {
+        _tag: "config" as const,
+        subcommand: "set",
+        embeddingChanged:
+          before.provider !== after.provider || before.model !== after.model,
+      },
     };
   });
 }

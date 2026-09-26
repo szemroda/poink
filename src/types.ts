@@ -84,7 +84,8 @@ export class DocumentSearchResult extends Schema.Class<DocumentSearchResult>(
   /** Optional component score for FTS results (raw FTS rank; often negative, more negative = better) */
   ftsRank: Schema.optional(Schema.Number),
   matchType: Schema.Literal("vector", "fts", "hybrid"),
-  entityType: Schema.Literal("document"),
+  /** Cluster summaries are synthetic hits with no backing document chunk. */
+  entityType: Schema.Literal("document", "cluster_summary"),
   /** Expanded context around the match (only populated when expandChars > 0) */
   expandedContent: Schema.optional(Schema.String),
   /** Range of chunk indices included in expandedContent */
@@ -1020,6 +1021,16 @@ export class DatabaseError extends Schema.TaggedError<DatabaseError>()(
 export class DocumentNotFoundError extends Schema.TaggedError<DocumentNotFoundError>()(
   "DocumentNotFoundError",
   { query: Schema.String }
+) {}
+
+/** An ID or title reference matched more than one document. */
+export class AmbiguousDocumentError extends Schema.TaggedError<AmbiguousDocumentError>()(
+  "AmbiguousDocumentError",
+  {
+    query: Schema.String,
+    reason: Schema.String,
+    candidates: Schema.Array(Schema.String),
+  }
 ) {}
 
 export class DocumentExistsError extends Schema.TaggedError<DocumentExistsError>()(

@@ -15,6 +15,7 @@ import { generateText, Output } from "ai";
 import dedent from "dedent";
 import { Context, Effect, Layer } from "effect";
 import { z } from "zod";
+import { conceptEmbeddingText } from "../embeddingContent.js";
 import { getPathFilename, getPathSegments } from "../pathUtils.js";
 import { TaxonomyService } from "./TaxonomyService.js";
 import { EmbeddingProvider } from "./EmbeddingProvider.js";
@@ -94,6 +95,22 @@ export interface EnrichmentResult {
   confidence: number;
   /** Which provider was used */
   provider: LLMProvider;
+}
+
+/** Document metadata persisted from an enrichment result. */
+export function enrichmentMetadata(
+  enrichment: EnrichmentResult,
+): Record<string, unknown> {
+  return {
+    enrichment: {
+      summary: enrichment.summary,
+      ...(enrichment.author ? { author: enrichment.author } : {}),
+      documentType: enrichment.documentType,
+      category: enrichment.category,
+      provider: enrichment.provider,
+      confidence: enrichment.confidence,
+    },
+  };
 }
 
 /** Lightweight tag-only result */
@@ -652,34 +669,24 @@ async function llmJudgeDuplicate(
  * Auto-accept novel proposed concepts after deduplication check
  * Uses embedding similarity to find candidates, then LLM to judge duplicates
  *
- * @returns Effect with count of accepted and rejected proposals
+ * @returns Effect with the IDs of accepted proposals
  */
 function autoAcceptProposals(
   config: Config,
-  proposals: ProposedConcept[]
-): Effect.Effect<
-  { accepted: number; rejected: number },
-  EnrichmentError,
-  TaxonomyService | EmbeddingProvider
-> {
+  proposals: readonly ProposedConcept[]
+): Effect.Effect<string[], EnrichmentError, TaxonomyService | EmbeddingProvider> {
   return Effect.gen(function* () {
-    if (proposals.length === 0) {
-      return { accepted: 0, rejected: 0 };
-    }
+    if (proposals.length === 0) return [];
 
     const taxonomy = yield* TaxonomyService;
     const embeddingProvider = yield* EmbeddingProvider;
 
-    let accepted = 0;
-    let rejected = 0;
+    const accepted: string[] = [];
 
     for (const proposal of proposals) {
-      // Generate embedding for proposal
-      const proposalText = proposal.definition
-        ? `${proposal.prefLabel}: ${proposal.definition}`
-        : proposal.prefLabel;
-
-      const embedding = yield* embeddingProvider.embed(proposalText);
+      const embedding = yield* embeddingProvider.embed(
+        conceptEmbeddingText(proposal),
+      );
 
       // Find similar concepts (lower threshold for LLM review candidates)
       const similar = yield* taxonomy.findSimilarConcepts(embedding, 0.75);
@@ -703,7 +710,6 @@ function autoAcceptProposals(
           yield* Effect.logDebug(
             `AutoTagger: rejected duplicate "${proposal.prefLabel}" ~= "${similar[0].prefLabel}"`
           );
-          rejected++;
           continue;
         }
       }
@@ -720,10 +726,10 @@ function autoAcceptProposals(
       yield* Effect.logInfo(
         `AutoTagger: accepted novel concept ${proposal.id} ("${proposal.prefLabel}")`
       );
-      accepted++;
+      accepted.push(proposal.id);
     }
 
-    return { accepted, rejected };
+    return accepted;
   }).pipe(
     Effect.mapError(
       (e) =>
@@ -1142,10 +1148,15 @@ export interface AutoTagger {
     options?: EnrichmentOptions
   ) => Effect.Effect<TagResult, EnrichmentError>;
 
-  readonly acceptProposals: (
-    proposals: ProposedConcept[],
+  /**
+   * Links a committed document to the existing concepts its enrichment named
+   * and to any proposals accepted into the taxonomy.
+   */
+  readonly assignConcepts: (
+    docId: string,
+    enrichment: EnrichmentResult,
   ) => Effect.Effect<
-    { accepted: number; rejected: number },
+    { assigned: string[]; acceptedProposals: number },
     EnrichmentError
   >;
 }
@@ -1255,8 +1266,36 @@ export function makeAutoTagger(config: Config) {
           };
         }),
 
-      acceptProposals: (proposals: ProposedConcept[]) =>
-        provideDependencies(autoAcceptProposals(config, proposals)),
+      assignConcepts: (docId: string, enrichment: EnrichmentResult) =>
+        Effect.gen(function* () {
+          const assign = (conceptIds: readonly string[]) =>
+            Effect.forEach(conceptIds, (conceptId) =>
+              taxonomy.assignToDocument(docId, conceptId, enrichment.confidence),
+            );
+          // The LLM may name concepts that are not in the taxonomy.
+          const known = yield* Effect.filter(enrichment.concepts, (id) =>
+            Effect.map(taxonomy.getConcept(id), (concept) => concept !== null),
+          );
+          // Assign known concepts first so a proposal failure cannot drop them.
+          yield* assign(known);
+          const accepted = yield* provideDependencies(
+            autoAcceptProposals(config, enrichment.proposedConcepts ?? []),
+          );
+          yield* assign(accepted);
+          return {
+            assigned: [...new Set([...known, ...accepted])],
+            acceptedProposals: accepted.length,
+          };
+        }).pipe(
+          Effect.mapError((error) =>
+            error instanceof EnrichmentError
+              ? error
+              : new EnrichmentError(
+                  `Concept assignment failed: ${describeEnrichmentCause(error)}`,
+                  error,
+                ),
+          ),
+        ),
 
       generateTags: (
         filePath: string,

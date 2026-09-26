@@ -1,27 +1,52 @@
-import type { Client } from "@libsql/client";
+import { randomUUID } from "node:crypto";
+import type {
+  Client,
+  InStatement,
+  ResultSet,
+  Transaction,
+} from "@libsql/client";
 import {
+  decodeCountRow,
   decodeMetadataValue,
   decodeTableColumn,
 } from "./LibSQLRows.js";
 
+/** A client or an open transaction. */
+type Executor = { execute(statement: InStatement): Promise<ResultSet> };
+
 export type LibSQLConnectionMode = "local" | "memory" | "remote";
 
 export type EmbeddingIdentity = {
-  provider?: string;
-  model?: string;
+  provider: string;
+  model: string;
 };
 
+/**
+ * Guards every vector collection against incompatible embeddings. Writes and
+ * queries must match the library's dimension and embedding model identity.
+ */
 export interface VectorSchemaManager {
   readonly ensureForEmbeddings: (
     embeddings: Array<{ embedding: number[] }>,
-    identity?: EmbeddingIdentity,
   ) => Promise<void>;
-  readonly ensureForDimension: (
-    dimension: number,
-    identity?: EmbeddingIdentity,
-  ) => Promise<void>;
+  readonly ensureForDimension: (dimension: number) => Promise<void>;
   readonly ensureForQuery: (dimension: number) => Promise<boolean>;
-  readonly readDimension: () => Promise<number | null>;
+  /** Recreates vector tables for an existing library without identity checks. */
+  readonly restoreStoredSchema: () => Promise<void>;
+  /**
+   * Creates empty staging vector tables and returns the rebuild's owner token.
+   * Starting a rebuild takes over the staging tables of any earlier one.
+   */
+  readonly createStaging: (dimension: number) => Promise<string>;
+  /**
+   * Replaces the live vector tables with the staged ones and records the
+   * configured identity in one transaction. Throws, changing nothing, when a
+   * newer rebuild owns the staging tables or when a live chunk, concept
+   * vector, or cluster summary has no staged replacement.
+   */
+  readonly commitStaging: (dimension: number, token: string) => Promise<void>;
+  /** Drops the staging tables if the rebuild identified by `token` still owns them. */
+  readonly dropStaging: (token: string) => Promise<void>;
 }
 
 export function classifyLibsqlUrl(url: string): LibSQLConnectionMode {
@@ -286,6 +311,7 @@ async function initializeFullTextTriggers(client: Client): Promise<void> {
 
 export function createVectorSchemaManager(
   client: Client,
+  identity: EmbeddingIdentity,
 ): VectorSchemaManager {
   let initialization: Promise<void> | null = null;
 
@@ -300,9 +326,10 @@ export function createVectorSchemaManager(
     }
   };
 
-  const ensureForDimension = async (
+  /** Queries validate compatibility but never write library metadata. */
+  const ensureCompatible = async (
     dimension: number,
-    identity?: EmbeddingIdentity,
+    access: "write" | "query",
   ): Promise<void> => {
     await serialize(async () => {
       if (!Number.isFinite(dimension) || dimension <= 0) {
@@ -312,35 +339,133 @@ export function createVectorSchemaManager(
       const existing = await readEmbeddingDimension(client);
       if (existing !== null && existing !== dimension) {
         throw new Error(
-          `Configured embedding model returns ${dimension} dimensions, but this library was initialized with ${existing}. Create a new library or rebuild with a migrated schema.`,
+          `Configured embedding model returns ${dimension} dimensions, but this library's vectors have ${existing}. Run \`poink reindex\` to rebuild every vector with the configured model.`,
         );
       }
 
+      const stored = await readEmbeddingIdentity(client);
+      if (
+        stored &&
+        (stored.provider !== identity.provider ||
+          stored.model !== identity.model)
+      ) {
+        throw new Error(
+          `Configured embedding model ${identity.provider}/${identity.model} differs from ${stored.provider}/${stored.model}, which built this library's vectors. Vectors from different models are not comparable. Run \`poink reindex\` to rebuild every vector with the configured model, or configure ${stored.provider}/${stored.model} again.`,
+        );
+      }
+
+      if (access === "query") return;
       await ensureVectorTables(client, dimension);
-      if (existing === null) {
+      // Libraries created before identity tracking adopt the model that
+      // performs their next write.
+      if (existing === null || stored === null) {
         await writeEmbeddingMetadata(client, dimension, identity);
       }
     });
   };
+  const ensureForDimension = (dimension: number) =>
+    ensureCompatible(dimension, "write");
 
   return {
-    ensureForEmbeddings: async (embeddings, identity) => {
+    ensureForEmbeddings: async (embeddings) => {
       const first = embeddings[0]?.embedding;
-      if (first) await ensureForDimension(first.length, identity);
+      if (first) await ensureForDimension(first.length);
     },
     ensureForDimension,
     ensureForQuery: async (dimension) => {
       const existing = await readEmbeddingDimension(client);
       if (existing === null) return false;
-      await ensureForDimension(dimension);
+      await ensureCompatible(dimension, "query");
       return true;
     },
-    readDimension: () => readEmbeddingDimension(client),
+    restoreStoredSchema: () =>
+      serialize(async () => {
+        const existing = await readEmbeddingDimension(client);
+        if (existing !== null) await ensureVectorTables(client, existing);
+      }),
+    createStaging: async (dimension) => {
+      const token = randomUUID();
+      await serialize(async () => {
+        await ensureMetadataTable(client);
+        await client.batch(
+          [
+            ...dropStagingStatements(),
+            ...VECTOR_TABLE_NAMES.map((table) => {
+              const spec: VectorTableSpec = VECTOR_TABLES[table];
+              return `CREATE TABLE ${stagingTable(table)} (${spec.columns(dimension)})`;
+            }),
+            metadataUpsert(REBUILD_OWNER_KEY, token),
+          ],
+          "write",
+        );
+      });
+      return token;
+    },
+    commitStaging: (dimension, token) =>
+      serialize(async () => {
+        await ensureMetadataTable(client);
+        const tx = await client.transaction("write");
+        try {
+          if ((await readMetadataValue(tx, REBUILD_OWNER_KEY)) !== token) {
+            throw new Error(
+              "A newer rebuild replaced this rebuild's staged vectors. Let it finish, or run `poink reindex` again.",
+            );
+          }
+          const unstaged = await countUnstagedVectors(tx);
+          if (unstaged > 0) {
+            throw new Error(
+              `The library changed during the rebuild: ${unstaged} chunk(s), concept(s), or cluster summaries have no rebuilt vector. Run the rebuild again.`,
+            );
+          }
+          for (const table of VECTOR_TABLE_NAMES) {
+            await tx.execute(`DROP TABLE IF EXISTS ${table}`);
+            await tx.execute(
+              `ALTER TABLE ${stagingTable(table)} RENAME TO ${table}`,
+            );
+            for (const index of VECTOR_TABLES[table].indexes) {
+              await tx.execute(index);
+            }
+          }
+          await tx.batch([
+            ...embeddingMetadataStatements(dimension, identity),
+            RELEASE_REBUILD_OWNER,
+          ]);
+          await tx.commit();
+        } finally {
+          tx.close();
+        }
+      }),
+    dropStaging: (token) =>
+      serialize(async () => {
+        await ensureMetadataTable(client);
+        const tx = await client.transaction("write");
+        try {
+          if ((await readMetadataValue(tx, REBUILD_OWNER_KEY)) !== token) return;
+          await tx.batch([...dropStagingStatements(), RELEASE_REBUILD_OWNER]);
+          await tx.commit();
+        } finally {
+          tx.close();
+        }
+      }),
   };
 }
 
+/** Metadata key naming the rebuild that owns the staging tables. */
+const REBUILD_OWNER_KEY = "rebuild.owner";
+
+const RELEASE_REBUILD_OWNER: InStatement = {
+  sql: "DELETE FROM library_metadata WHERE key = ?",
+  args: [REBUILD_OWNER_KEY],
+};
+
+function dropStagingStatements(): string[] {
+  return VECTOR_TABLE_NAMES.map(
+    (table) => `DROP TABLE IF EXISTS ${stagingTable(table)}`,
+  );
+}
+
 export async function tableExists(
-  client: Client,
+  client: Executor,
   tableName: string,
 ): Promise<boolean> {
   const result = await client.execute({
@@ -350,7 +475,7 @@ export async function tableExists(
   return result.rows.length > 0;
 }
 
-async function ensureMetadataTable(client: Client): Promise<void> {
+async function ensureMetadataTable(client: Executor): Promise<void> {
   await client.execute(`
     CREATE TABLE IF NOT EXISTS library_metadata (
       key TEXT PRIMARY KEY,
@@ -360,15 +485,22 @@ async function ensureMetadataTable(client: Client): Promise<void> {
   `);
 }
 
-async function readEmbeddingDimension(client: Client): Promise<number | null> {
+async function readMetadataValue(
+  client: Executor,
+  key: string,
+): Promise<string | null> {
   await ensureMetadataTable(client);
   const result = await client.execute({
     sql: "SELECT value FROM library_metadata WHERE key = ?",
-    args: ["embedding.dimensions"],
+    args: [key],
   });
   const row = result.rows[0];
-  if (!row) return null;
-  const value = decodeMetadataValue(row, "read embedding dimension");
+  return row ? decodeMetadataValue(row, `read ${key}`) : null;
+}
+
+async function readEmbeddingDimension(client: Client): Promise<number | null> {
+  const value = await readMetadataValue(client, "embedding.dimensions");
+  if (value === null) return null;
   const parsed = Number.parseInt(value, 10);
   if (!Number.isFinite(parsed) || parsed <= 0 || String(parsed) !== value) {
     throw new Error(
@@ -378,70 +510,76 @@ async function readEmbeddingDimension(client: Client): Promise<number | null> {
   return parsed;
 }
 
+/** Returns the stored identity, or null for libraries created before it was tracked. */
+async function readEmbeddingIdentity(
+  client: Client,
+): Promise<EmbeddingIdentity | null> {
+  const provider = await readMetadataValue(client, "embedding.provider");
+  const model = await readMetadataValue(client, "embedding.model");
+  return provider && model ? { provider, model } : null;
+}
+
+function embeddingMetadataStatements(
+  dimension: number,
+  identity: EmbeddingIdentity,
+): InStatement[] {
+  const entries: Array<[string, string]> = [
+    ["embedding.dimensions", String(dimension)],
+    ["embedding.provider", identity.provider],
+    ["embedding.model", identity.model],
+  ];
+  return entries.map(([key, value]) => metadataUpsert(key, value));
+}
+
+function metadataUpsert(key: string, value: string): InStatement {
+  return {
+    sql: `INSERT INTO library_metadata (key, value, updated_at)
+          VALUES (?, ?, datetime('now'))
+          ON CONFLICT (key) DO UPDATE SET
+            value = excluded.value,
+            updated_at = excluded.updated_at`,
+    args: [key, value],
+  };
+}
+
 async function writeEmbeddingMetadata(
   client: Client,
   dimension: number,
-  identity?: EmbeddingIdentity,
+  identity: EmbeddingIdentity,
 ): Promise<void> {
-  const entries: Array<[string, string]> = [
-    ["embedding.dimensions", String(dimension)],
-  ];
-  if (identity?.provider) {
-    entries.push(["embedding.provider", identity.provider]);
-  }
-  if (identity?.model) {
-    entries.push(["embedding.model", identity.model]);
-  }
-
-  await client.batch(
-    entries.map(([key, value]) => ({
-      sql: `INSERT INTO library_metadata (key, value, updated_at)
-            VALUES (?, ?, datetime('now'))
-            ON CONFLICT (key) DO UPDATE SET
-              value = excluded.value,
-              updated_at = excluded.updated_at`,
-      args: [key, value],
-    })),
-    "write",
-  );
+  await client.batch(embeddingMetadataStatements(dimension, identity), "write");
 }
 
-async function ensureVectorTables(
-  client: Client,
-  dimension: number,
-): Promise<void> {
-  await client.execute(`
-    CREATE TABLE IF NOT EXISTS embeddings (
+type VectorTableSpec = {
+  columns: (dimension: number) => string;
+  columnNames: readonly string[];
+  vectorColumns: readonly string[];
+  indexes: readonly string[];
+};
+
+const VECTOR_TABLES = {
+  embeddings: {
+    columns: (dimension) => `
       chunk_id TEXT PRIMARY KEY REFERENCES chunks(id) ON DELETE CASCADE,
-      embedding F32_BLOB(${dimension}) NOT NULL
-    )
-  `);
-  await verifyColumns(client, "embeddings", ["chunk_id", "embedding"]);
-  await verifyVectorColumn(client, "embeddings", "embedding", dimension);
-  await client.execute(
-    "CREATE INDEX IF NOT EXISTS embeddings_idx ON embeddings(libsql_vector_idx(embedding, 'compress_neighbors=float8'))",
-  );
-  await client.execute(`
-    CREATE TABLE IF NOT EXISTS concept_embeddings (
+      embedding F32_BLOB(${dimension}) NOT NULL`,
+    columnNames: ["chunk_id", "embedding"],
+    vectorColumns: ["embedding"],
+    indexes: [
+      "CREATE INDEX IF NOT EXISTS embeddings_idx ON embeddings(libsql_vector_idx(embedding, 'compress_neighbors=float8'))",
+    ],
+  },
+  concept_embeddings: {
+    columns: (dimension) => `
       concept_id TEXT PRIMARY KEY REFERENCES concepts(id) ON DELETE CASCADE,
-      embedding F32_BLOB(${dimension}) NOT NULL
-    )
-  `);
-  await verifyColumns(client, "concept_embeddings", [
-    "concept_id",
-    "embedding",
-  ]);
-  await verifyVectorColumn(
-    client,
-    "concept_embeddings",
-    "embedding",
-    dimension,
-  );
-  await client.execute(
-    "CREATE INDEX IF NOT EXISTS concept_embeddings_idx ON concept_embeddings(libsql_vector_idx(embedding, 'compress_neighbors=float8'))",
-  );
-  await client.execute(`
-    CREATE TABLE IF NOT EXISTS cluster_summaries (
+      embedding F32_BLOB(${dimension}) NOT NULL`,
+    columnNames: ["concept_id", "embedding"],
+    vectorColumns: ["embedding"],
+    indexes: [
+      "CREATE INDEX IF NOT EXISTS concept_embeddings_idx ON concept_embeddings(libsql_vector_idx(embedding, 'compress_neighbors=float8'))",
+    ],
+  },
+  cluster_summaries: {
+    columns: (dimension) => `
       id INTEGER PRIMARY KEY,
       centroid F32_BLOB(${dimension}),
       summary TEXT,
@@ -449,37 +587,78 @@ async function ensureVectorTables(
       concept_id TEXT,
       concept_confidence REAL,
       chunk_count INTEGER NOT NULL,
-      created_at TEXT NOT NULL DEFAULT (datetime('now'))
-    )
-  `);
-  await verifyColumns(client, "cluster_summaries", [
-    "id",
-    "centroid",
-    "summary",
-    "embedding",
-    "concept_id",
-    "concept_confidence",
-    "chunk_count",
-    "created_at",
-  ]);
-  await verifyVectorColumn(
-    client,
-    "cluster_summaries",
-    "centroid",
-    dimension,
-  );
-  await verifyVectorColumn(
-    client,
-    "cluster_summaries",
-    "embedding",
-    dimension,
-  );
-  await client.execute(
-    "CREATE INDEX IF NOT EXISTS idx_cluster_summaries_concept ON cluster_summaries(concept_id)",
-  );
-  await client.execute(
-    "CREATE INDEX IF NOT EXISTS cluster_summaries_idx ON cluster_summaries(libsql_vector_idx(embedding, 'compress_neighbors=float8'))",
-  );
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))`,
+    columnNames: [
+      "id",
+      "centroid",
+      "summary",
+      "embedding",
+      "concept_id",
+      "concept_confidence",
+      "chunk_count",
+      "created_at",
+    ],
+    vectorColumns: ["centroid", "embedding"],
+    indexes: [
+      "CREATE INDEX IF NOT EXISTS idx_cluster_summaries_concept ON cluster_summaries(concept_id)",
+      "CREATE INDEX IF NOT EXISTS cluster_summaries_idx ON cluster_summaries(libsql_vector_idx(embedding, 'compress_neighbors=float8'))",
+    ],
+  },
+} satisfies Record<string, VectorTableSpec>;
+
+export type VectorTable = keyof typeof VECTOR_TABLES;
+
+const VECTOR_TABLE_NAMES = Object.keys(VECTOR_TABLES) as VectorTable[];
+
+/** The table that holds a vector table's replacement during a rebuild. */
+export function stagingTable(table: VectorTable): string {
+  return `${table}_rebuild`;
+}
+
+async function ensureVectorTables(
+  client: Client,
+  dimension: number,
+): Promise<void> {
+  for (const table of VECTOR_TABLE_NAMES) {
+    const spec: VectorTableSpec = VECTOR_TABLES[table];
+    await client.execute(
+      `CREATE TABLE IF NOT EXISTS ${table} (${spec.columns(dimension)})`,
+    );
+    await verifyColumns(client, table, [...spec.columnNames]);
+    for (const column of spec.vectorColumns) {
+      await verifyVectorColumn(client, table, column, dimension);
+    }
+    for (const index of spec.indexes) await client.execute(index);
+  }
+}
+
+/** Counts live rows that a staged rebuild would drop because they have no staged vector. */
+async function countUnstagedVectors(tx: Transaction): Promise<number> {
+  const chunks = await tx.execute(`
+    SELECT COUNT(c.id) AS count FROM chunks c
+    JOIN documents d ON d.id = c.doc_id
+    WHERE NOT EXISTS (
+      SELECT 1 FROM ${stagingTable("embeddings")} s WHERE s.chunk_id = c.id
+    )`);
+  let unstaged = decodeCountRow(chunks.rows[0], "verify rebuilt vectors");
+  if (await tableExists(tx, "concept_embeddings")) {
+    const concepts = await tx.execute(`
+      SELECT COUNT(e.concept_id) AS count FROM concept_embeddings e
+      WHERE NOT EXISTS (
+        SELECT 1 FROM ${stagingTable("concept_embeddings")} s
+        WHERE s.concept_id = e.concept_id
+      )`);
+    unstaged += decodeCountRow(concepts.rows[0], "verify rebuilt vectors");
+  }
+  if (await tableExists(tx, "cluster_summaries")) {
+    const clusters = await tx.execute(`
+      SELECT COUNT(cs.id) AS count FROM cluster_summaries cs
+      WHERE NOT EXISTS (
+        SELECT 1 FROM ${stagingTable("cluster_summaries")} s WHERE s.id = cs.id
+      )`);
+    unstaged += decodeCountRow(clusters.rows[0], "verify rebuilt vectors");
+  }
+  return unstaged;
 }
 
 async function ensureColumn(

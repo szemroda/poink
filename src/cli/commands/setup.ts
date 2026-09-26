@@ -452,6 +452,14 @@ function formatValue(value: unknown, secret = false): string {
   return JSON.stringify(value);
 }
 
+/** True when the plan switches the embedding model of a library that already has vectors. */
+function changesExistingEmbeddingModel(plan: SetupPlan): boolean {
+  return (
+    !plan.shouldInitialize &&
+    plan.changes.some((change) => change.path.startsWith("models.embedding."))
+  );
+}
+
 function renderSummary(plan: SetupPlan): string {
   const lines = ["Summary"];
   if (plan.dryRun) lines.push("Dry run: no changes will be applied.");
@@ -465,6 +473,11 @@ function renderSummary(plan: SetupPlan): string {
     }
   } else {
     lines.push("No config changes.");
+  }
+  if (changesExistingEmbeddingModel(plan)) {
+    lines.push(
+      "The embedding model changed: run `poink reindex` to rebuild existing vectors before searching or adding documents.",
+    );
   }
 
   const actions: string[] = [];
@@ -761,7 +774,11 @@ export function runSetupCommand(
           initialized: plan.shouldInitialize,
           codexAuthAction: plan.codexAuthAction,
         },
-        agentResult: { _tag: "config", subcommand: `setup ${subcommand}` },
+        agentResult: {
+          _tag: "config",
+          subcommand: `setup ${subcommand}`,
+          embeddingChanged: changesExistingEmbeddingModel(plan),
+        },
       };
     }),
     options,

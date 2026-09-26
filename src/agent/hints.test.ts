@@ -183,6 +183,18 @@ describe("generateHints", () => {
 });
 
 describe("generateNextActions", () => {
+  test("an embedding model change leads with the vector rebuild", () => {
+    const result: CommandResult = {
+      _tag: "config",
+      subcommand: "set",
+      embeddingChanged: true,
+    };
+    expect(hintCommands(result)[0]).toBe("poink reindex");
+    expect(generateNextActions(result)[0]).toMatchObject({
+      argv: ["poink", "reindex"],
+    });
+  });
+
   test("search actions address the top result by id and chunk", () => {
     expect(generateNextActions(searchResult({ hadExpand: true, wasFts: true }))).toEqual([
       { kind: "shell", argv: ["poink", "read", "doc-1"], description: "Full metadata for top result" },

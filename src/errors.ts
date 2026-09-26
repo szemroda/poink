@@ -38,6 +38,7 @@ const BOUNDARY_DETAIL_KEYS = [
   "rootId",
   "id",
   "idOrTitle",
+  "candidates",
 ] as const;
 
 type BoundaryDetailValue = string | number | boolean | readonly string[];

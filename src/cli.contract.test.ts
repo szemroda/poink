@@ -582,6 +582,52 @@ describe("CLI JSON Envelope Contract", () => {
   });
 
   test(
+    "rechunk checks --max-chunks against the documents kept by --max-docs",
+    async ({ lib }) => {
+      const chunkCounts = { "doc-a": 5, "doc-b": 8 };
+      for (const id of Object.keys(chunkCounts)) {
+        const sourcePath = join(lib.libraryPath, `${id}.md`);
+        writeFileSync(sourcePath, `# ${id}\n`);
+        await seedDocument(lib, {
+          id,
+          title: id,
+          path: sourcePath,
+          pageCount: 1,
+          sizeBytes: 10,
+          fileType: "markdown",
+        });
+      }
+      const db = openLibraryDb(lib.libraryPath);
+      try {
+        await db.batch(
+          Object.entries(chunkCounts).flatMap(([id, count]) =>
+            Array.from({ length: count }, (_, index) => ({
+              sql: `INSERT INTO chunks (id, doc_id, page, chunk_index, content)
+                    VALUES (?, ?, 1, ?, 'chunk')`,
+              args: [`${id}-${index}`, id, index],
+            })),
+          ),
+          "write",
+        );
+      } finally {
+        db.close();
+      }
+      const errorCode = (argv: string[]) =>
+        JSON.parse(lib.run([...argv, "--format", "json"]).stdout).error?.code;
+
+      // Either retained document fits the cap; the unreachable test provider
+      // then stops the run before any replacement.
+      expect(
+        errorCode(["rechunk", "--all", "--max-docs", "1", "--max-chunks", "10"]),
+      ).toBe("PROVIDER_NOT_READY");
+      expect(
+        errorCode(["rechunk", "--doc", "doc-b", "--all", "--max-chunks", "7"]),
+      ).toBe("TOO_MANY_CHUNKS");
+    },
+    60_000,
+  );
+
+  test(
     "source integrity drives rechunk planning and deep doctor without exposing hashes",
     async ({ lib }) => {
       const sourcePath = join(lib.libraryPath, "source.md");

@@ -372,24 +372,6 @@ export function runRechunkCommand(
       });
       let planned = plan.items;
 
-      let totalCurrentChunks = 0;
-      const countsResult = yield* Effect.either(
-        library.countChunksByDocumentIds(planned.map((item) => item.id)),
-      );
-      if (countsResult._tag === "Right") {
-        for (const item of planned) {
-          const count = countsResult.right[item.id] ?? 0;
-          item.currentChunkCount = count;
-          totalCurrentChunks += count;
-        }
-      }
-
-      const warnings = buildWarnings(
-        planned.length,
-        includeMissing,
-        plan.skippedMissing,
-        totalCurrentChunks,
-      );
       const effectiveMaxDocs =
         maxDocs ?? (!dryRun && includeMissing ? 25 : undefined);
 
@@ -419,6 +401,27 @@ export function runRechunkCommand(
         );
         planned = planned.slice(0, effectiveMaxDocs);
       }
+
+      // Count only the retained documents so the cap and cost estimate
+      // describe the work this run will actually do.
+      let totalCurrentChunks = 0;
+      const countsResult = yield* Effect.either(
+        library.countChunksByDocumentIds(planned.map((item) => item.id)),
+      );
+      if (countsResult._tag === "Right") {
+        for (const item of planned) {
+          const count = countsResult.right[item.id] ?? 0;
+          item.currentChunkCount = count;
+          totalCurrentChunks += count;
+        }
+      }
+
+      const warnings = buildWarnings(
+        planned.length,
+        includeMissing,
+        plan.skippedMissing,
+        totalCurrentChunks,
+      );
 
       if (
         !dryRun &&

@@ -67,6 +67,9 @@ export async function removeDirWithRetries(
       if (code === "ENOENT") return;
       if (code !== "EBUSY" && code !== "EPERM") throw error;
       lastError = error;
+      // On Windows, closed libSQL clients keep their database file locked
+      // until they are garbage-collected (vitest runs with --expose-gc).
+      globalThis.gc?.();
       if (attempt < attempts - 1) {
         await sleep(delayMs);
       }

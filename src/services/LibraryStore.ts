@@ -1,5 +1,6 @@
 import { Context, Effect, Layer } from "effect";
 import {
+  AmbiguousDocumentError,
   type Config,
   DocumentNotFoundError,
   LibraryConfig,
@@ -10,6 +11,7 @@ import {
   LibraryMaintenance,
   SearchRepository,
 } from "./StorageRepositories.js";
+import { expandSearchResults } from "./SearchExpansion.js";
 
 const makeLibraryStoreService = (appConfig: Config) =>
   Effect.gen(function* () {
@@ -18,26 +20,47 @@ const makeLibraryStoreService = (appConfig: Config) =>
     const maintenance = yield* LibraryMaintenance;
     const config = LibraryConfig.fromConfig(appConfig);
 
+    /**
+     * Resolves a user reference by exact ID, then exact title, then partial
+     * title or ID prefix. Fails when the first matching tier is ambiguous.
+     */
     const get = (idOrTitle: string) =>
       Effect.gen(function* () {
         const byId = yield* documents.getDocument(idOrTitle);
         if (byId) return byId;
 
         const docs = yield* documents.listDocuments();
-        return (
-          docs.find(
-            (doc) =>
-              doc.title.toLowerCase().includes(idOrTitle.toLowerCase()) ||
-              doc.id.startsWith(idOrTitle),
-          ) ?? null
+        const needle = idOrTitle.toLowerCase();
+        const exactTitles = docs.filter(
+          (doc) => doc.title.toLowerCase() === needle,
         );
+        const matches =
+          exactTitles.length > 0
+            ? exactTitles
+            : docs.filter(
+                (doc) =>
+                  doc.title.toLowerCase().includes(needle) ||
+                  doc.id.startsWith(idOrTitle),
+              );
+        if (matches.length <= 1) return matches[0] ?? null;
+
+        return yield* new AmbiguousDocumentError({
+          query: idOrTitle,
+          reason: `"${idOrTitle}" matches ${matches.length} documents: ${matches
+            .map((doc) => `${doc.id} (${doc.title})`)
+            .join(", ")}. Use a document ID.`,
+          candidates: matches.map((doc) => doc.id),
+        });
       });
 
     return {
       ftsSearch: (
         query: string,
         options: SearchOptions = new SearchOptions({}),
-      ) => search.ftsSearch(query, options),
+      ) =>
+        Effect.flatMap(search.ftsSearch(query, options), (results) =>
+          expandSearchResults(results, options, search),
+        ),
       getChunk: (chunkId: string) => documents.getChunk(chunkId),
       listChunksByDocument: (docId: string, opts?: { page?: number }) =>
         documents.listChunksByDocument(docId, opts),

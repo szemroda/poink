@@ -138,7 +138,7 @@ function buildCapabilitiesResult() {
       commandCapability(
         "reindex",
         ["reindex", "[--clean]", "[--doc <id>]"],
-        "Re-embed existing chunks in-place (updates embeddings only; does NOT remove/re-add documents)",
+        "Rebuild every vector (chunks, concepts, cluster summaries) with the configured embedding model in one atomic swap; required after changing models.embedding. --doc re-embeds one document with the library's current model",
       ),
       commandCapability(
         "config",

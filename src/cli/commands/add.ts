@@ -8,6 +8,7 @@ import {
 } from "../../types.js";
 import {
   AutoTagger,
+  enrichmentMetadata,
   type EnrichmentResult,
 } from "../../services/AutoTagger.js";
 import { PDFExtractor } from "../../services/PDFExtractor.js";
@@ -25,8 +26,10 @@ import {
   describeCliFailure,
   extractEnrichmentPreview,
   runCommandWithLibraryContext,
+  type CliLibrary,
   type GlobalCLIOptionsWithLibrary,
 } from "../runner.js";
+import { assignEnrichmentConcepts } from "../enrichment.js";
 
 const DOCUMENT_TITLE_EXTENSION_RE = /\.(pdf|md|markdown|docx|odt|fodt|txt)$/i;
 
@@ -66,9 +69,11 @@ function toURLDownloadOptions(
   );
 }
 
+type AddCliLibrary = Pick<CliLibrary, "add" | "stats">;
+
 export function runAddCommand(
   args: string[],
-  globals: GlobalCLIOptionsWithLibrary,
+  globals: GlobalCLIOptionsWithLibrary<AddCliLibrary>,
   options: AddCommandOptions = {},
 ) {
   return runCommandWithLibraryContext(args, globals, ({ Console, library, globals }) =>
@@ -193,6 +198,7 @@ export function runAddCommand(
       const addOptions = new AddOptions({
         title: enrichedTitle,
         tags: enrichedTags.length > 0 ? enrichedTags : undefined,
+        metadata: enrichment ? enrichmentMetadata(enrichment) : undefined,
         visuals: visualsEnabled ? true : undefined,
         visualsMode,
         sourceContext: {
@@ -204,20 +210,16 @@ export function runAddCommand(
         localPath,
         addOptions,
       );
-      if (enrichment?.proposedConcepts?.length) {
-        const tagger = yield* AutoTagger;
-        const acceptance = yield* Effect.either(
-          tagger.acceptProposals(enrichment.proposedConcepts),
+      const concepts = yield* assignEnrichmentConcepts(
+        Console,
+        doc.id,
+        enrichment,
+        "  ",
+      );
+      if (concepts?.assigned.length) {
+        yield* Console.log(
+          `  Assigned ${concepts.assigned.length} concept(s) (${concepts.acceptedProposals} newly accepted)`,
         );
-        if (acceptance._tag === "Right") {
-          yield* Console.log(
-            `  Accepted ${acceptance.right.accepted} concept(s)`,
-          );
-        } else {
-          yield* Console.log(
-            "  WARN Document added, but concept acceptance failed",
-          );
-        }
       }
       yield* Console.log(`OK Added: ${doc.title}`);
       yield* Console.log(`  ID: ${doc.id}`);

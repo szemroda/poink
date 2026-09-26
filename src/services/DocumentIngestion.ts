@@ -16,12 +16,12 @@ import {
   DocumentNotFoundError,
   PDFExtractionError,
   PDFNotFoundError,
-  expandHomePath,
   LibraryConfig,
   resolveVisualsConfig,
 } from "../types.js";
 import { DEFAULT_QUEUE_CONFIG } from "./EmbeddingQueue.js";
 import { buildEmbeddingContent } from "../embeddingContent.js";
+import { resolveUserPath } from "../pathUtils.js";
 import {
   EmbeddingProvider,
   type EmbeddingError,
@@ -479,8 +479,8 @@ const makeDocumentIngestionService = (appConfig: Config) =>
        */
       add: (pdfPath: string, options: AddOptions = new AddOptions({})) =>
         Effect.gen(function* () {
-          // Resolve path
-          const resolvedPath = expandHomePath(pdfPath);
+          // Absolute paths keep document IDs and source lookups independent of cwd.
+          const resolvedPath = resolveUserPath(pdfPath);
 
           // Check if already exists
           const existing =
@@ -558,8 +558,8 @@ const makeDocumentIngestionService = (appConfig: Config) =>
        */
       replace: (pdfPath: string, options: AddOptions = new AddOptions({})) =>
         Effect.gen(function* () {
-          // Resolve path
-          const resolvedPath = expandHomePath(pdfPath);
+          // Absolute paths keep document IDs and source lookups independent of cwd.
+          const resolvedPath = resolveUserPath(pdfPath);
 
           // Require existing doc (this is "replace", not "add")
           const existing =

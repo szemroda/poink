@@ -12,12 +12,15 @@ import {
   LibraryMaintenance,
   SearchRepository,
   StorageError,
+  VectorRebuildRepository,
   type ChunkInput,
+  type VectorStagingService,
 } from "./StorageRepositories.js";
 import { makeStorageLayer } from "./StorageLayer.js";
 import { TaxonomyService } from "./TaxonomyService.js";
 import {
   classifyLibsqlUrl,
+  createVectorSchemaManager,
   initializeLibSQLSchema,
 } from "./LibSQLSchema.js";
 
@@ -77,6 +80,7 @@ type StorageServices =
   | DocumentIntegrityRepository
   | SearchRepository
   | LibraryMaintenance
+  | VectorRebuildRepository
   | TaxonomyService;
 
 function runStorageEither<A, E>(
@@ -571,6 +575,314 @@ describe("libSQL storage", () => {
       "embedding.provider": "ollama",
       "embedding.model": "mxbai-embed-large",
     });
+  });
+
+  describe("embedding model identity", () => {
+    const withEmbeddingModel = (url: string, model: string) =>
+      new Config({
+        ...makeConfig(url),
+        models: {
+          ...Config.Default.models,
+          embedding: { ...Config.Default.models.embedding, model },
+        },
+      });
+    const addDocument = (id: string) =>
+      Effect.flatMap(DocumentIntegrityRepository, (integrity) =>
+        integrity.replaceDocument(
+          makeDocument(id),
+          [makeChunk(`${id}-chunk`, "content", { docId: id })],
+          [{ chunkId: `${id}-chunk`, embedding: [1, 0, 0] }],
+          TEST_SOURCE_IDENTITY,
+          "add",
+        ),
+      );
+    const search = Effect.flatMap(SearchRepository, (repository) =>
+      repository.vectorSearch([1, 0, 0]),
+    );
+    const readIdentity = (url: string) =>
+      withClient(url, async (execute) => {
+        const result = await execute(
+          "SELECT key, value FROM library_metadata WHERE key LIKE 'embedding.%'",
+        );
+        return Object.fromEntries(
+          result.rows.map((row) => [String(row.key), String(row.value)]),
+        );
+      });
+
+    test("rejects writes and queries from a different model with equal dimensions", async () => {
+      const url = fileDatabaseUrl();
+      await runStorage(withEmbeddingModel(url, "model-a"), addDocument("doc-1"));
+
+      const other = withEmbeddingModel(url, "model-b");
+      for (const effect of [search, addDocument("doc-2")]) {
+        const result = await runStorageEither(other, effect);
+        expect(result).toEqual(
+          Either.left(
+            expect.objectContaining({
+              reason: expect.stringContaining("model-a"),
+            }),
+          ),
+        );
+      }
+      expect(await readIdentity(url)).toMatchObject({
+        "embedding.model": "model-a",
+      });
+      expect(
+        await runStorage(withEmbeddingModel(url, "model-a"), search),
+      ).toHaveLength(1);
+    });
+
+    test("records the writing model's identity for libraries created without one", async () => {
+      const url = fileDatabaseUrl();
+      await runStorage(withEmbeddingModel(url, "model-a"), addDocument("doc-1"));
+      await withClient(url, (execute) =>
+        execute(
+          "DELETE FROM library_metadata WHERE key IN ('embedding.provider', 'embedding.model')",
+        ),
+      );
+
+      await runStorage(withEmbeddingModel(url, "model-b"), search);
+      expect(await readIdentity(url)).not.toHaveProperty("embedding.model");
+
+      await runStorage(withEmbeddingModel(url, "model-b"), addDocument("doc-2"));
+      expect(await readIdentity(url)).toMatchObject({
+        "embedding.provider": Config.Default.models.embedding.provider,
+        "embedding.model": "model-b",
+      });
+    });
+
+    const rebuild = <A, E>(
+      dimension: number,
+      stage: (staging: VectorStagingService) => Effect.Effect<A, E>,
+    ) =>
+      Effect.flatMap(VectorRebuildRepository, (repository) =>
+        repository.rebuildVectors(dimension, stage),
+      );
+    const readStagingTables = (url: string) =>
+      withClient(url, async (execute) =>
+        (
+          await execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE '%rebuild%'",
+          )
+        ).rows.map((row) => String(row.name)),
+      );
+
+    test("rebuilds every vector collection for a new model and dimension", async () => {
+      const url = fileDatabaseUrl();
+      await runStorage(
+        withEmbeddingModel(url, "model-a"),
+        Effect.gen(function* () {
+          yield* addDocument("doc-1");
+          const taxonomy = yield* TaxonomyService;
+          yield* taxonomy.addConcept({ id: "concept-1", prefLabel: "Concept" });
+          yield* taxonomy.addConcept({ id: "concept-2", prefLabel: "No vector" });
+          yield* taxonomy.storeConceptEmbedding("concept-1", [1, 0, 0]);
+        }),
+      );
+      await withClient(url, (execute) =>
+        execute(
+          `INSERT INTO cluster_summaries (id, centroid, summary, embedding, chunk_count)
+           VALUES (1, vector32('[1, 0, 0]'), 'Summary', vector32('[1, 0, 0]'), 1)`,
+        ),
+      );
+
+      const modelB = withEmbeddingModel(url, "model-b");
+      const vector = [0, 0, 0, 1];
+      const sources = await runStorage(
+        modelB,
+        rebuild(4, (staging) =>
+          Effect.gen(function* () {
+            yield* staging.stageChunkEmbeddings([
+              { chunkId: "doc-1-chunk", embedding: vector },
+            ]);
+            yield* staging.stageConceptEmbeddings([
+              { conceptId: "concept-1", embedding: vector },
+            ]);
+            yield* staging.stageClusterSummaryEmbeddings([
+              { id: 1, embedding: vector },
+            ]);
+            return {
+              concepts: yield* staging.listEmbeddedConcepts(),
+              clusterSummaries: yield* staging.listClusterSummaries(),
+            };
+          }),
+        ),
+      );
+
+      expect(sources).toEqual({
+        concepts: [{ id: "concept-1", prefLabel: "Concept" }],
+        clusterSummaries: [{ id: 1, summary: "Summary" }],
+      });
+      expect(await readIdentity(url)).toEqual({
+        "embedding.dimensions": "4",
+        "embedding.provider": Config.Default.models.embedding.provider,
+        "embedding.model": "model-b",
+      });
+      const found = await runStorage(
+        modelB,
+        Effect.gen(function* () {
+          const search = yield* SearchRepository;
+          const taxonomy = yield* TaxonomyService;
+          return {
+            hits: yield* search.vectorSearch(
+              vector,
+              new SearchOptions({ includeClusterSummaries: true }),
+            ),
+            concepts: yield* taxonomy.findSimilarConcepts(vector, 0.9),
+          };
+        }),
+      );
+      expect(found.hits.map((hit) => hit.chunkId).sort()).toEqual([
+        "cluster-summary-1",
+        "doc-1-chunk",
+      ]);
+      expect(found.concepts.map((concept) => concept.id)).toEqual(["concept-1"]);
+      const centroid = await withClient(url, (execute) =>
+        execute("SELECT centroid FROM cluster_summaries"),
+      );
+      expect(centroid.rows[0]?.centroid).toBeNull();
+      expect(await readStagingTables(url)).toEqual([]);
+    });
+
+    test("lets only the most recently started rebuild commit or clean up", async () => {
+      const client = createClient({ url: ":memory:" });
+      try {
+        await initializeLibSQLSchema(client, "memory");
+        const vectors = createVectorSchemaManager(client, {
+          provider: "ollama",
+          model: "model-b",
+        });
+        const staged = () =>
+          client
+            .execute(
+              "SELECT COUNT(*) AS n FROM sqlite_master WHERE name LIKE '%rebuild'",
+            )
+            .then((result) => Number(result.rows[0]?.n));
+
+        const first = await vectors.createStaging(4);
+        const second = await vectors.createStaging(4);
+
+        await expect(vectors.commitStaging(4, first)).rejects.toThrow(
+          "newer rebuild",
+        );
+        await vectors.dropStaging(first);
+        expect(await staged()).toBe(3);
+        await vectors.commitStaging(4, second);
+        expect(await staged()).toBe(0);
+      } finally {
+        client.close();
+      }
+    });
+
+    test("does not resurrect a chunk deleted after its vector was staged", async () => {
+      const url = fileDatabaseUrl();
+      await runStorage(
+        withEmbeddingModel(url, "model-a"),
+        Effect.all([addDocument("doc-1"), addDocument("doc-2")]),
+      );
+
+      await runStorage(
+        withEmbeddingModel(url, "model-b"),
+        Effect.flatMap(DocumentRepository, (documents) =>
+          rebuild(4, (staging) =>
+            Effect.gen(function* () {
+              yield* staging.stageChunkEmbeddings(
+                ["doc-1-chunk", "doc-2-chunk"].map((chunkId) => ({
+                  chunkId,
+                  embedding: [0, 0, 0, 1],
+                })),
+              );
+              yield* documents.deleteDocument("doc-2");
+            }),
+          ),
+        ),
+      );
+
+      const vectors = await withClient(url, (execute) =>
+        execute("SELECT chunk_id FROM embeddings"),
+      );
+      expect(vectors.rows.map((row) => row.chunk_id)).toEqual(["doc-1-chunk"]);
+    });
+
+    test.each<[string, (staging: VectorStagingService) => Effect.Effect<void, unknown>]>([
+      ["staging fails", () => Effect.fail("embedding failed")],
+      [
+        "a live chunk has no rebuilt vector",
+        (staging) =>
+          staging.stageConceptEmbeddings([
+            { conceptId: "concept-1", embedding: [0, 0, 0, 1] },
+          ]),
+      ],
+      [
+        "a live concept vector has no rebuilt vector",
+        (staging) =>
+          staging.stageChunkEmbeddings([
+            { chunkId: "doc-1-chunk", embedding: [0, 0, 0, 1] },
+          ]),
+      ],
+      [
+        "a vector has the wrong dimension",
+        (staging) =>
+          staging.stageChunkEmbeddings([
+            { chunkId: "doc-1-chunk", embedding: [0, 0, 1] },
+          ]),
+      ],
+    ])("keeps the live library when %s", async (_name, stage) => {
+      const url = fileDatabaseUrl();
+      await runStorage(
+        withEmbeddingModel(url, "model-a"),
+        Effect.gen(function* () {
+          yield* addDocument("doc-1");
+          const taxonomy = yield* TaxonomyService;
+          yield* taxonomy.addConcept({ id: "concept-1", prefLabel: "Concept" });
+          yield* taxonomy.storeConceptEmbedding("concept-1", [1, 0, 0]);
+        }),
+      );
+
+      const result = await runStorageEither(
+        withEmbeddingModel(url, "model-b"),
+        rebuild(4, stage),
+      );
+
+      expect(Either.isLeft(result)).toBe(true);
+      expect(await readIdentity(url)).toMatchObject({
+        "embedding.dimensions": "3",
+        "embedding.model": "model-a",
+      });
+      expect(
+        await runStorage(withEmbeddingModel(url, "model-a"), search),
+      ).toHaveLength(1);
+      expect(await readStagingTables(url)).toEqual([]);
+    });
+  });
+
+  test("finds tagged vector matches ranked behind closer untagged chunks", async () => {
+    const results = await runStorage(
+      makeConfig(),
+      Effect.gen(function* () {
+        const integrity = yield* DocumentIntegrityRepository;
+        const search = yield* SearchRepository;
+        const add = (id: string, tags: string[], embedding: number[]) =>
+          integrity.replaceDocument(
+            new Document({ ...makeDocument(id), tags }),
+            [makeChunk(`${id}-chunk`, id, { docId: id })],
+            [{ chunkId: `${id}-chunk`, embedding }],
+            TEST_SOURCE_IDENTITY,
+            "add",
+          );
+        for (let index = 0; index < 5; index++) {
+          yield* add(`near-${index}`, ["other"], [1, index / 100, 0]);
+        }
+        yield* add("wanted", ["wanted"], [0, 1, 0]);
+
+        return yield* search.vectorSearch(
+          [1, 0, 0],
+          new SearchOptions({ limit: 1, tags: ["wanted"] }),
+        );
+      }),
+    );
+
+    expect(results.map((result) => result.docId)).toEqual(["wanted"]);
   });
 
   test("fails reads with contextual errors for malformed JSON rows", async () => {

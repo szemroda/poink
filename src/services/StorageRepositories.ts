@@ -129,6 +129,7 @@ export interface SearchRepositoryService {
     query: string,
     options?: SearchOptions,
   ) => Effect.Effect<DocumentSearchResult[], StorageError>;
+  /** Returns null when the target chunk does not exist. */
   readonly getExpandedContext: (
     docId: string,
     page: number,
@@ -138,7 +139,7 @@ export interface SearchRepositoryService {
       direction?: "before" | "after" | "both";
     },
   ) => Effect.Effect<
-    { content: string; startChunk: string; endChunk: string },
+    { content: string; startChunk: string; endChunk: string } | null,
     StorageError
   >;
 }
@@ -171,3 +172,56 @@ export class LibraryMaintenance extends Context.Tag("LibraryMaintenance")<
   LibraryMaintenance,
   LibraryMaintenanceService
 >() {}
+
+/** A cluster summary whose text a rebuild re-embeds; a null summary keeps no vector. */
+export type ClusterSummarySource = { id: number; summary: string | null };
+
+/** The text fields a concept vector is embedded from. */
+export type ConceptEmbeddingSource = {
+  id: string;
+  prefLabel: string;
+  definition?: string;
+};
+
+/**
+ * Writes regenerated vectors next to the live ones during a rebuild. Every
+ * vector must have the rebuild's dimension.
+ */
+export interface VectorStagingService {
+  /** Concepts that have a vector in the live library. */
+  readonly listEmbeddedConcepts: () => Effect.Effect<
+    ConceptEmbeddingSource[],
+    StorageError
+  >;
+  readonly listClusterSummaries: () => Effect.Effect<
+    ClusterSummarySource[],
+    StorageError
+  >;
+  readonly stageChunkEmbeddings: (
+    items: readonly EmbeddingInput[],
+  ) => Effect.Effect<void, StorageError>;
+  readonly stageConceptEmbeddings: (
+    items: ReadonlyArray<{ conceptId: string; embedding: number[] }>,
+  ) => Effect.Effect<void, StorageError>;
+  /** A null embedding keeps a summary that has no text to embed. */
+  readonly stageClusterSummaryEmbeddings: (
+    items: ReadonlyArray<{ id: number; embedding: number[] | null }>,
+  ) => Effect.Effect<void, StorageError>;
+}
+
+export interface VectorRebuildRepositoryService {
+  /**
+   * Runs `stage` to regenerate every vector at `dimension`, then swaps all
+   * vector collections in one transaction and records the configured
+   * embedding model. The live library is unchanged if staging fails or if
+   * any live chunk, concept vector, or cluster summary was left unstaged.
+   */
+  readonly rebuildVectors: <A, E, R>(
+    dimension: number,
+    stage: (staging: VectorStagingService) => Effect.Effect<A, E, R>,
+  ) => Effect.Effect<A, E | StorageError, R>;
+}
+
+export class VectorRebuildRepository extends Context.Tag(
+  "VectorRebuildRepository",
+)<VectorRebuildRepository, VectorRebuildRepositoryService>() {}

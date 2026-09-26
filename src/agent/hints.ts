@@ -51,7 +51,7 @@ export type CommandResult =
       chunkerMissing?: number;
       chunkerMismatch?: number;
     }
-  | { _tag: "config"; subcommand: string }
+  | { _tag: "config"; subcommand: string; embeddingChanged?: boolean }
   | { _tag: "tag"; title: string; tags: string[] }
   | { _tag: "check"; reachable: boolean }
   | { _tag: "repair"; orphanedChunks: number; orphanedEmbeddings: number }
@@ -408,9 +408,15 @@ export function generateHints(result: CommandResult): string[] {
     }
 
     case "config": {
+      if (result.embeddingChanged) {
+        return [
+          `\`poink reindex\` -- Rebuild vectors with the new embedding model (search and ingestion fail until then)`,
+          `\`poink config show\` -- View all settings`,
+        ];
+      }
       return [
         `\`poink config show\` -- View all settings`,
-        `\`poink config set models.embedding.model <model>\` -- Change embedding model`,
+        `\`poink config set models.embedding.model <model>\` -- Change embedding model (then run \`poink reindex\`)`,
         `\`poink stats\` -- Check library statistics`,
       ];
     }
@@ -731,7 +737,17 @@ export function generateNextActions(result: CommandResult): NextAction[] {
     }
 
     case "config": {
-      return [shellAction("Show config", "poink", "config", "show")];
+      const show = shellAction("Show config", "poink", "config", "show");
+      return result.embeddingChanged
+        ? [
+            shellAction(
+              "Rebuild vectors with the new embedding model",
+              "poink",
+              "reindex",
+            ),
+            show,
+          ]
+        : [show];
     }
 
     case "check": {

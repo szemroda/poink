@@ -266,6 +266,11 @@ poink remove "document-title"
 poink tag "document-title" "new,tags,here"
 ```
 
+These commands accept a document ID, an exact title, or a partial title or ID
+prefix that matches exactly one document. An exact title wins over partial
+matches. When a reference matches several documents, poink lists the candidate
+IDs and changes nothing.
+
 ### Exporting PDF Pages
 
 Export selected pages from a stored PDF as a smaller PDF, individual PNG
@@ -416,6 +421,10 @@ When you add documents with `--enrich`, the LLM extracts:
 | **tags**             | 5-10 descriptive tags                       |
 | **concepts**         | Matched concepts from your taxonomy         |
 | **proposedConcepts** | New concepts the LLM suggests adding        |
+
+The summary, author, document type, and category are stored in the document's
+`metadata.enrichment` and returned by `poink read`. Matched concepts and
+accepted proposals are assigned to the document in the taxonomy.
 
 ### LLM Providers
 
@@ -682,6 +691,21 @@ poink config set models.enrichment.model anthropic/claude-haiku-4-5
 Embedding dimensions are not user configuration. poink derives the vector
 dimension from embeddings returned by the configured provider and records it in
 database metadata, then rejects later embeddings with a different dimension.
+It also records the embedding provider and model. Searches and writes fail when
+the configured model differs from the recorded one, even if the dimensions
+match, because vectors from different models are not comparable.
+
+To switch embedding models, change `models.embedding` and then rebuild:
+
+```bash
+poink config set models.embedding.model nomic-embed-text
+poink reindex
+```
+
+`poink reindex` re-embeds every chunk, concept, and cluster summary with the
+configured model and swaps them in with one transaction. If it fails partway,
+the library keeps its previous vectors. `poink reindex --doc <id>` re-embeds a
+single document with the library's current model.
 
 For a remote database, configure both its URL and token source:
 

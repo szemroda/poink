@@ -7,10 +7,7 @@ import { makeTaxonomyService } from "./TaxonomyService.js";
 export function makeStorageLayer(config: Config) {
   const client = makeLibSQLClient(config);
   return Layer.merge(
-    makeLibSQLRepositories(config),
-    makeTaxonomyService({
-      provider: config.models.embedding.provider,
-      model: config.models.embedding.model,
-    }),
+    makeLibSQLRepositories(),
+    makeTaxonomyService(),
   ).pipe(Layer.provide(client));
 }

@@ -1,11 +1,12 @@
 import type { InStatement, InValue } from "@libsql/client";
 import { Effect, Layer } from "effect";
-import type { Config, Document } from "../types.js";
+import type { Document } from "../types.js";
 import {
   DocumentIntegrityRepository,
   DocumentRepository,
   LibraryMaintenance,
   SearchRepository,
+  VectorRebuildRepository,
   storageEffect,
   type ChunkInput,
   type DocumentRepositoryService,
@@ -26,12 +27,8 @@ import {
   decodeVectorSearchRow,
 } from "./LibSQLRows.js";
 import { tableExists } from "./LibSQLSchema.js";
+import { makeVectorRebuildRepository } from "./LibSQLVectorRebuild.js";
 import type { SourceIdentity } from "./SourceIntegrity.js";
-
-type RepositoryConfig = {
-  embeddingProvider: string;
-  embeddingModel: string;
-};
 
 const CONTEXT_QUERY_LIMIT = 20;
 const CONTEXT_LENGTH_TOLERANCE = 1.2;
@@ -177,13 +174,8 @@ function validateSourceIdentity(sourceIdentity: SourceIdentity): void {
 
 function makeDocumentRepository(
   db: LibSQLClientService,
-  config: RepositoryConfig,
 ): DocumentRepositoryService & DocumentIntegrityRepositoryService {
   const { client, vectors } = db;
-  const embeddingIdentity = {
-    provider: config.embeddingProvider,
-    model: config.embeddingModel,
-  };
 
   return {
     addDocument: (doc) =>
@@ -297,7 +289,7 @@ function makeDocumentRepository(
     addEmbeddings: (embeddings) =>
       storageEffect("add embeddings", async () => {
         if (embeddings.length === 0) return;
-        await vectors.ensureForEmbeddings(embeddings, embeddingIdentity);
+        await vectors.ensureForEmbeddings(embeddings);
         await client.batch(
           embeddings.map(embeddingUpsertStatement),
           "write",
@@ -307,7 +299,7 @@ function makeDocumentRepository(
     replaceDocument: (doc, chunks, embeddings, sourceIdentity, mode) =>
       storageEffect("replace document", async () => {
         validateSourceIdentity(sourceIdentity);
-        await vectors.ensureForEmbeddings(embeddings, embeddingIdentity);
+        await vectors.ensureForEmbeddings(embeddings);
         const statements: InStatement[] = [
           mode === "add"
             ? documentInsertStatement(doc, sourceIdentity)
@@ -364,16 +356,22 @@ function makeSearchRepository(
           includeClusterSummaries = false,
         } = options ?? {};
         const queryVector = JSON.stringify(queryEmbedding);
-        const fetchLimit = tags && tags.length > 0 ? limit * 3 : limit;
         const maxDistance = threshold > 0 ? 2 * (1 - threshold) : null;
+        const filterByTags = tags !== undefined && tags.length > 0;
 
-        const chunkArgs: InValue[] = [
-          queryVector,
-          queryVector,
-          fetchLimit,
-        ];
+        // vector_top_k ranks the whole library before any WHERE clause runs,
+        // so a tag filter could discard every candidate. Tag-filtered searches
+        // scan the tagged chunks exactly instead of using the ANN index.
+        const source = filterByTags
+          ? { sql: "embeddings e", args: [] }
+          : {
+              sql: `vector_top_k('embeddings_idx', vector32(?), ?) AS top
+                    JOIN embeddings e ON e.rowid = top.id`,
+              args: [queryVector, limit],
+            };
+        const chunkArgs: InValue[] = [queryVector, ...source.args];
         const chunkConditions: string[] = [];
-        if (tags && tags.length > 0) {
+        if (filterByTags) {
           chunkConditions.push(
             `(${tags
               .map(
@@ -400,8 +398,7 @@ function makeSearchRepository(
                   c.chunk_index,
                   c.content,
                   vector_distance_cos(e.embedding, vector32(?)) AS distance
-                FROM vector_top_k('embeddings_idx', vector32(?), ?) AS top
-                JOIN embeddings e ON e.rowid = top.id
+                FROM ${source.sql}
                 JOIN chunks c ON c.id = e.chunk_id
                 JOIN documents d ON d.id = c.doc_id
                 ${
@@ -414,7 +411,9 @@ function makeSearchRepository(
           args: chunkArgs,
         });
 
-        const rows = [...chunkResult.rows];
+        const results = chunkResult.rows.map((row) =>
+          decodeVectorSearchRow(row, "vector search", "document"),
+        );
         if (includeClusterSummaries) {
           const clusterArgs: InValue[] = [
             queryVector,
@@ -446,11 +445,14 @@ function makeSearchRepository(
                   }`,
             args: clusterArgs,
           });
-          rows.push(...clusterResult.rows);
+          results.push(
+            ...clusterResult.rows.map((row) =>
+              decodeVectorSearchRow(row, "vector search", "cluster_summary"),
+            ),
+          );
         }
 
-        return rows
-          .map((row) => decodeVectorSearchRow(row, "vector search"))
+        return results
           .sort((left, right) => right.score - left.score)
           .slice(0, limit);
       }),
@@ -497,13 +499,7 @@ function makeSearchRepository(
           args: [docId, page, chunkIndex],
         });
         const targetRow = targetResult.rows[0];
-        if (!targetRow) {
-          return {
-            content: "",
-            startChunk: `p${page}c${chunkIndex}`,
-            endChunk: `p${page}c${chunkIndex}`,
-          };
-        }
+        if (!targetRow) return null;
 
         const target = decodeContextRow(targetRow, "expand chunk context");
         let content = target.content;
@@ -698,23 +694,15 @@ function makeMaintenanceRepository(
   };
 }
 
-export function makeLibSQLRepositories(config: Config) {
-  const repositoryConfig: RepositoryConfig = {
-    embeddingProvider: config.models.embedding.provider,
-    embeddingModel: config.models.embedding.model,
-  };
+export function makeLibSQLRepositories() {
   return Layer.mergeAll(
     Layer.effect(
       DocumentRepository,
-      Effect.map(LibSQLClient, (client) =>
-        makeDocumentRepository(client, repositoryConfig),
-      ),
+      Effect.map(LibSQLClient, makeDocumentRepository),
     ),
     Layer.effect(
       DocumentIntegrityRepository,
-      Effect.map(LibSQLClient, (client) =>
-        makeDocumentRepository(client, repositoryConfig),
-      ),
+      Effect.map(LibSQLClient, makeDocumentRepository),
     ),
     Layer.effect(
       SearchRepository,
@@ -723,6 +711,10 @@ export function makeLibSQLRepositories(config: Config) {
     Layer.effect(
       LibraryMaintenance,
       Effect.map(LibSQLClient, makeMaintenanceRepository),
+    ),
+    Layer.effect(
+      VectorRebuildRepository,
+      Effect.map(LibSQLClient, makeVectorRebuildRepository),
     ),
   );
 }

@@ -66,7 +66,8 @@ const AGENT_HELP_TEXT = dedent`
     poink repair
     poink config show|get|set [--show-secrets]
     poink providers login --provider openai-codex --format text [--device-auth]
-    poink reindex [--clean]
+    poink reindex [--clean] [--doc <id>]
+    # reindex rebuilds every vector with the configured embedding model; run it after changing models.embedding.
     poink rechunk [--dry-run] [--include-missing] [--max-docs N] [--max-chunks N]
 
   ## Options

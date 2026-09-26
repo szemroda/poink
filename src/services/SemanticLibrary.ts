@@ -12,15 +12,23 @@ import {
   DocumentRepository,
   LibraryMaintenance,
   SearchRepository,
+  VectorRebuildRepository,
 } from "./StorageRepositories.js";
 import { EmbeddingProvider } from "./EmbeddingProvider.js";
 import { DEFAULT_QUEUE_CONFIG } from "./EmbeddingQueue.js";
-import { buildEmbeddingContent } from "../embeddingContent.js";
+import {
+  buildEmbeddingContent,
+  conceptEmbeddingText,
+} from "../embeddingContent.js";
+import { expandSearchResults } from "./SearchExpansion.js";
 
 type EmbeddingRecord = {
   chunkId: string;
   embedding: number[];
 };
+
+/** Embedded once to learn the configured model's vector dimension. */
+const DIMENSION_PROBE = "dimension probe";
 
 function providerFailureReason(error: unknown): string {
   if (
@@ -70,43 +78,45 @@ function mergeHybridResults(
   return results;
 }
 
-function expandSearchResults(
-  results: readonly DocumentSearchResult[],
-  limit: number,
-  expandChars: number,
-  search: Context.Tag.Service<typeof SearchRepository>,
-) {
-  const maxChars = expandChars > 0 ? expandChars : 500;
-  return Effect.all(
-    [...results]
-      .sort((a, b) => b.score - a.score)
-      .slice(0, limit)
-      .map((result) =>
-        Effect.map(
-          search.getExpandedContext(
-            result.docId,
-            result.page,
-            result.chunkIndex,
-            { maxChars },
-          ),
-          (expanded) =>
-            new DocumentSearchResult({
-              ...result,
-              expandedContent: expanded.content,
-              expandedRange: { start: 0, end: 0 },
-            }),
-        ),
-      ),
-    { concurrency: 8 },
-  );
-}
-
 const makeSemanticLibraryService = (_config: Config) =>
   Effect.gen(function* () {
     const documents = yield* DocumentRepository;
     const search = yield* SearchRepository;
     const maintenance = yield* LibraryMaintenance;
     const embedProvider = yield* EmbeddingProvider;
+    const rebuild = yield* VectorRebuildRepository;
+
+    /** Embeds texts in queue-sized batches, pausing between batches. */
+    const embedTexts = (texts: readonly string[]) =>
+      Effect.gen(function* () {
+        const vectors: number[][] = [];
+        const { batchSize, concurrency, batchDelayMs } = DEFAULT_QUEUE_CONFIG;
+        for (let start = 0; start < texts.length; start += batchSize) {
+          if (start > 0) yield* Effect.sleep(Duration.millis(batchDelayMs));
+          vectors.push(
+            ...(yield* embedProvider.embedBatch(
+              texts.slice(start, start + batchSize),
+              concurrency,
+            )),
+          );
+        }
+        return vectors;
+      });
+
+    const embedChunks = (doc: Document, chunks: readonly PDFChunk[]) =>
+      Effect.map(
+        embedTexts(
+          chunks.map(
+            (chunk) =>
+              chunk.embeddingContent ?? buildEmbeddingContent(doc, chunk),
+          ),
+        ),
+        (vectors): EmbeddingRecord[] =>
+          chunks.map((chunk, index) => ({
+            chunkId: chunk.id,
+            embedding: vectors[index]!,
+          })),
+      );
 
     return {
       search: (
@@ -114,7 +124,7 @@ const makeSemanticLibraryService = (_config: Config) =>
         options: SearchOptions = new SearchOptions({}),
       ) =>
         Effect.gen(function* () {
-          const { hybrid, limit, expandChars = 0 } = options;
+          const { hybrid } = options;
           const mapProviderFailure = (error: unknown) =>
             new SemanticSearchProviderError({
               provider: embedProvider.provider,
@@ -137,12 +147,7 @@ const makeSemanticLibraryService = (_config: Config) =>
               )
             : vectorResults;
 
-          return yield* expandSearchResults(
-            results,
-            limit,
-            expandChars,
-            search,
-          );
+          return yield* expandSearchResults(results, options, search);
         }),
       reindexEmbeddings: (docId: string) =>
         Effect.gen(function* () {
@@ -158,38 +163,7 @@ const makeSemanticLibraryService = (_config: Config) =>
             });
           }
 
-          const embeddingRecords: EmbeddingRecord[] = [];
-          const batchSize = DEFAULT_QUEUE_CONFIG.batchSize;
-
-          for (
-            let batchIndex = 0;
-            batchIndex * batchSize < chunks.length;
-            batchIndex++
-          ) {
-            const batchStart = batchIndex * batchSize;
-            const batchEnd = Math.min(batchStart + batchSize, chunks.length);
-            const batchChunks = chunks.slice(batchStart, batchEnd);
-            const embeddings = yield* embedProvider.embedBatch(
-              batchChunks.map(
-                (chunk) =>
-                  chunk.embeddingContent ??
-                  buildEmbeddingContent(existing, chunk),
-              ),
-              DEFAULT_QUEUE_CONFIG.concurrency,
-            );
-            embeddings.forEach((embedding, index) => {
-              embeddingRecords.push({
-                chunkId: batchChunks[index]!.id,
-                embedding,
-              });
-            });
-            if (batchEnd < chunks.length) {
-              yield* Effect.sleep(
-                Duration.millis(DEFAULT_QUEUE_CONFIG.batchDelayMs),
-              );
-            }
-          }
-
+          const embeddingRecords = yield* embedChunks(existing, chunks);
           yield* documents.addEmbeddings(embeddingRecords);
           yield* maintenance.checkpoint();
           return {
@@ -198,6 +172,81 @@ const makeSemanticLibraryService = (_config: Config) =>
             chunks: chunks.length,
             embeddings: embeddingRecords.length,
           };
+        }),
+
+      /**
+       * Re-embeds every chunk, concept vector, and cluster summary with the
+       * configured model and swaps them in atomically. This is how a library
+       * moves to a different embedding model or dimension.
+       */
+      rebuildEmbeddings: (
+        onDocument: (
+          doc: Document,
+          index: number,
+          total: number,
+        ) => Effect.Effect<void> = () => Effect.void,
+      ) =>
+        Effect.gen(function* () {
+          const dimensions = (yield* embedProvider.embed(DIMENSION_PROBE))
+            .length;
+          const docs = yield* documents.listDocuments();
+          const rebuilt = yield* rebuild.rebuildVectors(
+            dimensions,
+            (staging) =>
+              Effect.gen(function* () {
+                let chunkCount = 0;
+                for (const [index, doc] of docs.entries()) {
+                  yield* onDocument(doc, index, docs.length);
+                  const chunks = yield* documents.listChunksByDocument(doc.id);
+                  yield* staging.stageChunkEmbeddings(
+                    yield* embedChunks(doc, chunks),
+                  );
+                  chunkCount += chunks.length;
+                }
+
+                const concepts = yield* staging.listEmbeddedConcepts();
+                const conceptVectors = yield* embedTexts(
+                  concepts.map(conceptEmbeddingText),
+                );
+                yield* staging.stageConceptEmbeddings(
+                  concepts.map((concept, index) => ({
+                    conceptId: concept.id,
+                    embedding: conceptVectors[index]!,
+                  })),
+                );
+
+                const summaries = yield* staging.listClusterSummaries();
+                const withText = summaries.filter(
+                  (summary): summary is { id: number; summary: string } =>
+                    summary.summary !== null,
+                );
+                const summaryVectors = yield* embedTexts(
+                  withText.map((summary) => summary.summary),
+                );
+                const vectorById = new Map(
+                  withText.map((summary, index) => [
+                    summary.id,
+                    summaryVectors[index]!,
+                  ]),
+                );
+                yield* staging.stageClusterSummaryEmbeddings(
+                  summaries.map((summary) => ({
+                    id: summary.id,
+                    embedding: vectorById.get(summary.id) ?? null,
+                  })),
+                );
+
+                return {
+                  documents: docs.length,
+                  chunks: chunkCount,
+                  concepts: concepts.length,
+                  clusterSummaries: summaries.length,
+                  dimensions,
+                };
+              }),
+          );
+          yield* maintenance.checkpoint();
+          return rebuilt;
         }),
     };
   });

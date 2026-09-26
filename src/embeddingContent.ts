@@ -62,3 +62,16 @@ export function buildEmbeddingContent(
     : baseContent;
   return `${context.join("\n")}\n\n${body}`;
 }
+
+/**
+ * Build the text sent to the embedding model for a taxonomy concept. Every
+ * path that stores a concept vector must use this so rebuilds reproduce it.
+ */
+export function conceptEmbeddingText(concept: {
+  prefLabel: string;
+  definition?: string | undefined;
+}): string {
+  return concept.definition
+    ? `${concept.prefLabel}: ${concept.definition}`
+    : concept.prefLabel;
+}

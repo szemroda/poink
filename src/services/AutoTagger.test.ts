@@ -1,11 +1,20 @@
+import { Effect, Layer } from "effect";
 import { describe, expect, it } from "vitest";
 import { getPathFilename } from "../pathUtils.js";
+import { Config, Document } from "../types.js";
+import { EmbeddingProvider } from "./EmbeddingProvider.js";
+import { makeStorageLayer } from "./StorageLayer.js";
+import { DocumentRepository } from "./StorageRepositories.js";
+import { TaxonomyService } from "./TaxonomyService.js";
 import {
+  AutoTagger,
   cleanTitle,
+  type EnrichmentResult,
   EnrichmentError,
   extractAuthor,
   extractFilenameTags,
   extractPathTags,
+  makeAutoTagger,
   validateProposedConcepts,
 } from "./AutoTagger.js";
 
@@ -71,5 +80,68 @@ describe("path handling", () => {
     expect(cleanTitle(filename)).toBe("Deep Learning Smith");
     expect(extractAuthor(filename)).toBe("Smith");
     expect(extractFilenameTags(filename)).toEqual(["deep", "learning", "smith"]);
+  });
+});
+
+describe("AutoTagger.assignConcepts", () => {
+  it("assigns known concepts and accepted proposals to the document", async () => {
+    const config = new Config({
+      ...Config.Default,
+      storage: { libsql: { url: ":memory:" } },
+    });
+    const storage = makeStorageLayer(config);
+    const embeddings = Layer.succeed(EmbeddingProvider, {
+      provider: "ollama",
+      checkHealth: () => Effect.void,
+      embed: () => Effect.succeed([0, 1, 0]),
+      embedBatch: (texts) => Effect.succeed(texts.map(() => [0, 1, 0])),
+    });
+    const layer = Layer.mergeAll(
+      storage,
+      makeAutoTagger(config).pipe(
+        Layer.provide(Layer.merge(storage, embeddings)),
+      ),
+    );
+    const enrichment: EnrichmentResult = {
+      title: "Notes",
+      summary: "Summary.",
+      documentType: "notes",
+      category: "programming",
+      tags: [],
+      concepts: ["programming/rust", "programming/unknown"],
+      proposedConcepts: [{ id: "programming/zig", prefLabel: "Zig" }],
+      confidence: 0.9,
+      provider: "ollama",
+    };
+
+    const assigned = await Effect.runPromise(
+      Effect.gen(function* () {
+        const documents = yield* DocumentRepository;
+        const taxonomy = yield* TaxonomyService;
+        yield* documents.addDocument(
+          new Document({
+            id: "doc-1",
+            title: "Notes",
+            path: "/notes.md",
+            addedAt: new Date(),
+            pageCount: 1,
+            sizeBytes: 1,
+            tags: [],
+            fileType: "markdown",
+            metadata: {},
+          }),
+        );
+        yield* taxonomy.addConcept({ id: "programming/rust", prefLabel: "Rust" });
+
+        const tagger = yield* AutoTagger;
+        yield* tagger.assignConcepts("doc-1", enrichment);
+        return yield* taxonomy.getDocumentConcepts("doc-1");
+      }).pipe(Effect.provide(layer), Effect.scoped),
+    );
+
+    expect(assigned.map((assignment) => assignment.conceptId).sort()).toEqual([
+      "programming/rust",
+      "programming/zig",
+    ]);
   });
 });
