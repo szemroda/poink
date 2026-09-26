@@ -371,6 +371,11 @@ export function isMainModule(
   }
 }
 
+/**
+ * CLI entrypoint. Sets `process.exitCode` and lets the event loop drain rather
+ * than calling `process.exit()`: on Windows, a hard exit right after a fetch
+ * can abort Node inside libuv (nodejs/node#56645).
+ */
 export async function runMain(argv: string[] = process.argv): Promise<void> {
   const controller = new AbortController();
   let signalExitCode: number | undefined;
@@ -391,7 +396,7 @@ export async function runMain(argv: string[] = process.argv): Promise<void> {
       createProcessInvocationTiming(),
       controller.signal,
     );
-    process.exit(signalExitCode ?? exitCode);
+    process.exitCode = signalExitCode ?? exitCode;
   } finally {
     process.off("SIGINT", onSigint);
     process.off("SIGTERM", onSigterm);

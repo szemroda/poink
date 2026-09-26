@@ -696,7 +696,7 @@ export function downloadFile(
   userAgent: string,
 ) {
   return Effect.tryPromise({
-    try: async () => {
+    try: async (interrupted) => {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), options.timeoutMs);
 
@@ -704,7 +704,7 @@ export function downloadFile(
         const response = await requestURLWithGuards(
           url,
           options,
-          controller.signal,
+          AbortSignal.any([interrupted, controller.signal]),
           userAgent,
         );
         const statusCode = response.statusCode ?? 0;

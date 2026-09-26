@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { Effect } from "effect";
+import { Effect, Fiber } from "effect";
 import { mkdtempSync, rmSync } from "node:fs";
 import {
   createServer,
@@ -282,6 +282,44 @@ describe("secure URL download options", () => {
       }),
     ).rejects.toThrow(/HTTP 500/);
     await expect(eventually(responseClosed, 1_000)).resolves.toBeUndefined();
+  });
+
+  test("interrupting a URL download aborts the in-flight request", async () => {
+    let markReceived!: () => void;
+    const requestReceived = new Promise<void>((resolve) => {
+      markReceived = resolve;
+    });
+    let markClosed!: () => void;
+    const requestClosed = new Promise<void>((resolve) => {
+      markClosed = resolve;
+    });
+    const server = createServer((req) => {
+      req.socket.on("close", () => markClosed());
+      markReceived();
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const { port } = server.address() as AddressInfo;
+      const options = resolveURLDownloadOptions(Config.Default, {
+        "allow-private-network": true,
+        "download-timeout": "5s",
+      });
+      const fiber = Effect.runFork(
+        downloadFile(
+          `http://127.0.0.1:${port}/slow.pdf`,
+          tmpdir(),
+          options,
+          "poink-test",
+        ),
+      );
+      await eventually(requestReceived, 1_000);
+      await Effect.runPromise(Fiber.interrupt(fiber));
+
+      await expect(eventually(requestClosed, 1_000)).resolves.toBeUndefined();
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 
   test.each([
