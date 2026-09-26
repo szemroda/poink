@@ -165,7 +165,7 @@ function findConcepts(query: string, limit: number) {
     return allConcepts
       .filter((concept) => matchesConcept(concept, queryLower))
       .slice(0, limit);
-  }).pipe(Effect.catchAll(() => Effect.succeed([] as Concept[])));
+  }).pipe(Effect.orElseSucceed((): Concept[] => []));
 }
 
 function renderConceptResults(
