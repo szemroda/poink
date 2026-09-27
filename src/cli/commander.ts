@@ -21,7 +21,6 @@ export type ParsedCommandLine = {
   search?: SearchRequest;
   globals: {
     format: OutputFormat;
-    configuredDefaultFormat: OutputFormat;
     pretty: boolean;
     verbose: boolean;
     logLevel: LogLevel;
@@ -60,7 +59,6 @@ function commandGlobals(
 ): ParsedCommandLine["globals"] {
   return {
     format: options.format ?? configuredDefaultFormat,
-    configuredDefaultFormat,
     pretty: options.pretty === true,
     verbose: options.verbose === true,
     logLevel: options.logLevel ?? getLogLevel(),
@@ -149,17 +147,7 @@ function addSearchOptions(command: Command): Command {
     .option("--fts")
     .option("--expand <chars>", "", parseSearchIntegerOption("--expand", 0, 4000))
     .option("--docs-only")
-    .option("--concepts-only")
-    .option("--include-clusters");
-}
-
-function addRootHelp(program: Command): void {
-  program
-    .helpOption("-h, --help", "display help for command")
-    .configureOutput({
-      writeOut: (str) => process.stdout.write(str),
-      writeErr: (str) => process.stderr.write(str),
-    });
+    .option("--concepts-only");
 }
 
 function createCommandProgram(): Command {
@@ -426,12 +414,4 @@ export function parseCommandLine(
     throw new CLIError("UNKNOWN_COMMAND", "No command provided");
   }
   return parsed;
-}
-
-export function renderRootHelp(): void {
-  const program = new Command("poink");
-  addRootHelp(program);
-  program.description("Local document knowledge base with semantic search, enrichment, and MCP support.");
-  program.addHelpText("after", "\nUse `poink help --format json` for a machine-readable help envelope.");
-  program.help();
 }

@@ -29,11 +29,11 @@ export function fileExists(path: string): boolean {
 
 type FetchHandler = (request: Request) => Response | Promise<Response>;
 
-export interface FetchServer {
+interface FetchServer {
   stop: (force?: boolean) => Promise<void>;
 }
 
-export interface ServeFetchOptions {
+interface ServeFetchOptions {
   hostname: string;
   port: number;
   fetch: FetchHandler;

@@ -54,9 +54,6 @@ export type DocumentWithSourceIdentity = {
 };
 
 export interface DocumentRepositoryService {
-  readonly addDocument: (
-    doc: Document,
-  ) => Effect.Effect<void, StorageError>;
   readonly getDocument: (
     id: string,
   ) => Effect.Effect<Document | null, StorageError>;
@@ -76,9 +73,6 @@ export interface DocumentRepositoryService {
   readonly updateDocumentPath: (
     id: string,
     path: string,
-  ) => Effect.Effect<void, StorageError>;
-  readonly addChunks: (
-    chunks: ChunkInput[],
   ) => Effect.Effect<void, StorageError>;
   readonly getChunk: (
     chunkId: string,
@@ -129,19 +123,16 @@ export interface SearchRepositoryService {
     query: string,
     options?: SearchOptions,
   ) => Effect.Effect<DocumentSearchResult[], StorageError>;
-  /** Returns null when the target chunk does not exist. */
+  /**
+   * Returns the target chunk's text joined with neighboring chunks, up to about
+   * `maxChars`, or null when the target chunk does not exist.
+   */
   readonly getExpandedContext: (
     docId: string,
     page: number,
     chunkIndex: number,
-    options?: {
-      maxChars?: number;
-      direction?: "before" | "after" | "both";
-    },
-  ) => Effect.Effect<
-    { content: string; startChunk: string; endChunk: string } | null,
-    StorageError
-  >;
+    maxChars: number,
+  ) => Effect.Effect<string | null, StorageError>;
 }
 
 export class SearchRepository extends Context.Tag("SearchRepository")<
@@ -158,11 +149,7 @@ export interface LibraryMaintenanceService {
     docIds: string[],
   ) => Effect.Effect<Record<string, number>, StorageError>;
   readonly repair: () => Effect.Effect<
-    {
-      orphanedChunks: number;
-      orphanedEmbeddings: number;
-      zeroVectorEmbeddings: number;
-    },
+    { orphanedChunks: number; orphanedEmbeddings: number },
     StorageError
   >;
   readonly checkpoint: () => Effect.Effect<void, StorageError>;
@@ -172,9 +159,6 @@ export class LibraryMaintenance extends Context.Tag("LibraryMaintenance")<
   LibraryMaintenance,
   LibraryMaintenanceService
 >() {}
-
-/** A cluster summary whose text a rebuild re-embeds; a null summary keeps no vector. */
-export type ClusterSummarySource = { id: number; summary: string | null };
 
 /** The text fields a concept vector is embedded from. */
 export type ConceptEmbeddingSource = {
@@ -193,19 +177,11 @@ export interface VectorStagingService {
     ConceptEmbeddingSource[],
     StorageError
   >;
-  readonly listClusterSummaries: () => Effect.Effect<
-    ClusterSummarySource[],
-    StorageError
-  >;
   readonly stageChunkEmbeddings: (
     items: readonly EmbeddingInput[],
   ) => Effect.Effect<void, StorageError>;
   readonly stageConceptEmbeddings: (
     items: ReadonlyArray<{ conceptId: string; embedding: number[] }>,
-  ) => Effect.Effect<void, StorageError>;
-  /** A null embedding keeps a summary that has no text to embed. */
-  readonly stageClusterSummaryEmbeddings: (
-    items: ReadonlyArray<{ id: number; embedding: number[] | null }>,
   ) => Effect.Effect<void, StorageError>;
 }
 
@@ -214,7 +190,7 @@ export interface VectorRebuildRepositoryService {
    * Runs `stage` to regenerate every vector at `dimension`, then swaps all
    * vector collections in one transaction and records the configured
    * embedding model. The live library is unchanged if staging fails or if
-   * any live chunk, concept vector, or cluster summary was left unstaged.
+   * any live chunk or concept vector was left unstaged.
    */
   readonly rebuildVectors: <A, E, R>(
     dimension: number,

@@ -4,7 +4,7 @@ import {
   generateNextActions,
   type CommandResult,
 } from "./hints.js";
-import { formatHintBlock, stripEmoji } from "./format.js";
+import { formatHintBlock } from "./format.js";
 
 /** Returns the backticked command of each hint, dropping its description. */
 function hintCommands(result: CommandResult): string[] {
@@ -17,7 +17,7 @@ function searchResult(overrides: Partial<SearchResult>): SearchResult {
   return {
     _tag: "search",
     query: "error handling",
-    results: [{ title: "Release It!", docId: "doc-1", chunkId: "chunk-1", score: 0.85 }],
+    results: [{ title: "Release It!", docId: "doc-1", chunkId: "chunk-1" }],
     concepts: [],
     hadExpand: false,
     wasFts: false,
@@ -46,7 +46,7 @@ describe("generateHints", () => {
       searchResult({
         hadExpand: true,
         wasFts: true,
-        concepts: [{ id: "software/design-patterns", prefLabel: "Design Patterns" }],
+        concepts: [{ id: "software/design-patterns" }],
       }),
       ['poink read "Release It!"', 'poink taxonomy tree "software/design-patterns"'],
     ],
@@ -60,13 +60,13 @@ describe("generateHints", () => {
       ],
     ],
     [
-      "no results after FTS suggests vector search",
-      { _tag: "noResults", query: "missing thing", wasFts: true },
+      "search without matches after FTS suggests vector search",
+      searchResult({ query: "missing thing", results: [], wasFts: true }),
       ['poink search "missing thing"', "poink list", 'poink taxonomy search "missing thing"'],
     ],
     [
       "read suggests the first tag",
-      { _tag: "read", title: "Release It!", id: "doc-123", tags: ["resilience", "ops"] },
+      { _tag: "read", title: "Release It!", tags: ["resilience", "ops"] },
       [
         'poink search "Release It!" --expand 2000',
         'poink list --tag "resilience"',
@@ -75,22 +75,22 @@ describe("generateHints", () => {
     ],
     [
       "untagged list suggests taxonomy browsing",
-      { _tag: "list", count: 42, firstDoc: { title: "DDIA", id: "doc-1" } },
+      { _tag: "list", firstDoc: { title: "DDIA", id: "doc-1" } },
       ['poink read "DDIA"', 'poink search "<query>"', "poink taxonomy list"],
     ],
     [
       "tag-filtered list skips taxonomy browsing",
-      { _tag: "list", count: 0, tag: "ml" },
+      { _tag: "list", tag: "ml" },
       ['poink search "<query>"'],
     ],
     [
       "stats suggests search, browsing, and doctor",
-      { _tag: "stats", documents: 100, chunks: 5000, embeddings: 5000 },
+      { _tag: "stats", documents: 100 },
       ['poink search "<query>"', "poink list", "poink taxonomy list", "poink doctor"],
     ],
     [
       "taxonomy list suggests tree and search",
-      { _tag: "taxonomyList", count: 50 },
+      { _tag: "taxonomyList" },
       ["poink taxonomy tree", 'poink taxonomy search "<query>"', 'poink search "<query>"'],
     ],
     [
@@ -104,13 +104,8 @@ describe("generateHints", () => {
     ],
     [
       "remove suggests list and stats",
-      { _tag: "remove", title: "Old Book" },
+      { _tag: "remove" },
       ["poink list", "poink stats"],
-    ],
-    [
-      "error suggests diagnostics and help",
-      { _tag: "error", command: "search", message: "Connection failed" },
-      ["poink doctor", "poink check", "poink --help"],
     ],
     [
       "taxonomy search with matches navigates the top match",
@@ -157,23 +152,21 @@ describe("generateHints", () => {
   const everyVariant: { [Tag in CommandResult["_tag"]]: Extract<CommandResult, { _tag: Tag }> } = {
     search: searchResult({}),
     searchPack: { _tag: "searchPack", queries: ["q"], results: [] },
-    noResults: { _tag: "noResults", query: "q", wasFts: false },
-    read: { _tag: "read", title: "T", id: "d", tags: [] },
-    list: { _tag: "list", count: 0 },
-    stats: { _tag: "stats", documents: 1, chunks: 1, embeddings: 1 },
+    read: { _tag: "read", title: "T", tags: [] },
+    list: { _tag: "list" },
+    stats: { _tag: "stats", documents: 1 },
     taxonomySearch: { _tag: "taxonomySearch", query: "q", matches: [] },
-    taxonomyList: { _tag: "taxonomyList", count: 1 },
+    taxonomyList: { _tag: "taxonomyList" },
     taxonomyTree: { _tag: "taxonomyTree" },
     add: { _tag: "add", title: "T", id: "d" },
-    remove: { _tag: "remove", title: "T" },
+    remove: { _tag: "remove" },
     tag: { _tag: "tag", title: "T", tags: ["t"] },
     doctor: { _tag: "doctor", healthy: true },
-    config: { _tag: "config", subcommand: "show" },
-    check: { _tag: "check", reachable: false },
-    repair: { _tag: "repair", orphanedChunks: 0, orphanedEmbeddings: 0 },
-    reindex: { _tag: "reindex", count: 1, errors: 0 },
-    rechunk: { _tag: "rechunk", dryRun: false, planned: 0, succeeded: 0, failed: 0 },
-    error: { _tag: "error", command: "search", message: "fail" },
+    config: { _tag: "config" },
+    check: { _tag: "check" },
+    repair: { _tag: "repair" },
+    reindex: { _tag: "reindex" },
+    rechunk: { _tag: "rechunk", dryRun: false },
   };
 
   test.each(Object.values(everyVariant))("suggests at least one next step for $_tag", (result) => {
@@ -184,11 +177,7 @@ describe("generateHints", () => {
 
 describe("generateNextActions", () => {
   test("an embedding model change leads with the vector rebuild", () => {
-    const result: CommandResult = {
-      _tag: "config",
-      subcommand: "set",
-      embeddingChanged: true,
-    };
+    const result: CommandResult = { _tag: "config", embeddingChanged: true };
     expect(hintCommands(result)[0]).toBe("poink reindex");
     expect(generateNextActions(result)[0]).toMatchObject({
       argv: ["poink", "reindex"],
@@ -206,7 +195,7 @@ describe("generateNextActions", () => {
 describe("formatHintBlock", () => {
   test("renders hints as a markdown blockquote with a library summary", () => {
     expect(
-      formatHintBlock(["`poink list` -- Browse"], { documents: 42, concepts: 50 }),
+      formatHintBlock(["`poink list` -- Browse"], { documents: 42 }),
     ).toBe(
       [
         "",
@@ -214,37 +203,14 @@ describe("formatHintBlock", () => {
         "> **Next Actions**",
         "> - `poink list` -- Browse",
         ">",
-        "> poink: 42 documents, 50 concepts. `poink --help` for full reference.",
+        "> poink: 42 documents. `poink --help` for full reference.",
       ].join("\n"),
     );
   });
 
-  test.each([
-    ["without stats", undefined, "> `poink --help` for full reference."],
-    [
-      "with zero concepts",
-      { documents: 3, concepts: 0 },
-      "> poink: 3 documents. `poink --help` for full reference.",
-    ],
-  ])("footer omits missing summary parts %s", (_name, stats, footer) => {
-    expect(formatHintBlock(["`cmd` -- desc"], stats)).toBe(
-      ["", "---", "> **Next Actions**", "> - `cmd` -- desc", ">", footer].join("\n"),
+  test("footer omits the library summary without stats", () => {
+    expect(formatHintBlock(["`cmd` -- desc"])).toBe(
+      ["", "---", "> **Next Actions**", "> - `cmd` -- desc", ">", "> `poink --help` for full reference."].join("\n"),
     );
-  });
-
-  test("returns an empty string for no hints", () => {
-    expect(formatHintBlock([])).toBe("");
-  });
-});
-
-describe("stripEmoji", () => {
-  test.each([
-    ["📚 Concepts", "Concepts"],
-    ["🏷️ Label", "Label"],
-    ["📄 Documents (5):", "Documents (5):"],
-    ["Hello world", "Hello world"],
-    ["", ""],
-  ])("%j -> %j", (input, expected) => {
-    expect(stripEmoji(input)).toBe(expected);
   });
 });

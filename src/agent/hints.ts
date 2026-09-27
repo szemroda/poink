@@ -6,68 +6,47 @@
 
 import type { NextAction } from "./protocol.js";
 
+type SearchHit = { title: string; docId: string; chunkId?: string };
+
+/** What a command reports to the hint engine; carries only the fields hints read. */
 export type CommandResult =
   | {
       _tag: "search";
       query: string;
-      results: { title: string; docId: string; chunkId?: string; score: number }[];
-      concepts: { id: string; prefLabel: string }[];
+      results: SearchHit[];
+      concepts: { id: string }[];
       hadExpand: boolean;
       wasFts: boolean;
     }
-  | {
-      _tag: "searchPack";
-      queries: string[];
-      results: { title: string; docId: string; chunkId?: string; score: number }[];
-    }
-  | { _tag: "read"; title: string; id: string; tags: string[] }
-  | {
-      _tag: "list";
-      count: number;
-      tag?: string;
-      firstDoc?: { title: string; id: string };
-    }
-  | {
-      _tag: "stats";
-      documents: number;
-      chunks: number;
-      embeddings: number;
-    }
+  | { _tag: "searchPack"; queries: string[]; results: SearchHit[] }
+  | { _tag: "read"; title: string; tags: string[] }
+  | { _tag: "list"; tag?: string; firstDoc?: { title: string; id: string } }
+  | { _tag: "stats"; documents: number }
   | {
       _tag: "taxonomySearch";
       query: string;
       matches: { id: string; prefLabel: string }[];
     }
-  | { _tag: "taxonomyList"; count: number }
+  | { _tag: "taxonomyList" }
   | { _tag: "taxonomyTree"; rootId?: string }
   | { _tag: "add"; title: string; id: string }
-  | { _tag: "remove"; title: string }
-  | { _tag: "noResults"; query: string; wasFts: boolean }
-  | { _tag: "error"; command: string; message: string }
+  | { _tag: "remove" }
   | {
       _tag: "doctor";
       healthy: boolean;
-      chunkerOutdated?: number;
       chunkerMissing?: number;
       chunkerMismatch?: number;
     }
-  | { _tag: "config"; subcommand: string; embeddingChanged?: boolean }
+  | { _tag: "config"; embeddingChanged?: boolean }
   | { _tag: "tag"; title: string; tags: string[] }
-  | { _tag: "check"; reachable: boolean }
-  | { _tag: "repair"; orphanedChunks: number; orphanedEmbeddings: number }
-  | { _tag: "reindex"; count: number; errors: number }
+  | { _tag: "check" }
+  | { _tag: "repair" }
+  | { _tag: "reindex" }
   | {
       _tag: "rechunk";
       dryRun: boolean;
-      planned: number;
-      succeeded: number;
-      failed: number;
       includeMissing?: boolean;
       skippedMissing?: number;
-      plannedMissing?: number;
-      plannedMismatch?: number;
-      plannedVisuals?: number;
-      visuals?: boolean;
     };
 
 function shellAction(description: string, ...argv: string[]): NextAction {
@@ -75,13 +54,12 @@ function shellAction(description: string, ...argv: string[]): NextAction {
 }
 
 type SearchResult = Extract<CommandResult, { _tag: "search" }>;
-type NoResultsResult = Extract<CommandResult, { _tag: "noResults" }>;
 
 function hasNoSearchMatches(result: SearchResult): boolean {
   return result.results.length === 0 && result.concepts.length === 0;
 }
 
-function generateNoResultHints(result: NoResultsResult): string[] {
+function generateNoResultHints(result: SearchResult): string[] {
   const alternativeSearch = result.wasFts
     ? `\`poink search "${result.query}"\` -- Try semantic vector search`
     : `\`poink search "${result.query}" --fts\` -- Try full-text keyword search`;
@@ -95,11 +73,7 @@ function generateNoResultHints(result: NoResultsResult): string[] {
 
 function generateSearchHints(result: SearchResult): string[] {
   if (hasNoSearchMatches(result)) {
-    return generateNoResultHints({
-      _tag: "noResults",
-      query: result.query,
-      wasFts: result.wasFts,
-    });
+    return generateNoResultHints(result);
   }
 
   const hints: string[] = [];
@@ -130,7 +104,7 @@ function generateSearchHints(result: SearchResult): string[] {
   return hints;
 }
 
-function generateNoResultActions(result: NoResultsResult): NextAction[] {
+function generateNoResultActions(result: SearchResult): NextAction[] {
   const alternativeSearch = result.wasFts
     ? shellAction(
         "Try semantic vector search",
@@ -161,11 +135,7 @@ function generateNoResultActions(result: NoResultsResult): NextAction[] {
 
 function generateSearchActions(result: SearchResult): NextAction[] {
   if (hasNoSearchMatches(result)) {
-    return generateNoResultActions({
-      _tag: "noResults",
-      query: result.query,
-      wasFts: result.wasFts,
-    });
+    return generateNoResultActions(result);
   }
 
   const actions: NextAction[] = [];
@@ -261,10 +231,6 @@ export function generateHints(result: CommandResult): string[] {
         `\`poink search-pack --with-content "${result.queries[0] ?? "query"}"\` -- Include chunk text in pack output`,
       );
       return hints;
-    }
-
-    case "noResults": {
-      return generateNoResultHints(result);
     }
 
     case "read": {
@@ -422,19 +388,10 @@ export function generateHints(result: CommandResult): string[] {
     }
 
     case "check": {
-      const hints: string[] = [];
-      if (result.reachable) {
-        hints.push(
-          `\`poink search "<query>"\` -- Search documents`,
-          `\`poink stats\` -- Check library statistics`
-        );
-      } else {
-        hints.push(
-          `\`poink doctor\` -- Run full health check`,
-          `\`poink config show\` -- Check configuration`
-        );
-      }
-      return hints;
+      return [
+        `\`poink search "<query>"\` -- Search documents`,
+        `\`poink stats\` -- Check library statistics`,
+      ];
     }
 
     case "repair": {
@@ -474,14 +431,6 @@ export function generateHints(result: CommandResult): string[] {
       return [
         `\`poink stats\` -- Check updated statistics`,
         `\`poink search "<query>"\` -- Test search with new embeddings`,
-      ];
-    }
-
-    case "error": {
-      return [
-        `\`poink doctor\` -- Run health check`,
-        `\`poink check\` -- Verify embedding provider`,
-        `\`poink --help\` -- View all commands`,
       ];
     }
 
@@ -530,10 +479,6 @@ export function generateNextActions(result: CommandResult): NextAction[] {
         ),
       );
       return actions;
-    }
-
-    case "noResults": {
-      return generateNoResultActions(result);
     }
 
     case "read": {
@@ -801,18 +746,5 @@ export function generateNextActions(result: CommandResult): NextAction[] {
       }
       return [shellAction("Verify counts", "poink", "stats")];
     }
-
-    case "error": {
-      return [
-        shellAction("Check database health", "poink", "doctor"),
-        shellAction(
-          "Check embedding provider connectivity",
-          "poink",
-          "check",
-        ),
-        shellAction("Show available commands", "poink", "--help"),
-      ];
-    }
-
   }
 }

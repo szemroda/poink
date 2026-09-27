@@ -6,7 +6,7 @@
  * bounded on large libraries.
  */
 
-export interface EmbeddingQueueConfig {
+interface EmbeddingQueueConfig {
   /** Maximum embeddings per batch */
   batchSize: number;
 

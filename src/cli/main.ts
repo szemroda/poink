@@ -23,13 +23,12 @@ import {
   type GlobalCLIOptions,
 } from "./runner.js";
 import {
-  createInvocationTiming,
   createProcessInvocationTiming,
   type InvocationTiming,
 } from "./timing.js";
 import type { FamilyRunner } from "./families/types.js";
 
-export type CommandFamily =
+type CommandFamily =
   | "lightweight"
   | "store"
   | "search"
@@ -38,7 +37,7 @@ export type CommandFamily =
   | "diagnostics"
   | "server";
 
-export const COMMAND_FAMILIES: Readonly<Record<string, CommandFamily>> = {
+const COMMAND_FAMILIES: Readonly<Record<string, CommandFamily>> = {
   help: "lightweight",
   version: "lightweight",
   "--help": "lightweight",
@@ -146,7 +145,6 @@ function configuredGlobals(
   const options = outputOptionsFromRawArgs(rawArgs);
   return {
     format: options.format ?? configuredDefaultFormat,
-    configuredDefaultFormat,
     pretty: options.pretty === true,
     verbose: options.verbose === true,
     logLevel: options.logLevel ?? "error",
@@ -292,7 +290,7 @@ async function runCliWithNormalizedArgs(
     const runner = await loadFamilyRunner(family);
     const outcome = await runFamilyRunner(
       runner,
-      { parsed, globals, config, timing },
+      { parsed, globals, config },
       family,
     );
     if (!isEither(outcome)) return 0;
@@ -361,10 +359,6 @@ async function runCliWithTiming(
   return withConfigPathOverride(configSelection.configPath, () =>
     runCliWithNormalizedArgs(configSelection.args, timing, signal),
   );
-}
-
-export function runCli(rawArgs: string[]): Promise<number> {
-  return runCliWithTiming(rawArgs, createInvocationTiming());
 }
 
 export function isMainModule(

@@ -5,26 +5,21 @@ import {
   type StoreCliLibrary,
 } from "../runner.js";
 
-type RepairCommandOptions = Record<string, unknown>;
-
 type CompletedRepair = readonly [count: number, description: string];
 
 function listCompletedRepairs(result: {
   orphanedChunks: number;
   orphanedEmbeddings: number;
-  zeroVectorEmbeddings: number;
 }): readonly CompletedRepair[] {
   return [
     [result.orphanedChunks, "orphaned chunks"],
     [result.orphanedEmbeddings, "orphaned embeddings"],
-    [result.zeroVectorEmbeddings, "zero-dimension embeddings"],
   ];
 }
 
 export function runRepairCommand(
   args: string[],
   globals: GlobalCLIOptionsWithLibrary<StoreCliLibrary>,
-  options: RepairCommandOptions = {},
 ) {
   return runCommandWithLibraryContext(args, globals, ({ Console, library }) =>
     Effect.gen(function* () {
@@ -33,11 +28,7 @@ export function runRepairCommand(
       const completedRepairs = listCompletedRepairs(result);
       const output = {
         resultPayload: result,
-        agentResult: {
-          _tag: "repair" as const,
-          orphanedChunks: result.orphanedChunks,
-          orphanedEmbeddings: result.orphanedEmbeddings,
-        },
+        agentResult: { _tag: "repair" as const },
       };
 
       const repairsToReport = completedRepairs.filter(([count]) => count > 0);
@@ -55,5 +46,5 @@ export function runRepairCommand(
 
       return output;
     }),
-    options);
+  );
 }

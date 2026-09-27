@@ -23,7 +23,6 @@ import {
   renderIngestProgress,
   type FileStatus,
 } from "../ingestProgress.js";
-import { shouldCheckpoint } from "../args.js";
 import { assignEnrichmentConcepts } from "../enrichment.js";
 import {
   CLIError,
@@ -51,7 +50,6 @@ interface IngestCommandOptions extends Record<string, unknown> {
   include?: string | string[];
   exclude?: string | string[];
   recursive?: boolean;
-  "no-recursive"?: boolean;
   progress?: boolean;
 }
 
@@ -102,8 +100,6 @@ type IngestEarlyResultPayload = {
   failed: number;
   selection: IngestSelectionSummary;
 };
-
-const CHECKPOINT_INTERVAL = 1;
 
 function parseDirectories(args: string[]): string[] {
   const directories: string[] = [];
@@ -188,9 +184,7 @@ function prepareDocumentMetadata(
     yield* onPreviewExtracted(content);
 
     if (settings.enrich && content) {
-      const enrichment = yield* tagger.enrich(filePath, content, {
-        basePath: settings.basePath,
-      });
+      const enrichment = yield* tagger.enrich(filePath, content);
       return {
         title: enrichment.title,
         tags: [...tags, ...enrichment.tags],
@@ -278,19 +272,18 @@ function createResultPayload(
   };
 }
 
+/** Result for runs that stop before processing any file. */
 function createEarlyResultPayload(
   foundFiles: number,
   skippedExisting: number,
-  processed: number,
-  failed: number,
   selection: IngestSelectionSummary,
 ): IngestEarlyResultPayload {
   return {
     foundFiles,
     skippedExisting,
-    processed,
-    succeeded: processed - failed,
-    failed,
+    processed: 0,
+    succeeded: 0,
+    failed: 0,
     selection,
   };
 }
@@ -437,10 +430,7 @@ export function runIngestCommand(
           directories,
           Console,
         );
-        const recursive =
-          options["no-recursive"] === true
-            ? false
-            : options.recursive !== false;
+        const recursive = options.recursive !== false;
         const manualTags = parseManualTags(options.tags);
         const sampleSize = parseSampleSize(options.sample);
         // Agent-only mode: progress writes to stdout and will break JSON parsing.
@@ -494,13 +484,7 @@ export function runIngestCommand(
             );
           }
           return {
-            resultPayload: createEarlyResultPayload(
-              0,
-              0,
-              0,
-              0,
-              selection,
-            ),
+            resultPayload: createEarlyResultPayload(0, 0, selection),
             agentResult,
           };
         }
@@ -530,8 +514,6 @@ export function runIngestCommand(
             resultPayload: createEarlyResultPayload(
               files.length,
               skippedExisting,
-              0,
-              0,
               selection,
             ),
             agentResult,
@@ -552,20 +534,12 @@ export function runIngestCommand(
         // Process files
         if (canUseProgress) {
           // Line progress mode
-          const state = createInitialState();
-          state.totalFiles = files.length;
-          state.phase = "processing";
-
-          const progress = renderIngestProgress(state);
+          const progress = renderIngestProgress(
+            createInitialState(files.length),
+          );
 
           yield* Effect.gen(function* () {
             for (let i = 0; i < files.length; i++) {
-              if (progress.isCancelled()) {
-                progress.cleanup();
-                yield* Console.log("\nIngestion cancelled by user");
-                break;
-              }
-
               const filePath = files[i];
               const filename = basename(filePath);
 
@@ -610,40 +584,31 @@ export function runIngestCommand(
                   currentFile.status = "done";
                   currentFile.chunks = doc.pageCount;
 
+                  progress.update({ processedFiles: i + 1, currentFile });
+
+                  // Checkpoint after every document to prevent WAL accumulation
                   progress.update({
-                    processedFiles: i + 1,
-                    currentFile,
-                    recentFiles: [
-                      ...progress.getState().recentFiles,
-                      currentFile,
-                    ],
+                    checkpointInProgress: true,
+                    checkpointMessage: `Checkpointing WAL (${i + 1} docs)...`,
                   });
 
-                  // Checkpoint every N documents to prevent WAL accumulation
-                  if (shouldCheckpoint(i + 1, CHECKPOINT_INTERVAL)) {
-                    progress.update({
-                      checkpointInProgress: true,
-                      checkpointMessage: `Checkpointing WAL (${i + 1} docs)...`,
-                    });
+                  const checkpointResult = yield* Effect.either(
+                    library.checkpoint(),
+                  );
 
-                    const checkpointResult = yield* Effect.either(
-                      library.checkpoint(),
+                  if (checkpointResult._tag === "Left") {
+                    yield* Effect.logError(
+                      `Warning: Checkpoint failed at ${i + 1} docs: ${
+                        checkpointResult.left
+                      }`,
                     );
-
-                    if (checkpointResult._tag === "Left") {
-                      yield* Effect.logError(
-                        `Warning: Checkpoint failed at ${i + 1} docs: ${
-                          checkpointResult.left
-                        }`,
-                      );
-                    }
-
-                    progress.update({
-                      checkpointInProgress: false,
-                      checkpointMessage: undefined,
-                      lastCheckpointAt: i + 1,
-                    });
                   }
+
+                  progress.update({
+                    checkpointInProgress: false,
+                    checkpointMessage: undefined,
+                    lastCheckpointAt: i + 1,
+                  });
                 }),
               );
               if (fileResult._tag === "Left") {
@@ -653,20 +618,12 @@ export function runIngestCommand(
                 progress.update({
                   processedFiles: i + 1,
                   currentFile,
-                  recentFiles: [
-                    ...progress.getState().recentFiles,
-                    currentFile,
-                  ],
                   errors: [...progress.getState().errors, currentFile],
                 });
               }
             }
 
-            progress.update({ phase: "done", endTime: Date.now() });
-
-            // Wait a moment for user to see final state
-            yield* Effect.sleep("2 seconds");
-            progress.cleanup();
+            progress.update({ phase: "done" });
 
             const finalState = progress.getState();
             yield* Console.log(
@@ -692,7 +649,7 @@ export function runIngestCommand(
               visualsEnabled,
               selection,
             );
-          }).pipe(Effect.ensuring(Effect.sync(() => progress.cleanup())));
+          });
         } else {
           // Simple console mode
           let processed = 0;
@@ -752,19 +709,17 @@ export function runIngestCommand(
                   yield* Console.log(`    Tags: ${doc.tags.join(", ")}`);
                 }
 
-                // Checkpoint every N documents to prevent WAL accumulation
-                if (shouldCheckpoint(processed, CHECKPOINT_INTERVAL)) {
+                // Checkpoint after every document to prevent WAL accumulation
+                yield* Console.log(
+                  `  Checkpoint Checkpointing WAL (${processed} docs)...`,
+                );
+                const checkpointResult = yield* Effect.either(
+                  library.checkpoint(),
+                );
+                if (checkpointResult._tag === "Left") {
                   yield* Console.log(
-                    `  Checkpoint Checkpointing WAL (${processed} docs)...`,
+                    `  WARN Checkpoint warning: ${checkpointResult.left}`,
                   );
-                  const checkpointResult = yield* Effect.either(
-                    library.checkpoint(),
-                  );
-                  if (checkpointResult._tag === "Left") {
-                    yield* Console.log(
-                      `  WARN Checkpoint warning: ${checkpointResult.left}`,
-                    );
-                  }
                 }
               }),
             );
@@ -792,6 +747,5 @@ export function runIngestCommand(
         }
         return { resultPayload, agentResult };
       }),
-    options,
   );
 }

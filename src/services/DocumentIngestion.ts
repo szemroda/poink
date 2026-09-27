@@ -83,7 +83,6 @@ type LibraryProcessedChunk = {
   page: number;
   chunkIndex: number;
   content: string;
-  embeddingContent?: string;
 };
 
 type PreparedDocument = {
@@ -93,7 +92,7 @@ type PreparedDocument = {
   sourceFingerprint: SourceFingerprint;
 };
 
-export type DocumentExtractionError =
+type DocumentExtractionError =
   | PDFExtractionError
   | PDFNotFoundError
   | MarkdownExtractionError
@@ -104,7 +103,7 @@ export type DocumentExtractionError =
   | TextNotFoundError
   | VisualEnrichmentError;
 
-export type DocumentIngestionError =
+type DocumentIngestionError =
   | DocumentExtractionError
   | EmbeddingError
   | StorageError
@@ -191,10 +190,7 @@ const makeDocumentIngestionService = (appConfig: Config) =>
         return fallbackTitle(resolvedPath);
       });
 
-    const configuredVisualsMode = (
-      appConfig: Config,
-      options: AddOptions,
-    ): VisualsMode => {
+    const configuredVisualsMode = (options: AddOptions): VisualsMode => {
       if (options.visuals === true) return options.visualsMode ?? "explicit";
       return visualsConfig.enabled ? "config" : "disabled";
     };
@@ -209,7 +205,6 @@ const makeDocumentIngestionService = (appConfig: Config) =>
             page: visual.page,
             chunkIndex: startChunkIndex,
             content: visual.content,
-            embeddingContent: visual.embeddingContent,
           },
         ];
       }
@@ -228,7 +223,6 @@ const makeDocumentIngestionService = (appConfig: Config) =>
           page: visual.page,
           chunkIndex: startChunkIndex + index,
           content: display,
-          embeddingContent: visual.embeddingContent,
         };
       });
     };
@@ -515,7 +509,7 @@ const makeDocumentIngestionService = (appConfig: Config) =>
             detected,
             options.title,
           );
-          const visualsMode = configuredVisualsMode(appConfig, options);
+          const visualsMode = configuredVisualsMode(options);
 
           // Generate every embedding before touching the DB. Otherwise a
           // mid-file failure can leave an incomplete vector index.
@@ -589,7 +583,7 @@ const makeDocumentIngestionService = (appConfig: Config) =>
           const baseMetadata: Record<string, unknown> =
             options.metadata ?? existing.metadata ?? {};
 
-          const visualsMode = configuredVisualsMode(appConfig, options);
+          const visualsMode = configuredVisualsMode(options);
           const prepared = yield* prepareDocument(
             resolvedPath,
             detected,

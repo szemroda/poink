@@ -3,7 +3,6 @@ import type { Document } from "./types.js";
 type EmbeddableChunk = {
   page: number;
   content: string;
-  embeddingContent?: string | undefined;
 };
 
 function sectionFromChunkContent(content: string): string | null {
@@ -55,11 +54,10 @@ export function buildEmbeddingContent(
   const section = sectionFromChunkContent(chunk.content);
   if (section) context.push(`Section: ${section}`);
   if (chunk.page > 0) context.push(`Page: ${chunk.page}`);
-  const baseContent = chunk.embeddingContent ?? chunk.content;
-  const tableContent = tableEmbeddingText(baseContent);
+  const tableContent = tableEmbeddingText(chunk.content);
   const body = tableContent
-    ? `${baseContent}\n\n${tableContent}`
-    : baseContent;
+    ? `${chunk.content}\n\n${tableContent}`
+    : chunk.content;
   return `${context.join("\n")}\n\n${body}`;
 }
 

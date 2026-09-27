@@ -237,9 +237,6 @@ poink search "query" --limit 5
 # Expand context around matches
 poink search "query" --expand 500
 
-# Include cluster summaries when available
-poink search "query" --include-clusters
-
 # Options can appear before or between search queries
 poink search-pack "context engineering" --fts "retrieval patterns"
 
@@ -605,8 +602,7 @@ poink config set models.enrichment.model anthropic/claude-haiku-4-5
   },
   "providers": {
     "ollama": {
-      "baseUrl": "http://localhost:11434",
-      "autoPull": true
+      "baseUrl": "http://localhost:11434"
     },
     "gateway": {
       "apiKey": "...",
@@ -671,7 +667,6 @@ poink config set models.enrichment.model anthropic/claude-haiku-4-5
 | `models.judge.model`                             | `llama3.2:3b`                                      | Model for judging duplicate concepts                                                      |
 | `models.judge.reasoning`                         | -                                                  | Optional AI SDK reasoning level, or `null` for provider default                           |
 | `providers.ollama.baseUrl`                       | `http://localhost:11434`                           | Ollama API endpoint                                                                       |
-| `providers.ollama.autoPull`                      | `true`                                             | Auto-pull missing Ollama models when supported                                            |
 | `providers.gateway.apiKey`                       | -                                                  | AI Gateway API key                                                                        |
 | `providers.openai.apiKey`                        | -                                                  | OpenAI API key                                                                            |
 | `providers.openai.baseUrl`                       | `https://api.openai.com/v1`                        | Optional OpenAI-compatible base URL                                                       |
@@ -704,7 +699,7 @@ poink config set models.embedding.model nomic-embed-text
 poink reindex
 ```
 
-`poink reindex` re-embeds every chunk, concept, and cluster summary with the
+`poink reindex` re-embeds every chunk and concept with the
 configured model and swaps them in with one transaction. If it fails partway,
 the library keeps its previous vectors. `poink reindex --doc <id>` re-embeds a
 single document with the library's current model.

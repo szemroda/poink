@@ -16,7 +16,7 @@ type Executor = { execute(statement: InStatement): Promise<ResultSet> };
 
 export type LibSQLConnectionMode = "local" | "memory" | "remote";
 
-export type EmbeddingIdentity = {
+type EmbeddingIdentity = {
   provider: string;
   model: string;
 };
@@ -41,8 +41,8 @@ export interface VectorSchemaManager {
   /**
    * Replaces the live vector tables with the staged ones and records the
    * configured identity in one transaction. Throws, changing nothing, when a
-   * newer rebuild owns the staging tables or when a live chunk, concept
-   * vector, or cluster summary has no staged replacement.
+   * newer rebuild owns the staging tables or when a live chunk or concept
+   * vector has no staged replacement.
    */
   readonly commitStaging: (dimension: number, token: string) => Promise<void>;
   /** Drops the staging tables if the rebuild identified by `token` still owns them. */
@@ -66,7 +66,6 @@ export async function initializeLibSQLSchema(
 
   await initializeDocumentSchema(client);
   await initializeTaxonomySchema(client);
-  await initializeClusteringSchema(client);
   await initializeFullTextTriggers(client);
 }
 
@@ -259,27 +258,6 @@ async function initializeTaxonomySchema(client: Client): Promise<void> {
   );
 }
 
-async function initializeClusteringSchema(client: Client): Promise<void> {
-  await client.execute(`
-    CREATE TABLE IF NOT EXISTS chunk_clusters (
-      chunk_id TEXT NOT NULL REFERENCES chunks(id) ON DELETE CASCADE,
-      cluster_id INTEGER NOT NULL,
-      distance REAL NOT NULL,
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      PRIMARY KEY(chunk_id, cluster_id)
-    )
-  `);
-  await verifyColumns(client, "chunk_clusters", [
-    "chunk_id",
-    "cluster_id",
-    "distance",
-    "created_at",
-  ]);
-  await client.execute(
-    "CREATE INDEX IF NOT EXISTS idx_chunk_clusters_cluster ON chunk_clusters(cluster_id)",
-  );
-}
-
 async function initializeFullTextTriggers(client: Client): Promise<void> {
   await client.execute(`
     CREATE TRIGGER IF NOT EXISTS chunks_ai
@@ -414,7 +392,7 @@ export function createVectorSchemaManager(
           const unstaged = await countUnstagedVectors(tx);
           if (unstaged > 0) {
             throw new Error(
-              `The library changed during the rebuild: ${unstaged} chunk(s), concept(s), or cluster summaries have no rebuilt vector. Run the rebuild again.`,
+              `The library changed during the rebuild: ${unstaged} chunk(s) or concept(s) have no rebuilt vector. Run the rebuild again.`,
             );
           }
           for (const table of VECTOR_TABLE_NAMES) {
@@ -578,35 +556,9 @@ const VECTOR_TABLES = {
       "CREATE INDEX IF NOT EXISTS concept_embeddings_idx ON concept_embeddings(libsql_vector_idx(embedding, 'compress_neighbors=float8'))",
     ],
   },
-  cluster_summaries: {
-    columns: (dimension) => `
-      id INTEGER PRIMARY KEY,
-      centroid F32_BLOB(${dimension}),
-      summary TEXT,
-      embedding F32_BLOB(${dimension}),
-      concept_id TEXT,
-      concept_confidence REAL,
-      chunk_count INTEGER NOT NULL,
-      created_at TEXT NOT NULL DEFAULT (datetime('now'))`,
-    columnNames: [
-      "id",
-      "centroid",
-      "summary",
-      "embedding",
-      "concept_id",
-      "concept_confidence",
-      "chunk_count",
-      "created_at",
-    ],
-    vectorColumns: ["centroid", "embedding"],
-    indexes: [
-      "CREATE INDEX IF NOT EXISTS idx_cluster_summaries_concept ON cluster_summaries(concept_id)",
-      "CREATE INDEX IF NOT EXISTS cluster_summaries_idx ON cluster_summaries(libsql_vector_idx(embedding, 'compress_neighbors=float8'))",
-    ],
-  },
 } satisfies Record<string, VectorTableSpec>;
 
-export type VectorTable = keyof typeof VECTOR_TABLES;
+type VectorTable = keyof typeof VECTOR_TABLES;
 
 const VECTOR_TABLE_NAMES = Object.keys(VECTOR_TABLES) as VectorTable[];
 
@@ -649,14 +601,6 @@ async function countUnstagedVectors(tx: Transaction): Promise<number> {
         WHERE s.concept_id = e.concept_id
       )`);
     unstaged += decodeCountRow(concepts.rows[0], "verify rebuilt vectors");
-  }
-  if (await tableExists(tx, "cluster_summaries")) {
-    const clusters = await tx.execute(`
-      SELECT COUNT(cs.id) AS count FROM cluster_summaries cs
-      WHERE NOT EXISTS (
-        SELECT 1 FROM ${stagingTable("cluster_summaries")} s WHERE s.id = cs.id
-      )`);
-    unstaged += decodeCountRow(clusters.rows[0], "verify rebuilt vectors");
   }
   return unstaged;
 }

@@ -2,7 +2,7 @@ import { Context, Effect, Layer, Schema } from "effect";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { assertValidChunking, chunkNormalizedText } from "../chunking.js";
 import { resolveUserPath } from "../pathUtils.js";
-import { LibraryConfig } from "../types.js";
+import type { LibraryConfig } from "../types.js";
 import { MAX_TEXT_SOURCE_BYTES } from "./SourceFileLimits.js";
 
 export class TextNotFoundError extends Schema.TaggedError<TextNotFoundError>()(
@@ -15,7 +15,7 @@ export class TextExtractionError extends Schema.TaggedError<TextExtractionError>
   { path: Schema.String, reason: Schema.String },
 ) {}
 
-export interface ProcessedTextChunk {
+interface ProcessedTextChunk {
   page: number;
   chunkIndex: number;
   content: string;
@@ -117,7 +117,3 @@ export function makeTextExtractor(config: LibraryConfig) {
       })),
   });
 }
-
-export const TextExtractorLive = Layer.unwrapEffect(
-  Effect.sync(() => makeTextExtractor(LibraryConfig.fromEnv())),
-);

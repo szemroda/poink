@@ -385,7 +385,6 @@ describe("loadConfig path and database defaults", () => {
 
       const message = "chunkOverlap (100) must be smaller than chunkSize (100)";
       expect(() => loadConfig()).toThrow(message);
-      expect(() => LibraryConfig.fromEnv()).toThrow(message);
     });
   });
 });
@@ -406,7 +405,7 @@ describe("LibraryConfig path resolution", () => {
           USERPROFILE: "C:\\Users\\tester",
         },
         () => {
-          expect(LibraryConfig.fromEnv()).toMatchObject({
+          expect(LibraryConfig.fromConfig(loadConfig())).toMatchObject({
             libraryPath: "C:\\Users\\tester\\.poink",
             dbPath: "C:\\Users\\tester\\.poink\\library.db",
           });

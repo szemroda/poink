@@ -10,7 +10,7 @@ import {
 } from "../testUtils.js";
 import { Config, resolveConfigPath } from "../types.js";
 import { parseCommandLine } from "./commander.js";
-import { getCommandFamily, runCli } from "./main.js";
+import { getCommandFamily, runMain } from "./main.js";
 
 const withOpenAICodexProviderScope = vi.hoisted(() =>
   vi.fn(<T>(run: () => Promise<T>) => run()),
@@ -22,7 +22,10 @@ vi.mock("../services/OpenAICodexProvider.js", () => ({
 
 type CliRun = { exitCode: number; stdout: string; stderr: string };
 
-/** Runs the CLI with stdout (including console.log) and stderr captured instead of leaked. */
+/**
+ * Runs the CLI entrypoint with stdout (including console.log) and stderr captured instead of
+ * leaked, restoring the `process.exitCode` it sets.
+ */
 async function runCliCaptured(args: string[]): Promise<CliRun> {
   let stdout = "";
   let stderr = "";
@@ -42,10 +45,12 @@ async function runCliCaptured(args: string[]): Promise<CliRun> {
       return true;
     });
 
+  const previousExitCode = process.exitCode;
   try {
-    const exitCode = await runCli(args);
-    return { exitCode, stdout, stderr };
+    await runMain(["node", "poink", ...args]);
+    return { exitCode: Number(process.exitCode ?? 0), stdout, stderr };
   } finally {
+    process.exitCode = previousExitCode;
     stdoutSpy.mockRestore();
     consoleSpy.mockRestore();
     stderrSpy.mockRestore();
@@ -139,7 +144,7 @@ describe("CLI command family routing", () => {
   });
 });
 
-describe("runCli config selection", () => {
+describe("CLI config selection", () => {
   const originalEnv = snapshotEnv(["POINK_CONFIG"]);
   let directory: string;
   let envConfigPath: string;

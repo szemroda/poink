@@ -13,7 +13,6 @@ export const SearchInputSchema = z.object({
   ...retrievalOptions,
   docsOnly: z.boolean().default(false),
   conceptsOnly: z.boolean().default(false),
-  includeClusters: z.boolean().default(false),
 });
 
 export const SearchPackInputSchema = z.object({

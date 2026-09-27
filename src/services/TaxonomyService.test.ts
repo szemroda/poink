@@ -1,19 +1,48 @@
 import { describe, expect, test } from "vitest";
-import { Effect } from "effect";
+import { Effect, Layer } from "effect";
+import { insertDocument } from "../testUtils.js";
 import { Config, Document } from "../types.js";
-import { type Concept, TaxonomyService } from "./TaxonomyService.js";
-import { DocumentRepository } from "./StorageRepositories.js";
-import { makeStorageLayer } from "./StorageLayer.js";
+import {
+  type Concept,
+  makeTaxonomyService,
+  TaxonomyService,
+} from "./TaxonomyService.js";
+import { DocumentIntegrityRepository } from "./StorageRepositories.js";
+import { LibSQLClient, makeLibSQLClient } from "./LibSQLClient.js";
+import { makeLibSQLRepositories } from "./LibSQLRepositories.js";
 
-/** Runs `effect` against a fresh in-memory library. */
+/** Runs `effect` against a fresh in-memory library whose raw client it can query. */
 function runTest<A, E>(
-  effect: Effect.Effect<A, E, TaxonomyService | DocumentRepository>,
+  effect: Effect.Effect<
+    A,
+    E,
+    TaxonomyService | DocumentIntegrityRepository | LibSQLClient
+  >,
 ): Promise<A> {
-  const layer = makeStorageLayer(
-    new Config({ ...Config.Default, storage: { libsql: { url: ":memory:" } } }),
+  const layer = Layer.merge(
+    makeTaxonomyService(),
+    makeLibSQLRepositories(),
+  ).pipe(
+    Layer.provideMerge(
+      makeLibSQLClient(
+        new Config({
+          ...Config.Default,
+          storage: { libsql: { url: ":memory:" } },
+        }),
+      ),
+    ),
   );
   return Effect.runPromise(Effect.scoped(Effect.provide(effect, layer)));
 }
+
+/** Reads document_concepts directly; no service exposes these rows. */
+const documentConcepts = Effect.flatMap(LibSQLClient, ({ client }) =>
+  Effect.promise(() =>
+    client.execute(
+      "SELECT doc_id, concept_id, confidence, source FROM document_concepts",
+    ),
+  ),
+).pipe(Effect.map((result) => result.rows.map((row) => ({ ...row }))));
 
 function sortedIds(concepts: Concept[]): string[] {
   return concepts.map((concept) => concept.id).sort();
@@ -74,26 +103,6 @@ describe("TaxonomyService - Concept CRUD", () => {
     );
   });
 
-  test("updateConcept modifies an existing concept", async () => {
-    await runTest(
-      Effect.gen(function* () {
-        const svc = yield* TaxonomyService;
-
-        yield* svc.addConcept({ id: "ai", prefLabel: "AI" });
-        yield* svc.updateConcept("ai", {
-          prefLabel: "Artificial Intelligence",
-          altLabels: ["AI", "machine intelligence"],
-          definition: "Simulation of human intelligence",
-        });
-
-        expect(yield* svc.getConcept("ai")).toMatchObject({
-          prefLabel: "Artificial Intelligence",
-          altLabels: ["AI", "machine intelligence"],
-          definition: "Simulation of human intelligence",
-        });
-      }),
-    );
-  });
 });
 
 describe("TaxonomyService - Hierarchy", () => {
@@ -120,60 +129,14 @@ describe("TaxonomyService - Hierarchy", () => {
     );
   });
 
-  test("getAncestors and getDescendants are transitive", async () => {
-    await runTest(
-      Effect.gen(function* () {
-        const svc = yield* TaxonomyService;
-        yield* addHierarchy(concepts, edges);
-
-        expect(sortedIds(yield* svc.getAncestors("dl"))).toEqual(["ai", "cs", "ml"]);
-        expect(sortedIds(yield* svc.getAncestors("nlp"))).toEqual(["ai", "cs", "linguistics", "ml"]);
-        expect(sortedIds(yield* svc.getDescendants("cs"))).toEqual(["ai", "dl", "ml", "nlp"]);
-      }),
-    );
-  });
-
-  test("removeBroader deletes only that parent relationship", async () => {
-    await runTest(
-      Effect.gen(function* () {
-        const svc = yield* TaxonomyService;
-        yield* addHierarchy(concepts, edges);
-
-        yield* svc.removeBroader("nlp", "linguistics");
-
-        expect(sortedIds(yield* svc.getBroader("nlp"))).toEqual(["ml"]);
-        expect(yield* svc.getNarrower("linguistics")).toEqual([]);
-      }),
-    );
-  });
-});
-
-describe("TaxonomyService - Relations", () => {
-  test("addRelated and removeRelated act on both directions", async () => {
-    await runTest(
-      Effect.gen(function* () {
-        const svc = yield* TaxonomyService;
-        yield* addHierarchy(["js", "ts"], []);
-
-        yield* svc.addRelated("js", "ts");
-        expect(sortedIds(yield* svc.getRelated("js"))).toEqual(["ts"]);
-        expect(sortedIds(yield* svc.getRelated("ts"))).toEqual(["js"]);
-
-        yield* svc.removeRelated("ts", "js");
-        expect(yield* svc.getRelated("js")).toEqual([]);
-        expect(yield* svc.getRelated("ts")).toEqual([]);
-      }),
-    );
-  });
 });
 
 describe("TaxonomyService - Document Mappings", () => {
-  test("assigns, upserts, looks up, and removes document concepts", async () => {
+  test("assigns and upserts document concepts", async () => {
     await runTest(
       Effect.gen(function* () {
         const svc = yield* TaxonomyService;
-        const documents = yield* DocumentRepository;
-        yield* documents.addDocument(
+        yield* insertDocument(
           new Document({
             id: "doc-1",
             title: "Document",
@@ -188,15 +151,12 @@ describe("TaxonomyService - Document Mappings", () => {
         );
         yield* addHierarchy(["ml"], []);
 
-        yield* svc.assignToDocument("doc-1", "ml", 0.5, "llm");
-        yield* svc.assignToDocument("doc-1", "ml", 0.95, "manual");
+        yield* svc.assignToDocument("doc-1", "ml", 0.5);
+        yield* svc.assignToDocument("doc-1", "ml", 0.95);
 
-        const assignment = { docId: "doc-1", conceptId: "ml", confidence: 0.95, source: "manual" };
-        expect(yield* svc.getDocumentConcepts("doc-1")).toEqual([assignment]);
-        expect(yield* svc.getConceptDocuments("ml")).toEqual([assignment]);
-
-        yield* svc.removeFromDocument("doc-1", "ml");
-        expect(yield* svc.getDocumentConcepts("doc-1")).toEqual([]);
+        expect(yield* documentConcepts).toEqual([
+          { doc_id: "doc-1", concept_id: "ml", confidence: 0.95, source: "llm" },
+        ]);
       }),
     );
   });
@@ -210,7 +170,7 @@ describe("TaxonomyService - Document Mappings", () => {
         const error = yield* Effect.flip(svc.assignToDocument("doc-404", "ml"));
 
         expect(error._tag).toBe("TaxonomyError");
-        expect(yield* svc.getConceptDocuments("ml")).toEqual([]);
+        expect(yield* documentConcepts).toEqual([]);
       }),
     );
   });
@@ -238,7 +198,8 @@ describe("TaxonomyService - Bulk Operations", () => {
         yield* svc.seedFromJSON(taxonomy);
 
         expect(sortedIds(yield* svc.listConcepts())).toEqual(["ai", "cs", "ml"]);
-        expect(sortedIds(yield* svc.getAncestors("ml"))).toEqual(["ai", "cs"]);
+        expect(sortedIds(yield* svc.getBroader("ml"))).toEqual(["ai"]);
+        expect(sortedIds(yield* svc.getBroader("ai"))).toEqual(["cs"]);
         expect(sortedIds(yield* svc.getRelated("cs"))).toEqual(["ml"]);
       }),
     );

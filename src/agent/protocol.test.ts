@@ -44,14 +44,6 @@ describe("agent envelopes", () => {
 });
 
 describe("server config", () => {
-  test("defaults to a local-only bind with auth disabled", () => {
-    expect(resolveServerConfig(undefined)).toEqual({
-      host: "127.0.0.1",
-      port: 3838,
-      auth: { enabled: false, token: undefined, tokenEnv: "POINK_SERVER_TOKEN" },
-    });
-  });
-
   test("CLI overrides replace host and port, and a token enables auth", () => {
     expect(
       resolveServerConfig(

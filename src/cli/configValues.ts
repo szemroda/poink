@@ -3,7 +3,7 @@ import { Config } from "../types.js";
 import { parseStringList } from "../urlDownloads.js";
 import { CLIError, describeCliFailure } from "./runner.js";
 
-export type JsonSchemaNode = {
+type JsonSchemaNode = {
   title?: string;
   type?: string | string[];
   properties?: Record<string, JsonSchemaNode>;

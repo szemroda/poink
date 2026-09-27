@@ -12,13 +12,13 @@ export type CommandOutputOptions = {
   logLevel?: LogLevel;
 };
 
-export function isOutputFormat(value: unknown): value is OutputFormat {
+function isOutputFormat(value: unknown): value is OutputFormat {
   return (
     typeof value === "string" && OUTPUT_FORMATS.includes(value as OutputFormat)
   );
 }
 
-export function isLogLevel(value: unknown): value is LogLevel {
+function isLogLevel(value: unknown): value is LogLevel {
   return (
     value === "silent" ||
     value === "error" ||
@@ -27,14 +27,14 @@ export function isLogLevel(value: unknown): value is LogLevel {
   );
 }
 
-export function parseOutputFormat(value: string): OutputFormat {
+function parseOutputFormat(value: string): OutputFormat {
   if (isOutputFormat(value)) {
     return value;
   }
   throw new InvalidArgumentError(`Invalid --format value: ${value}`);
 }
 
-export function parseLogLevel(value: string): LogLevel {
+function parseLogLevel(value: string): LogLevel {
   if (isLogLevel(value)) {
     return value;
   }

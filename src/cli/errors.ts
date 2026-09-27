@@ -5,7 +5,7 @@ import {
 } from "../errors.js";
 import { CLIError, describeCliFailure } from "./runner.js";
 
-export { CLIError, describeCliFailure };
+export { CLIError };
 
 const INVALID_FLAG_ARGUMENT_PREFIXES = [
   "option '--format",

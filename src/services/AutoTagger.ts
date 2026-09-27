@@ -32,7 +32,7 @@ import {
 // ============================================================================
 
 /** LLM provider options */
-export type LLMProvider = SupportedProvider;
+type LLMProvider = SupportedProvider;
 
 const DOCUMENT_TYPES = [
   "book",
@@ -48,17 +48,17 @@ const DOCUMENT_TYPES = [
 ] as const;
 
 /** Document type classification */
-export type DocumentType = (typeof DOCUMENT_TYPES)[number];
+type DocumentType = (typeof DOCUMENT_TYPES)[number];
 
 /** Taxonomy concept (minimal interface for AutoTagger) */
-export interface TaxonomyConcept {
+interface TaxonomyConcept {
   id: string;
   prefLabel: string;
   altLabels: string[];
 }
 
 /** Proposed new concept from LLM */
-export interface ProposedConcept {
+interface ProposedConcept {
   id: string;
   prefLabel: string;
   altLabels?: string[];
@@ -114,7 +114,7 @@ export function enrichmentMetadata(
 }
 
 /** Lightweight tag-only result */
-export interface TagResult {
+interface TagResult {
   /** Tags extracted from path */
   pathTags: string[];
   /** Tags extracted from filename */
@@ -131,18 +131,18 @@ export interface TagResult {
   category?: string;
 }
 
-/** Options for enrichment */
-export interface EnrichmentOptions {
+/** Options for full enrichment */
+interface EnrichmentOptions {
   /** Preferred LLM provider */
   provider?: LLMProvider;
-  /** Specific model to use (overrides provider default) */
-  model?: string;
+}
+
+/** Options for lightweight tagging */
+interface TaggingOptions extends EnrichmentOptions {
   /** Skip LLM entirely, use heuristics only */
   heuristicsOnly?: boolean;
   /** Base path to strip from path-based tags */
   basePath?: string;
-  /** Available taxonomy concepts for concept-based tagging */
-  availableConcepts?: TaxonomyConcept[];
 }
 
 // ============================================================================
@@ -460,7 +460,7 @@ export function extractPathTags(filePath: string, basePath?: string): string[] {
 /**
  * Extract keywords from content using TF-IDF-like scoring
  */
-export function extractContentKeywords(
+function extractContentKeywords(
   content: string,
   maxKeywords: number = 5
 ): string[] {
@@ -594,17 +594,6 @@ function formatConceptsForPrompt(concepts: TaxonomyConcept[]): string {
   return `Available concepts (use these IDs when applicable):\n${lines.join(
     "\n"
   )}`;
-}
-
-function mergeConcepts(
-  primaryConcepts: TaxonomyConcept[],
-  secondaryConcepts: TaxonomyConcept[]
-): TaxonomyConcept[] {
-  const primaryIds = new Set(primaryConcepts.map((concept) => concept.id));
-  return [
-    ...primaryConcepts,
-    ...secondaryConcepts.filter((concept) => !primaryIds.has(concept.id)),
-  ];
 }
 
 function describeEnrichmentCause(error: unknown): string {
@@ -793,14 +782,13 @@ async function enrichWithLLM(
   filename: string,
   content: string,
   provider: LLMProvider,
-  availableConcepts: TaxonomyConcept[] = [],
-  model?: string,
-  abortSignal?: AbortSignal,
+  availableConcepts: TaxonomyConcept[],
+  abortSignal: AbortSignal,
 ): Promise<Omit<EnrichmentResult, "provider" | "confidence">> {
   const resolvedModel = await resolveLanguageModel(
     config,
     provider,
-    model ?? config.models.enrichment.model,
+    config.models.enrichment.model,
     config.models.enrichment.reasoning,
   );
   const truncatedContent = content.slice(0, 6000);
@@ -1019,13 +1007,12 @@ async function tagWithLLM(
   filename: string,
   content: string,
   provider: LLMProvider,
-  model?: string,
-  abortSignal?: AbortSignal,
+  abortSignal: AbortSignal,
 ): Promise<{ tags: string[]; category?: string; author?: string }> {
   const resolvedModel = await resolveLanguageModel(
     config,
     provider,
-    model ?? config.models.enrichment.model,
+    config.models.enrichment.model,
     config.models.enrichment.reasoning,
   );
   const truncatedContent = content.slice(0, 4000);
@@ -1145,7 +1132,7 @@ export interface AutoTagger {
   readonly generateTags: (
     filePath: string,
     content?: string,
-    options?: EnrichmentOptions
+    options?: TaggingOptions
   ) => Effect.Effect<TagResult, EnrichmentError>;
 
   /**
@@ -1193,26 +1180,6 @@ export function makeAutoTagger(config: Config) {
       ) =>
         Effect.gen(function* () {
           const filename = getPathFilename(filePath);
-          const opts = options || {};
-
-          if (opts.heuristicsOnly) {
-            const pathTags = extractPathTags(filePath, opts.basePath);
-            const filenameTags = extractFilenameTags(filename);
-            const contentTags = extractContentKeywords(content, 5);
-
-            return {
-              title: cleanTitle(filename),
-              author: extractAuthor(filename),
-              summary:
-                content.slice(0, 200).replace(/\s+/g, " ").trim() + "...",
-              documentType: "other" as const,
-              category: pathTags[0] || "uncategorized",
-              tags: mergeTags(10, pathTags, filenameTags, contentTags),
-              concepts: [],
-              confidence: 0.3,
-              provider: config.models.enrichment.provider,
-            };
-          }
 
           const ragContextResult = yield* Effect.either(
             provideDependencies(extractRAGContext(content)),
@@ -1226,17 +1193,12 @@ export function makeAutoTagger(config: Config) {
             );
           }
 
-          const conceptsForPrompt = mergeConcepts(
-            ragConcepts,
-            opts.availableConcepts || []
-          );
-
           yield* Effect.logDebug(
             `AutoTagger: RAG context found ${ragConcepts.length} relevant concept(s)`
           );
 
-          const provider = opts.provider || config.models.enrichment.provider;
-          const model = opts.model || config.models.enrichment.model;
+          const provider =
+            options?.provider || config.models.enrichment.provider;
 
           const result = yield* withEnrichmentTimeout(
             Effect.tryPromise({
@@ -1246,8 +1208,7 @@ export function makeAutoTagger(config: Config) {
                   filename,
                   content,
                   provider,
-                  conceptsForPrompt,
-                  model,
+                  ragConcepts,
                   signal,
                 ),
               catch: (error) =>
@@ -1300,7 +1261,7 @@ export function makeAutoTagger(config: Config) {
       generateTags: (
         filePath: string,
         content?: string,
-        options?: EnrichmentOptions
+        options?: TaggingOptions
       ) =>
         Effect.gen(function* () {
           const filename = getPathFilename(filePath);
@@ -1317,19 +1278,11 @@ export function makeAutoTagger(config: Config) {
 
           if (!opts.heuristicsOnly && content) {
             const provider = opts.provider || config.models.enrichment.provider;
-            const model = opts.model || config.models.enrichment.model;
 
             const llmResult = yield* withEnrichmentTimeout(
               Effect.tryPromise({
                 try: (signal) =>
-                  tagWithLLM(
-                    config,
-                    filename,
-                    content,
-                    provider,
-                    model,
-                    signal,
-                  ),
+                  tagWithLLM(config, filename, content, provider, signal),
                 catch: (error) =>
                   new EnrichmentError(
                     `LLM tagging failed: ${describeLanguageModelError(error)}`,

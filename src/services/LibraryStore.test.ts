@@ -1,9 +1,10 @@
 import { Effect, Either, Layer } from "effect";
 import { describe, expect, test } from "vitest";
 import { AmbiguousDocumentError, Config, Document, SearchOptions } from "../types.js";
+import { insertDocument } from "../testUtils.js";
 import { LibraryStore, makeLibraryStore } from "./LibraryStore.js";
 import { makeStorageLayer } from "./StorageLayer.js";
-import { DocumentRepository } from "./StorageRepositories.js";
+import { DocumentRepository, type ChunkInput } from "./StorageRepositories.js";
 
 const config = new Config({
   ...Config.Default,
@@ -24,13 +25,14 @@ function makeDocument(id: string, title: string, addedAt: string): Document {
   });
 }
 
-/** Runs `use` against a fresh in-memory library seeded with `documents`. */
+/** Runs `use` against a fresh in-memory library seeded with `documents` and `chunks`. */
 function runLibrary<A, E>(
   documents: readonly Document[],
   use: (
     library: Effect.Effect.Success<typeof LibraryStore>,
     repository: Effect.Effect.Success<typeof DocumentRepository>,
   ) => Effect.Effect<A, E>,
+  chunks: ChunkInput[] = [],
 ) {
   const storage = makeStorageLayer(config);
   const layer = Layer.merge(
@@ -42,7 +44,10 @@ function runLibrary<A, E>(
       Effect.gen(function* () {
         const repository = yield* DocumentRepository;
         for (const document of documents) {
-          yield* repository.addDocument(document);
+          yield* insertDocument(
+            document,
+            chunks.filter((chunk) => chunk.docId === document.id),
+          );
         }
         return yield* use(yield* LibraryStore, repository);
       }),
@@ -118,17 +123,17 @@ describe("LibraryStore document resolution", () => {
 describe("LibraryStore.ftsSearch", () => {
   test("expands matches with neighboring chunks", async () => {
     const doc = makeDocument("doc-1", "Doc", "2026-01-01T00:00:00Z");
-    const result = await runLibrary([doc], (library, repository) =>
-      Effect.gen(function* () {
-        yield* repository.addChunks([
-          { id: "doc-1-0", docId: "doc-1", page: 1, chunkIndex: 0, content: "unique target" },
-          { id: "doc-1-1", docId: "doc-1", page: 1, chunkIndex: 1, content: "neighbor context" },
-        ]);
-        return yield* library.ftsSearch(
+    const result = await runLibrary(
+      [doc],
+      (library) =>
+        library.ftsSearch(
           "unique",
           new SearchOptions({ hybrid: false, expandChars: 1000 }),
-        );
-      }),
+        ),
+      [
+        { id: "doc-1-0", docId: "doc-1", page: 1, chunkIndex: 0, content: "unique target" },
+        { id: "doc-1-1", docId: "doc-1", page: 1, chunkIndex: 1, content: "neighbor context" },
+      ],
     );
 
     expect(Either.getOrThrow(result)).toEqual([

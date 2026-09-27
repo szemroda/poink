@@ -8,7 +8,7 @@ import { withConfiguredLogging } from "../runtime.js";
 
 export type KnownFamilyError<E> = unknown extends E ? never : E;
 
-export type FamilyCommandHandler<
+type FamilyCommandHandler<
   A,
   E,
   R = never,
@@ -19,7 +19,7 @@ export type FamilyCommandHandler<
   options: Record<string, unknown>,
 ) => Effect.Effect<A, E, R>;
 
-export type FamilyCommandHandlers<
+type FamilyCommandHandlers<
   A,
   E,
   R,

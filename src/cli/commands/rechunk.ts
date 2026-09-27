@@ -27,7 +27,6 @@ interface RechunkCommandOptions extends Record<string, unknown> {
   all?: boolean;
   "include-missing"?: boolean;
   includeMissing?: boolean;
-  missing?: boolean;
   visuals?: boolean;
   "max-docs"?: string | number | boolean;
   maxDocs?: string | number | boolean;
@@ -327,8 +326,7 @@ export function runRechunkCommand(
       const forceAll = options.all === true;
       const includeMissing =
         options["include-missing"] === true ||
-        options.includeMissing === true ||
-        options.missing === true;
+        options.includeMissing === true;
       const appConfig = globals.config!;
       const visualsConfig = resolveVisualsConfig(appConfig);
       const visualsExplicit = options.visuals === true;
@@ -461,12 +459,7 @@ export function runRechunkCommand(
       const commonAgentResult = {
         _tag: "rechunk" as const,
         includeMissing,
-        visuals: visualsEnabled,
         skippedMissing: plan.skippedMissing,
-        plannedMissing: plan.plannedMissing,
-        plannedMismatch: plan.plannedMismatch,
-        plannedVisuals: plan.plannedVisuals,
-        planned: planned.length,
       };
 
       if (dryRun) {
@@ -483,12 +476,7 @@ export function runRechunkCommand(
               chunkOverlap: config.chunkOverlap,
             },
           },
-          agentResult: {
-            ...commonAgentResult,
-            dryRun: true,
-            succeeded: 0,
-            failed: 0,
-          },
+          agentResult: { ...commonAgentResult, dryRun: true },
         };
       }
 
@@ -553,14 +541,8 @@ export function runRechunkCommand(
           succeeded: processed - errors,
           failed: errors,
         },
-        agentResult: {
-          ...commonAgentResult,
-          dryRun: false,
-          succeeded: processed - errors,
-          failed: errors,
-        },
+        agentResult: { ...commonAgentResult, dryRun: false },
       };
     }),
-    options,
   );
 }

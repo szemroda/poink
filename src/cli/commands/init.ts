@@ -19,7 +19,6 @@ import type { CliConsole } from "./types.js";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const taxonomyFile = join(__dirname, "..", "..", "data", "taxonomy.json");
 
-type InitCommandOptions = Record<string, unknown>;
 type InitializableLibrary = Pick<CliLibrary, "checkReady" | "stats">;
 
 function initializeLibraryDirectory(
@@ -142,7 +141,6 @@ export function initializePoinkLibrary(
 export function runInitCommand(
   args: string[],
   globals: GlobalCLIOptionsWithLibrary<DiagnosticsCliLibrary>,
-  options: InitCommandOptions = {},
 ) {
   return runCommandWithLibraryContext(args, globals, ({ Console, library, globals }) =>
     Effect.gen(function* () {
@@ -163,10 +161,8 @@ export function runInitCommand(
         agentResult: {
           _tag: "stats" as const,
           documents: result.stats.documents,
-          chunks: result.stats.chunks,
-          embeddings: result.stats.embeddings,
         },
       };
     }),
-    options);
+  );
 }

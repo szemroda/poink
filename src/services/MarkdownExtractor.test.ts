@@ -71,30 +71,15 @@ Deep.
 describe("frontmatter", () => {
   test.each([
     {
-      name: "title, description and tags",
+      name: "the title",
       markdown:
-        "---\ntitle: My Document\ndescription: A test document\ntags:\n  - test\n  - markdown\n---\n\n# Content",
-      expected: {
-        title: "My Document",
-        description: "A test document",
-        tags: ["test", "markdown"],
-      },
+        "---\ntitle: My Document\ndescription: A test document\n---\n\n# Content",
+      expected: { title: "My Document" },
     },
     {
-      name: "extra fields",
-      markdown:
-        "---\ntitle: Doc\nauthor: John Doe\ncustom_field: custom_value\n---\n\nContent.",
-      expected: {
-        title: "Doc",
-        author: "John Doe",
-        custom_field: "custom_value",
-      },
-    },
-    {
-      name: "only string-typed title, description and tags",
-      markdown:
-        "---\ntitle: 123\ndescription: false\ntags:\n  - a\n  - 1\n---\n\nContent.",
-      expected: { tags: ["a"] },
+      name: "only a string-typed title",
+      markdown: "---\ntitle: 123\n---\n\nContent.",
+      expected: {},
     },
     {
       name: "no frontmatter",
@@ -110,11 +95,14 @@ describe("frontmatter", () => {
   });
 
   test("ignores malformed YAML and still extracts the body", async () => {
-    const result = await extract(
+    const path = writeMarkdown(
       "---\ntitle: [unclosed bracket\ninvalid: yaml: here\n---\n\nContent after bad frontmatter.\n",
     );
 
-    expect(result.frontmatter).toEqual({});
+    await expect(
+      run((extractor) => extractor.extractFrontmatter(path)),
+    ).resolves.toEqual({});
+    const result = await run((extractor) => extractor.extract(path));
     expect(result.sections.map((section) => section.text)).toEqual([
       "Content after bad frontmatter.",
     ]);
@@ -125,25 +113,22 @@ describe("section extraction", () => {
   test("splits sections by heading and compacts skipped heading levels", async () => {
     const result = await extract(NESTED_HEADINGS);
 
-    expect(result.sectionCount).toBe(5);
     expect(
-      result.sections.map(({ heading, headingLevel, headingPath, text }) => ({
+      result.sections.map(({ heading, headingPath, text }) => ({
         heading,
-        headingLevel,
         headingPath,
         text,
       })),
     ).toEqual([
-      { heading: "Parent", headingLevel: 1, headingPath: ["Parent"], text: "Intro." },
-      { heading: "Child", headingLevel: 2, headingPath: ["Parent", "Child"], text: "Details." },
+      { heading: "Parent", headingPath: ["Parent"], text: "Intro." },
+      { heading: "Child", headingPath: ["Parent", "Child"], text: "Details." },
       {
         heading: "Grandchild",
-        headingLevel: 3,
         headingPath: ["Parent", "Child", "Grandchild"],
         text: "Nested details.",
       },
-      { heading: "Other", headingLevel: 1, headingPath: ["Other"], text: "" },
-      { heading: "Skipped", headingLevel: 3, headingPath: ["Other", "Skipped"], text: "Deep." },
+      { heading: "Other", headingPath: ["Other"], text: "" },
+      { heading: "Skipped", headingPath: ["Other", "Skipped"], text: "Deep." },
     ]);
   });
 
@@ -156,14 +141,12 @@ describe("section extraction", () => {
       {
         section: 1,
         heading: "",
-        headingLevel: 0,
         headingPath: [],
         text: "Some intro text before any heading.",
       },
       {
         section: 2,
         heading: "First Heading",
-        headingLevel: 1,
         headingPath: ["First Heading"],
         text: "Content after heading.",
       },
@@ -179,7 +162,6 @@ describe("section extraction", () => {
       {
         section: 1,
         heading: "",
-        headingLevel: 0,
         headingPath: [],
         text: "Just plain text content.\n\nWith multiple paragraphs.",
       },
@@ -208,7 +190,6 @@ describe("section extraction", () => {
     const result = await extract(markdown);
 
     expect(result.sections).toEqual([]);
-    expect(result.sectionCount).toBe(0);
   });
 
   test("fails with MarkdownNotFoundError for a missing file", async () => {
@@ -221,7 +202,7 @@ describe("section extraction", () => {
 });
 
 describe("processing", () => {
-  test("returns frontmatter and one chunk per section", async () => {
+  test("skips frontmatter and returns one chunk per section", async () => {
     const result = await processMarkdown(`---
 title: Integration Test
 tags:
@@ -239,7 +220,6 @@ Content for section two.
 
     expect(result).toEqual({
       pageCount: 2,
-      frontmatter: { title: "Integration Test", tags: ["test"] },
       chunks: [
         { page: 1, chunkIndex: 0, content: "# Section One\n\nContent for section one." },
         { page: 2, chunkIndex: 0, content: "# Section Two\n\nContent for section two." },
@@ -262,11 +242,7 @@ Content for section two.
   test("returns no chunks for a frontmatter-only file", async () => {
     const result = await processMarkdown("---\ntitle: Only Frontmatter\n---\n");
 
-    expect(result).toMatchObject({
-      pageCount: 0,
-      chunks: [],
-      frontmatter: { title: "Only Frontmatter" },
-    });
+    expect(result).toEqual({ pageCount: 0, chunks: [] });
   });
 
   test("keeps markdown structure: code fences, indentation, lists and quotes", async () => {

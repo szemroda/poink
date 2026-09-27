@@ -1,15 +1,11 @@
 import type { InStatement, InValue } from "@libsql/client";
 import { Context, Effect, Layer } from "effect";
-import { EmbeddingProvider } from "./EmbeddingProvider.js";
 import {
   StorageError,
   storageEffect,
 } from "./StorageRepositories.js";
 import { LibSQLClient } from "./LibSQLClient.js";
-import {
-  decodeAssignmentRow,
-  decodeConceptRow,
-} from "./LibSQLRows.js";
+import { decodeConceptRow } from "./LibSQLRows.js";
 
 export interface Concept {
   id: string;
@@ -17,13 +13,6 @@ export interface Concept {
   altLabels: string[];
   definition?: string;
   createdAt: Date;
-}
-
-export interface ConceptAssignment {
-  docId: string;
-  conceptId: string;
-  confidence: number;
-  source: string;
 }
 
 export interface TaxonomyJSON {
@@ -44,20 +33,14 @@ export interface TaxonomyJSON {
   }>;
 }
 
-export interface CreateConceptParams {
+interface CreateConceptParams {
   id: string;
   prefLabel: string;
   altLabels?: string[];
   definition?: string;
 }
 
-export interface UpdateConceptParams {
-  prefLabel?: string;
-  altLabels?: string[];
-  definition?: string;
-}
-
-export class TaxonomyError {
+class TaxonomyError {
   readonly _tag = "TaxonomyError";
   constructor(readonly reason: string) {}
 }
@@ -70,15 +53,7 @@ export interface TaxonomyService {
     id: string,
   ) => Effect.Effect<Concept | null, TaxonomyError>;
   readonly listConcepts: () => Effect.Effect<Concept[], TaxonomyError>;
-  readonly updateConcept: (
-    id: string,
-    updates: UpdateConceptParams,
-  ) => Effect.Effect<void, TaxonomyError>;
   readonly addBroader: (
-    conceptId: string,
-    broaderId: string,
-  ) => Effect.Effect<void, TaxonomyError>;
-  readonly removeBroader: (
     conceptId: string,
     broaderId: string,
   ) => Effect.Effect<void, TaxonomyError>;
@@ -88,21 +63,6 @@ export interface TaxonomyService {
   readonly getNarrower: (
     conceptId: string,
   ) => Effect.Effect<Concept[], TaxonomyError>;
-  readonly getAncestors: (
-    conceptId: string,
-  ) => Effect.Effect<Concept[], TaxonomyError>;
-  readonly getDescendants: (
-    conceptId: string,
-  ) => Effect.Effect<Concept[], TaxonomyError>;
-  readonly addRelated: (
-    conceptId: string,
-    relatedId: string,
-    type?: string,
-  ) => Effect.Effect<void, TaxonomyError>;
-  readonly removeRelated: (
-    conceptId: string,
-    relatedId: string,
-  ) => Effect.Effect<void, TaxonomyError>;
   readonly getRelated: (
     conceptId: string,
   ) => Effect.Effect<Concept[], TaxonomyError>;
@@ -110,18 +70,7 @@ export interface TaxonomyService {
     docId: string,
     conceptId: string,
     confidence?: number,
-    source?: string,
   ) => Effect.Effect<void, TaxonomyError>;
-  readonly removeFromDocument: (
-    docId: string,
-    conceptId: string,
-  ) => Effect.Effect<void, TaxonomyError>;
-  readonly getDocumentConcepts: (
-    docId: string,
-  ) => Effect.Effect<ConceptAssignment[], TaxonomyError>;
-  readonly getConceptDocuments: (
-    conceptId: string,
-  ) => Effect.Effect<ConceptAssignment[], TaxonomyError>;
   readonly seedFromJSON: (
     taxonomy: TaxonomyJSON,
   ) => Effect.Effect<void, TaxonomyError>;
@@ -201,44 +150,12 @@ export function makeTaxonomyService() {
             [],
           ).pipe(Effect.mapError(mapStorageError)),
 
-        updateConcept: (id, updates) => {
-          const fields: string[] = [];
-          const args: InValue[] = [];
-          if (updates.prefLabel !== undefined) {
-            fields.push("pref_label = ?");
-            args.push(updates.prefLabel);
-          }
-          if (updates.altLabels !== undefined) {
-            fields.push("alt_labels = ?");
-            args.push(JSON.stringify(updates.altLabels));
-          }
-          if (updates.definition !== undefined) {
-            fields.push("definition = ?");
-            args.push(updates.definition);
-          }
-          if (fields.length === 0) return Effect.void;
-          args.push(id);
-          return execute(
-            "update concept",
-            `UPDATE concepts SET ${fields.join(", ")} WHERE id = ?`,
-            args,
-          ).pipe(Effect.asVoid, Effect.mapError(mapStorageError));
-        },
-
         addBroader: (conceptId, broaderId) =>
           execute(
             "add broader concept",
             `INSERT INTO concept_hierarchy (concept_id, broader_id)
              VALUES (?, ?)
              ON CONFLICT DO NOTHING`,
-            [conceptId, broaderId],
-          ).pipe(Effect.asVoid, Effect.mapError(mapStorageError)),
-
-        removeBroader: (conceptId, broaderId) =>
-          execute(
-            "remove broader concept",
-            `DELETE FROM concept_hierarchy
-             WHERE concept_id = ? AND broader_id = ?`,
             [conceptId, broaderId],
           ).pipe(Effect.asVoid, Effect.mapError(mapStorageError)),
 
@@ -260,72 +177,6 @@ export function makeTaxonomyService() {
             [conceptId],
           ).pipe(Effect.mapError(mapStorageError)),
 
-        getAncestors: (conceptId) =>
-          readConcepts(
-            "get concept ancestors",
-            `WITH RECURSIVE ancestors AS (
-               SELECT broader_id
-               FROM concept_hierarchy
-               WHERE concept_id = ?
-               UNION
-               SELECT ch.broader_id
-               FROM concept_hierarchy ch
-               JOIN ancestors a ON ch.concept_id = a.broader_id
-             )
-             SELECT c.* FROM concepts c
-             WHERE c.id IN (SELECT broader_id FROM ancestors)`,
-            [conceptId],
-          ).pipe(Effect.mapError(mapStorageError)),
-
-        getDescendants: (conceptId) =>
-          readConcepts(
-            "get concept descendants",
-            `WITH RECURSIVE descendants AS (
-               SELECT concept_id
-               FROM concept_hierarchy
-               WHERE broader_id = ?
-               UNION
-               SELECT ch.concept_id
-               FROM concept_hierarchy ch
-               JOIN descendants d ON ch.broader_id = d.concept_id
-             )
-             SELECT c.* FROM concepts c
-             WHERE c.id IN (SELECT concept_id FROM descendants)`,
-            [conceptId],
-          ).pipe(Effect.mapError(mapStorageError)),
-
-        addRelated: (conceptId, relatedId, type = "related") =>
-          batch("add related concepts", [
-            {
-              sql: `INSERT INTO concept_relations
-                      (concept_id, related_id, relation_type)
-                    VALUES (?, ?, ?)
-                    ON CONFLICT DO NOTHING`,
-              args: [conceptId, relatedId, type],
-            },
-            {
-              sql: `INSERT INTO concept_relations
-                      (concept_id, related_id, relation_type)
-                    VALUES (?, ?, ?)
-                    ON CONFLICT DO NOTHING`,
-              args: [relatedId, conceptId, type],
-            },
-          ]).pipe(Effect.mapError(mapStorageError)),
-
-        removeRelated: (conceptId, relatedId) =>
-          batch("remove related concepts", [
-            {
-              sql: `DELETE FROM concept_relations
-                    WHERE concept_id = ? AND related_id = ?`,
-              args: [conceptId, relatedId],
-            },
-            {
-              sql: `DELETE FROM concept_relations
-                    WHERE concept_id = ? AND related_id = ?`,
-              args: [relatedId, conceptId],
-            },
-          ]).pipe(Effect.mapError(mapStorageError)),
-
         getRelated: (conceptId) =>
           readConcepts(
             "get related concepts",
@@ -335,58 +186,17 @@ export function makeTaxonomyService() {
             [conceptId],
           ).pipe(Effect.mapError(mapStorageError)),
 
-        assignToDocument: (
-          docId,
-          conceptId,
-          confidence = 1,
-          source = "llm",
-        ) =>
+        assignToDocument: (docId, conceptId, confidence = 1) =>
           execute(
             "assign concept to document",
             `INSERT INTO document_concepts
                (doc_id, concept_id, confidence, source)
-             VALUES (?, ?, ?, ?)
+             VALUES (?, ?, ?, 'llm')
              ON CONFLICT (doc_id, concept_id) DO UPDATE SET
                confidence = excluded.confidence,
                source = excluded.source`,
-            [docId, conceptId, confidence, source],
+            [docId, conceptId, confidence],
           ).pipe(Effect.asVoid, Effect.mapError(mapStorageError)),
-
-        removeFromDocument: (docId, conceptId) =>
-          execute(
-            "remove concept from document",
-            `DELETE FROM document_concepts
-             WHERE doc_id = ? AND concept_id = ?`,
-            [docId, conceptId],
-          ).pipe(Effect.asVoid, Effect.mapError(mapStorageError)),
-
-        getDocumentConcepts: (docId) =>
-          execute(
-            "get document concepts",
-            "SELECT * FROM document_concepts WHERE doc_id = ?",
-            [docId],
-          ).pipe(
-            Effect.map((result) =>
-              result.rows.map((row) =>
-                decodeAssignmentRow(row, "get document concepts"),
-              ),
-            ),
-            Effect.mapError(mapStorageError),
-          ),
-
-        getConceptDocuments: (conceptId) =>
-          execute(
-            "get concept documents",
-            "SELECT * FROM document_concepts WHERE concept_id = ?",
-            [conceptId],
-          ).pipe(
-            Effect.map((result) =>
-              result.rows.map((row) =>
-                decodeAssignmentRow(row, "get concept documents"),
-              ),
-            ),
-            Effect.mapError(mapStorageError),
-          ),
 
         seedFromJSON: (taxonomy) => {
           const timestamp = new Date().toISOString();
@@ -504,17 +314,3 @@ export function makeTaxonomyService() {
     }),
   );
 }
-
-export const generateConceptEmbedding = (concept: Concept) =>
-  Effect.gen(function* () {
-    const embedProvider = yield* EmbeddingProvider;
-    const text = concept.definition
-      ? `${concept.prefLabel}: ${concept.definition}`
-      : concept.prefLabel;
-    return yield* embedProvider.embed(text);
-  }).pipe(
-    Effect.mapError(
-      (error): TaxonomyError =>
-        new TaxonomyError(`Failed to generate embedding: ${String(error)}`),
-    ),
-  );

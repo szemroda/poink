@@ -10,10 +10,6 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { assessWALHealth } from "./cli/health.js";
-import {
-  shouldCheckpoint,
-  parseArgs,
-} from "./cli/args.js";
 import { selectDefaultModel } from "./cli/commands/setup.js";
 import {
   filenameFromURL,
@@ -25,7 +21,6 @@ import {
   isPrivateNetworkAddress,
   assertURLDownloadAllowed,
   downloadFile,
-  readResponseBufferWithLimit,
   resolveURLDownloadOptions,
 } from "./urlDownloads.js";
 import { Config, type DocumentFileType } from "./types.js";
@@ -51,6 +46,7 @@ function eventually<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
 async function downloadFromTestServer(
   path: string,
   handler: (req: IncomingMessage, res: ServerResponse) => void,
+  downloadFlags: Record<string, string> = {},
 ): Promise<string> {
   const server = createServer(handler);
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -60,6 +56,7 @@ async function downloadFromTestServer(
     const options = resolveURLDownloadOptions(Config.Default, {
       "allow-private-network": true,
       "download-timeout": "5s",
+      ...downloadFlags,
     });
     return await eventually(
       Effect.runPromise(
@@ -250,22 +247,34 @@ describe("secure URL download options", () => {
     ).resolves.toBeUndefined();
   });
 
-  test("rejects responses whose content-length exceeds the cap", async () => {
-    const response = new Response("ok", {
-      headers: { "content-length": "1024" },
-    });
-
-    await expect(readResponseBufferWithLimit(response, 10)).rejects.toThrow(
-      /max file size/,
-    );
+  test("rejects URL downloads whose content-length exceeds the cap", async () => {
+    await expect(
+      downloadFromTestServer(
+        "/large.pdf",
+        (_req, res) => {
+          res.writeHead(200, {
+            "content-type": "application/pdf",
+            "content-length": "1024",
+          });
+          res.end(Buffer.alloc(1024));
+        },
+        { "max-file-size": "10b" },
+      ),
+    ).rejects.toThrow(/max file size/);
   });
 
-  test("rejects streamed responses that exceed the cap without content-length", async () => {
-    const response = new Response(new Uint8Array([1, 2, 3, 4, 5]));
-
-    await expect(readResponseBufferWithLimit(response, 4)).rejects.toThrow(
-      /max file size/,
-    );
+  test("rejects streamed URL downloads that exceed the cap without content-length", async () => {
+    await expect(
+      downloadFromTestServer(
+        "/large.pdf",
+        (_req, res) => {
+          res.writeHead(200, { "content-type": "application/pdf" });
+          res.write(Buffer.alloc(8));
+          res.end(Buffer.alloc(8));
+        },
+        { "max-file-size": "10b" },
+      ),
+    ).rejects.toThrow(/max file size/);
   });
 
   test("closes non-success URL download responses without reading the body", async () => {
@@ -347,51 +356,12 @@ describe("WAL health assessment", () => {
   const MB = 1024 * 1024;
 
   test.each([
-    [{ fileCount: 50, totalSizeBytes: 50 * MB }, []],
-    [
-      { fileCount: 60, totalSizeBytes: MB },
-      ["WAL file count (60) exceeds recommended threshold (50)"],
-    ],
-    [
-      { fileCount: 10, totalSizeBytes: 60 * MB },
-      ["WAL size (60.0 MB) exceeds recommended threshold (50 MB)"],
-    ],
-    [
-      { fileCount: 100, totalSizeBytes: 100 * MB },
-      [
-        "WAL file count (100) exceeds recommended threshold (50)",
-        "WAL size (100.0 MB) exceeds recommended threshold (50 MB)",
-      ],
-    ],
-  ])("%j -> %j", (stats, warnings) => {
-    expect(assessWALHealth(stats)).toEqual({
+    [50 * MB, []],
+    [60 * MB, ["WAL size (60.0 MB) exceeds recommended threshold (50 MB)"]],
+  ])("%j bytes -> %j", (totalSizeBytes, warnings) => {
+    expect(assessWALHealth(totalSizeBytes)).toEqual({
       healthy: warnings.length === 0,
       warnings,
     });
-  });
-});
-
-describe("automatic checkpoint during batch operations", () => {
-  test("checkpoints only at positive multiples of the interval", () => {
-    const processed = [0, 1, 49, 50, 51, 99, 100, 150];
-
-    expect(processed.filter((count) => shouldCheckpoint(count, 50))).toEqual([
-      50, 100, 150,
-    ]);
-  });
-});
-
-describe("parseArgs", () => {
-  test.each([
-    [["--include-clusters", "--limit", "5"], { "include-clusters": true, limit: "5" }],
-    [["query", "--limit", "10"], { limit: "10" }],
-    [
-      ["--enrich", "--visuals", "--auto-tag"],
-      { enrich: true, visuals: true, "auto-tag": true },
-    ],
-    [["--no-enrich", "--max-docs=3"], { enrich: false, "max-docs": "3" }],
-    [["paper.pdf"], {}],
-  ])("%j -> %j", (args, expected) => {
-    expect(parseArgs(args)).toEqual(expected);
   });
 });

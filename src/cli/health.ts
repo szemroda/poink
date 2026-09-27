@@ -10,28 +10,13 @@ export interface HealthCheck {
   details?: string;
 }
 
-export interface DoctorHealthResult {
-  healthy: boolean;
-  checks: HealthCheck[];
-}
-
-export function assessWALHealth(stats: {
-  fileCount: number;
-  totalSizeBytes: number;
-}): WALHealthResult {
+export function assessWALHealth(totalSizeBytes: number): WALHealthResult {
   const warnings: string[] = [];
-  const fileCountThreshold = 50;
   const sizeThresholdMB = 50;
   const sizeThresholdBytes = sizeThresholdMB * 1024 * 1024;
 
-  if (stats.fileCount > fileCountThreshold) {
-    warnings.push(
-      `WAL file count (${stats.fileCount}) exceeds recommended threshold (${fileCountThreshold})`,
-    );
-  }
-
-  const sizeMB = stats.totalSizeBytes / (1024 * 1024);
-  if (stats.totalSizeBytes > sizeThresholdBytes) {
+  const sizeMB = totalSizeBytes / (1024 * 1024);
+  if (totalSizeBytes > sizeThresholdBytes) {
     warnings.push(
       `WAL size (${sizeMB.toFixed(1)} MB) exceeds recommended threshold (${sizeThresholdMB} MB)`,
     );
@@ -48,7 +33,7 @@ export function assessDoctorHealth(data: {
   ollamaReachable: boolean;
   orphanedData: { chunks: number; embeddings: number };
   chunker: { missing: number; mismatch: number };
-}): DoctorHealthResult {
+}): HealthCheck[] {
   const checks: HealthCheck[] = [];
 
   checks.push({
@@ -100,8 +85,5 @@ export function assessDoctorHealth(data: {
         : undefined,
   });
 
-  return {
-    healthy: checks.every((check) => check.healthy),
-    checks,
-  };
+  return checks;
 }

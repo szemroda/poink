@@ -71,7 +71,6 @@ export const runFamily: FamilyRunner = async ({ parsed, globals, config }) => {
       args,
       globals,
       ({ Console }) => runConfigCommand(args, Console, config),
-      options,
     );
     return runFamilyEffect(program, globals);
   }

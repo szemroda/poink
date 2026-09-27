@@ -4,14 +4,7 @@ import { request as httpRequest, type IncomingMessage } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { BlockList, isIP, type LookupFunction } from "node:net";
 import { basename, extname, join } from "node:path";
-import { URLFetchError } from "./types.js";
-import {
-  Config,
-  DEFAULT_URL_DOWNLOAD_MAX_FILE_SIZE,
-  DEFAULT_URL_DOWNLOAD_MAX_REDIRECTS,
-  DEFAULT_URL_DOWNLOAD_TIMEOUT,
-  type DocumentFileType,
-} from "./types.js";
+import { Config, type DocumentFileType, URLFetchError } from "./types.js";
 import { writeFileData } from "./runtime.js";
 
 const MARKDOWN_PEEK_SIZE = 4096;
@@ -24,12 +17,12 @@ type URLDownloadOptions = {
   allowedPrivateNetworkHosts: string[];
 };
 
-export type ResolvedURLDownloadOptions = URLDownloadOptions & {
+type ResolvedURLDownloadOptions = URLDownloadOptions & {
   maxFileSizeBytes: number;
   timeoutMs: number;
 };
 
-export type DNSLookup = (
+type DNSLookup = (
   hostname: string,
   options: { all: true; verbatim: true },
 ) => Promise<Array<{ address: string; family: number }>>;
@@ -41,14 +34,6 @@ type CLIErrorFactory = (
   message: string,
   details?: Record<string, unknown>,
 ) => Error;
-
-export const DEFAULT_URL_DOWNLOAD_OPTIONS: URLDownloadOptions = {
-  maxFileSize: DEFAULT_URL_DOWNLOAD_MAX_FILE_SIZE,
-  timeout: DEFAULT_URL_DOWNLOAD_TIMEOUT,
-  maxRedirects: DEFAULT_URL_DOWNLOAD_MAX_REDIRECTS,
-  allowPrivateNetwork: false,
-  allowedPrivateNetworkHosts: [],
-};
 
 const PRIVATE_NETWORK_BLOCK_LIST = new BlockList();
 for (const [address, prefix, type] of [
@@ -76,7 +61,7 @@ for (const [address, prefix, type] of [
   PRIVATE_NETWORK_BLOCK_LIST.addSubnet(address, prefix, type);
 }
 
-export const MARKDOWN_INDICATORS = [
+const MARKDOWN_INDICATORS = [
   /^#{1,6}\s/m,
   /^[-*+]\s/m,
   /^\d+\.\s/m,
@@ -531,10 +516,10 @@ async function requestURLWithGuards(
   }
 }
 
-export async function readStreamWithLimit(
+async function readStreamWithLimit(
   chunks: AsyncIterable<Uint8Array | Buffer | string>,
   maxBytes: number,
-  onExceeded?: () => void,
+  onExceeded: () => void,
 ): Promise<ArrayBuffer> {
   const collected: Uint8Array[] = [];
   let total = 0;
@@ -544,7 +529,7 @@ export async function readStreamWithLimit(
       typeof chunk === "string" ? Buffer.from(chunk) : new Uint8Array(chunk);
     total += bytes.byteLength;
     if (total > maxBytes) {
-      onExceeded?.();
+      onExceeded();
       throw new Error(`Download exceeds max file size (${maxBytes} bytes)`);
     }
     collected.push(bytes);
@@ -562,11 +547,11 @@ export async function readStreamWithLimit(
 function assertContentLengthWithinLimit(
   contentLength: string,
   maxBytes: number,
-  onExceeded?: () => void,
+  onExceeded: () => void,
 ): void {
   const parsedLength = Number(contentLength);
   if (Number.isFinite(parsedLength) && parsedLength > maxBytes) {
-    onExceeded?.();
+    onExceeded();
     throw new Error(
       `Download exceeds max file size (${contentLength} bytes > ${maxBytes} bytes)`,
     );
@@ -585,35 +570,6 @@ async function readIncomingMessageWithLimit(
   }
 
   return readStreamWithLimit(response, maxBytes, () => response.destroy());
-}
-
-export async function readResponseBufferWithLimit(
-  response: Response,
-  maxBytes: number,
-): Promise<ArrayBuffer> {
-  const contentLength = response.headers.get("content-length");
-  if (contentLength) {
-    assertContentLengthWithinLimit(contentLength, maxBytes);
-  }
-
-  if (!response.body) return new ArrayBuffer(0);
-
-  const reader = response.body.getReader();
-  const stream = {
-    async *[Symbol.asyncIterator]() {
-      try {
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          if (value) yield value;
-        }
-      } finally {
-        reader.releaseLock();
-      }
-    },
-  };
-
-  return readStreamWithLimit(stream, maxBytes);
 }
 
 function provisionalDocumentTypeFromHeaders(

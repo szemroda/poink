@@ -69,14 +69,12 @@ function makeDatabase(
   overrides: Partial<DatabaseService> = {},
 ): DatabaseService {
   return {
-    addDocument: () => Effect.void,
     getDocument: () => Effect.succeed(null),
     getDocumentByPath: () => Effect.succeed(null),
     listDocuments: () => Effect.succeed([]),
     deleteDocument: () => Effect.void,
     updateTags: () => Effect.void,
     updateDocumentPath: () => Effect.void,
-    addChunks: () => Effect.void,
     getChunk: () => Effect.succeed(null),
     listChunksByDocument: () => Effect.succeed([]),
     addEmbeddings: () => Effect.void,
@@ -93,7 +91,6 @@ function makeDatabase(
       Effect.succeed({
         orphanedChunks: 0,
         orphanedEmbeddings: 0,
-        zeroVectorEmbeddings: 0,
       }),
     checkpoint: () => Effect.void,
     ...overrides,
@@ -129,9 +126,8 @@ function markdownExtractorReturning(
 ): MarkdownExtractorService {
   return {
     extractFrontmatter: () => Effect.succeed({}),
-    extract: () =>
-      Effect.succeed({ frontmatter: {}, sections: [], sectionCount: 0 }),
-    process: () => Effect.succeed({ pageCount: 1, frontmatter: {}, chunks }),
+    extract: () => Effect.succeed({ sections: [] }),
+    process: () => Effect.succeed({ pageCount: 1, chunks }),
   };
 }
 
@@ -407,7 +403,7 @@ describe("DocumentIngestion.add", () => {
         ]),
         visualEnrichment: {
           enrichDocument: () =>
-            Effect.succeed([{ page: 1, chunkIndex: 0, content: visual }]),
+            Effect.succeed([{ page: 1, content: visual }]),
         },
       },
       (ingestion) =>
@@ -477,10 +473,7 @@ describe("DocumentIngestion.replace source type migration", () => {
           markdownExtractor: {
             extractFrontmatter: () => Effect.succeed({}),
             extract: unused("Markdown extract"),
-            process: () =>
-              processed("markdown-text").pipe(
-                Effect.map((extracted) => ({ ...extracted, frontmatter: {} })),
-              ),
+            process: () => processed("markdown-text"),
           },
           pdfExtractor: {
             extract: unused("PDF extract"),

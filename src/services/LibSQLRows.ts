@@ -5,10 +5,9 @@ import {
   PDFChunk,
   type DocumentFileType,
 } from "../types.js";
-import type { Concept, ConceptAssignment } from "./TaxonomyService.js";
+import type { Concept } from "./TaxonomyService.js";
 import {
   StorageError,
-  type ClusterSummarySource,
   type ConceptEmbeddingSource,
   type DocumentWithSourceIdentity,
 } from "./StorageRepositories.js";
@@ -64,8 +63,6 @@ const FtsSearchRow = Schema.Struct({
 });
 
 const ContextRow = Schema.Struct({
-  page: SqlInteger,
-  chunk_index: SqlInteger,
   content: Schema.String,
 });
 
@@ -101,31 +98,17 @@ const ConceptSourceRow = Schema.Struct({
   definition: Schema.NullOr(Schema.String),
 });
 
-const ClusterSummarySourceRow = Schema.Struct({
-  id: SqlInteger,
-  summary: Schema.NullOr(Schema.String),
-});
-
-const AssignmentRow = Schema.Struct({
-  doc_id: Schema.String,
-  concept_id: Schema.String,
-  confidence: Schema.Number,
-  source: Schema.String,
-});
-
 function decode<A, I>(
   schema: Schema.Schema<A, I>,
   row: unknown,
   operation: string,
-  rowId?: string,
 ): A {
   try {
     return Schema.decodeUnknownSync(schema)(row);
   } catch {
-    const suffix = rowId ? ` for row ${rowId}` : "";
     throw new StorageError({
       operation,
-      reason: `Invalid database row${suffix}: value does not match the expected schema`,
+      reason: "Invalid database row: value does not match the expected schema",
     });
   }
 }
@@ -244,7 +227,6 @@ export function decodeChunkRow(row: unknown, operation: string): PDFChunk {
 export function decodeVectorSearchRow(
   row: unknown,
   operation: string,
-  entityType: DocumentSearchResult["entityType"],
 ): DocumentSearchResult {
   const decoded = decode(SearchRow, row, operation);
   const score = 1 - decoded.distance / 2;
@@ -260,7 +242,6 @@ export function decodeVectorSearchRow(
     scoreType: "cosine_similarity",
     vectorScore: score,
     matchType: "vector",
-    entityType,
   });
 }
 
@@ -282,20 +263,11 @@ export function decodeFtsSearchRow(
     scoreType: "fts_rank",
     ftsRank: decoded.rank,
     matchType: "fts",
-    entityType: "document",
   });
 }
 
-export function decodeContextRow(
-  row: unknown,
-  operation: string,
-): { page: number; chunkIndex: number; content: string } {
-  const decoded = decode(ContextRow, row, operation);
-  return {
-    page: toNumber(decoded.page),
-    chunkIndex: toNumber(decoded.chunk_index),
-    content: decoded.content,
-  };
+export function decodeContextRow(row: unknown, operation: string): string {
+  return decode(ContextRow, row, operation).content;
 }
 
 export function decodeCountRow(row: unknown, operation: string): number {
@@ -336,14 +308,6 @@ export function decodeConceptSourceRow(
   };
 }
 
-export function decodeClusterSummarySourceRow(
-  row: unknown,
-  operation: string,
-): ClusterSummarySource {
-  const decoded = decode(ClusterSummarySourceRow, row, operation);
-  return { id: toNumber(decoded.id), summary: decoded.summary };
-}
-
 export function decodeConceptRow(row: unknown, operation: string): Concept {
   const decoded = decode(ConceptRow, row, operation);
   const createdAt = new Date(decoded.created_at);
@@ -368,18 +332,5 @@ export function decodeConceptRow(row: unknown, operation: string): Concept {
     ],
     definition: decoded.definition ?? undefined,
     createdAt,
-  };
-}
-
-export function decodeAssignmentRow(
-  row: unknown,
-  operation: string,
-): ConceptAssignment {
-  const decoded = decode(AssignmentRow, row, operation);
-  return {
-    docId: decoded.doc_id,
-    conceptId: decoded.concept_id,
-    confidence: decoded.confidence,
-    source: decoded.source,
   };
 }

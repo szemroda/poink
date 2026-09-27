@@ -10,11 +10,7 @@ import {
 } from "../agent/protocol.js";
 import { type Config, resolveConfigPath } from "../types.js";
 import { serveFetch, waitForShutdownSignal } from "../runtime.js";
-import {
-  CLIError,
-  parseServeCommandOptions,
-  type GlobalCLIOptions,
-} from "./runner.js";
+import { CLIError, type GlobalCLIOptions } from "./runner.js";
 import { withConfiguredLogging } from "./runtime.js";
 import {
   connectMcpServer,
@@ -57,7 +53,7 @@ function createServeRequestHandler(
   };
 }
 
-export function resolveServeSecurityConfig(
+function resolveServeSecurityConfig(
   serverConfig: ServerConfigShape,
 ): ServerConfigShape {
   const token = resolveServerAuthToken(serverConfig.auth);
@@ -97,13 +93,29 @@ export function resolveServeSecurityConfig(
   };
 }
 
+/** Maps commander-parsed `serve` flags (--port is already range-checked) to config overrides. */
+function serveOverrides(options: Record<string, unknown>) {
+  const { host, port, authToken } = options;
+  if (host === "") {
+    throw new CLIError("INVALID_FLAG", "Invalid --host value");
+  }
+  if (authToken === "") {
+    throw new CLIError("INVALID_FLAG", "Invalid --auth-token value");
+  }
+  return {
+    host: typeof host === "string" ? host : undefined,
+    port: typeof port === "string" ? Number(port) : undefined,
+    authToken: typeof authToken === "string" ? authToken : undefined,
+  };
+}
+
 export async function runServeCommand<E>(
   appLayer: Layer.Layer<McpServices, E, never>,
   globals: GlobalCLIOptions,
-  serveArgs: string[],
+  options: Record<string, unknown>,
   config: Config,
 ): Promise<void> {
-  const overrides = parseServeCommandOptions(serveArgs);
+  const overrides = serveOverrides(options);
   const serverConfig = resolveServeSecurityConfig(
     resolveServerConfig(config.server, overrides),
   );

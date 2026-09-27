@@ -10,7 +10,6 @@ import { runProvidersCommand } from "../cli/commands/providers.js";
 import { getConfiguredLanguageModel } from "./AIProvider.js";
 import { Config, normalizeConfig } from "../types.js";
 import {
-  buildOpenAICodexLoginCommand,
   checkOpenAICodexRuntime,
   closeOpenAICodexProviderManager,
   getOpenAICodexConfiguredRoles,
@@ -108,15 +107,11 @@ describe("OpenAICodexProvider", () => {
     ]);
   });
 
-  test("uses the configured file for login before the environment setting", () => {
+  test("prefers the configured file over the environment setting", () => {
     vi.stubEnv("POINK_CODEX_PATH", join(tempDir, "missing.js"));
     expect(resolveOpenAICodexCommand(config)).toEqual({
       command: process.execPath,
       args: [join(tempDir, "codex.js")],
-    });
-    expect(buildOpenAICodexLoginCommand(config, { deviceAuth: true })).toEqual({
-      command: process.execPath,
-      args: [join(tempDir, "codex.js"), "login", "--device-auth"],
     });
   });
 

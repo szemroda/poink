@@ -37,28 +37,6 @@ const DOCUMENT_SELECT_SQL = "SELECT * FROM documents";
 const DOCUMENT_TAG_FILTER_SQL =
   "json_array_length(tags) > 0 AND EXISTS (SELECT 1 FROM json_each(tags) WHERE value = ?)";
 
-function documentBaseArgs(doc: Document): InValue[] {
-  return [
-    doc.id,
-    doc.title,
-    doc.path,
-    doc.addedAt.toISOString(),
-    doc.pageCount,
-    doc.sizeBytes,
-    JSON.stringify(doc.tags),
-    JSON.stringify(doc.metadata ?? {}),
-    doc.fileType,
-  ];
-}
-
-function documentArgs(doc: Document, sourceIdentity: SourceIdentity): InValue[] {
-  return [
-    ...documentBaseArgs(doc),
-    sourceIdentity.algorithm,
-    sourceIdentity.hash,
-  ];
-}
-
 function documentInsertStatement(
   doc: Document,
   sourceIdentity: SourceIdentity,
@@ -68,7 +46,19 @@ function documentInsertStatement(
             (id, title, path, added_at, page_count, size_bytes, tags, metadata,
              file_type, source_hash_algorithm, source_hash)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    args: documentArgs(doc, sourceIdentity),
+    args: [
+      doc.id,
+      doc.title,
+      doc.path,
+      doc.addedAt.toISOString(),
+      doc.pageCount,
+      doc.sizeBytes,
+      JSON.stringify(doc.tags),
+      JSON.stringify(doc.metadata ?? {}),
+      doc.fileType,
+      sourceIdentity.algorithm,
+      sourceIdentity.hash,
+    ],
   };
 }
 
@@ -178,16 +168,6 @@ function makeDocumentRepository(
   const { client, vectors } = db;
 
   return {
-    addDocument: (doc) =>
-      storageEffect("add document", async () => {
-        await client.execute({
-          sql: `INSERT INTO documents
-                  (id, title, path, added_at, page_count, size_bytes, tags, metadata, file_type)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          args: documentBaseArgs(doc),
-        });
-      }),
-
     getDocument: (id) =>
       storageEffect("get document", () =>
         getFirstDecodedRow(
@@ -246,12 +226,6 @@ function makeDocumentRepository(
           sql: "UPDATE documents SET path = ? WHERE id = ?",
           args: [path, id],
         });
-      }),
-
-    addChunks: (chunks) =>
-      storageEffect("add chunks", async () => {
-        if (chunks.length === 0) return;
-        await client.batch(chunks.map(chunkInsertStatement), "write");
       }),
 
     getChunk: (chunkId) =>
@@ -349,14 +323,8 @@ function makeSearchRepository(
       storageEffect("vector search", async () => {
         if (!(await vectors.ensureForQuery(queryEmbedding.length))) return [];
 
-        const {
-          limit = 10,
-          tags,
-          threshold = 0,
-          includeClusterSummaries = false,
-        } = options ?? {};
+        const { limit = 10, tags } = options ?? {};
         const queryVector = JSON.stringify(queryEmbedding);
-        const maxDistance = threshold > 0 ? 2 * (1 - threshold) : null;
         const filterByTags = tags !== undefined && tags.length > 0;
 
         // vector_top_k ranks the whole library before any WHERE clause runs,
@@ -369,27 +337,18 @@ function makeSearchRepository(
                     JOIN embeddings e ON e.rowid = top.id`,
               args: [queryVector, limit],
             };
-        const chunkArgs: InValue[] = [queryVector, ...source.args];
-        const chunkConditions: string[] = [];
+        const args: InValue[] = [queryVector, ...source.args];
+        let tagFilter = "";
         if (filterByTags) {
-          chunkConditions.push(
-            `(${tags
-              .map(
-                () =>
-                  "EXISTS (SELECT 1 FROM json_each(d.tags) WHERE value = ?)",
-              )
-              .join(" OR ")})`,
-          );
-          chunkArgs.push(...tags);
-        }
-        if (maxDistance !== null) {
-          chunkConditions.push(
-            "vector_distance_cos(e.embedding, vector32(?)) <= ?",
-          );
-          chunkArgs.push(queryVector, maxDistance);
+          tagFilter = `WHERE ${tags
+            .map(
+              () => "EXISTS (SELECT 1 FROM json_each(d.tags) WHERE value = ?)",
+            )
+            .join(" OR ")}`;
+          args.push(...tags);
         }
 
-        const chunkResult = await client.execute({
+        const result = await client.execute({
           sql: `SELECT
                   c.id AS chunk_id,
                   c.doc_id,
@@ -401,60 +360,14 @@ function makeSearchRepository(
                 FROM ${source.sql}
                 JOIN chunks c ON c.id = e.chunk_id
                 JOIN documents d ON d.id = c.doc_id
-                ${
-                  chunkConditions.length > 0
-                    ? `WHERE ${chunkConditions.join(" AND ")}`
-                    : ""
-                }
+                ${tagFilter}
                 ORDER BY distance ASC
                 LIMIT ${limit}`,
-          args: chunkArgs,
+          args,
         });
-
-        const results = chunkResult.rows.map((row) =>
-          decodeVectorSearchRow(row, "vector search", "document"),
+        return result.rows.map((row) =>
+          decodeVectorSearchRow(row, "vector search"),
         );
-        if (includeClusterSummaries) {
-          const clusterArgs: InValue[] = [
-            queryVector,
-            queryVector,
-            limit,
-          ];
-          const clusterConditions: string[] = [];
-          if (maxDistance !== null) {
-            clusterConditions.push(
-              "vector_distance_cos(cs.embedding, vector32(?)) <= ?",
-            );
-            clusterArgs.push(queryVector, maxDistance);
-          }
-          const clusterResult = await client.execute({
-            sql: `SELECT
-                    ('cluster-summary-' || cs.id) AS chunk_id,
-                    '' AS doc_id,
-                    'Cluster Summary' AS title,
-                    0 AS page,
-                    cs.id AS chunk_index,
-                    cs.summary AS content,
-                    vector_distance_cos(cs.embedding, vector32(?)) AS distance
-                  FROM vector_top_k('cluster_summaries_idx', vector32(?), ?) AS top
-                  JOIN cluster_summaries cs ON cs.rowid = top.id
-                  ${
-                    clusterConditions.length > 0
-                      ? `WHERE ${clusterConditions.join(" AND ")}`
-                      : ""
-                  }`,
-            args: clusterArgs,
-          });
-          results.push(
-            ...clusterResult.rows.map((row) =>
-              decodeVectorSearchRow(row, "vector search", "cluster_summary"),
-            ),
-          );
-        }
-
-        return results
-          .sort((left, right) => right.score - left.score)
-          .slice(0, limit);
       }),
 
     ftsSearch: (query, options) =>
@@ -489,11 +402,10 @@ function makeSearchRepository(
         );
       }),
 
-    getExpandedContext: (docId, page, chunkIndex, options) =>
+    getExpandedContext: (docId, page, chunkIndex, maxChars) =>
       storageEffect("expand chunk context", async () => {
-        const { maxChars = 2000, direction = "both" } = options ?? {};
         const targetResult = await client.execute({
-          sql: `SELECT page, chunk_index, content
+          sql: `SELECT content
                 FROM chunks
                 WHERE doc_id = ? AND page = ? AND chunk_index = ?`,
           args: [docId, page, chunkIndex],
@@ -501,66 +413,41 @@ function makeSearchRepository(
         const targetRow = targetResult.rows[0];
         if (!targetRow) return null;
 
-        const target = decodeContextRow(targetRow, "expand chunk context");
-        let content = target.content;
-        let startPage = target.page;
-        let startChunkIndex = target.chunkIndex;
-        let endPage = target.page;
-        let endChunkIndex = target.chunkIndex;
+        let content = decodeContextRow(targetRow, "expand chunk context");
+        const fits = (extra: string) =>
+          content.length + extra.length <= maxChars * CONTEXT_LENGTH_TOLERANCE;
 
-        if (direction === "before" || direction === "both") {
-          const beforeResult = await client.execute({
-            sql: `SELECT page, chunk_index, content
-                  FROM chunks
-                  WHERE doc_id = ?
-                    AND (page, chunk_index) < (?, ?)
-                  ORDER BY page DESC, chunk_index DESC
-                  LIMIT ${CONTEXT_QUERY_LIMIT}`,
-            args: [docId, page, chunkIndex],
-          });
-          for (const row of beforeResult.rows) {
-            const previous = decodeContextRow(row, "expand chunk context");
-            if (
-              content.length + previous.content.length >
-              maxChars * CONTEXT_LENGTH_TOLERANCE
-            ) {
-              break;
-            }
-            content = `${previous.content}\n${content}`;
-            startPage = previous.page;
-            startChunkIndex = previous.chunkIndex;
-          }
+        const beforeResult = await client.execute({
+          sql: `SELECT content
+                FROM chunks
+                WHERE doc_id = ?
+                  AND (page, chunk_index) < (?, ?)
+                ORDER BY page DESC, chunk_index DESC
+                LIMIT ${CONTEXT_QUERY_LIMIT}`,
+          args: [docId, page, chunkIndex],
+        });
+        for (const row of beforeResult.rows) {
+          const previous = decodeContextRow(row, "expand chunk context");
+          if (!fits(previous)) break;
+          content = `${previous}\n${content}`;
         }
 
-        if (direction === "after" || direction === "both") {
-          const afterResult = await client.execute({
-            sql: `SELECT page, chunk_index, content
-                  FROM chunks
-                  WHERE doc_id = ?
-                    AND (page, chunk_index) > (?, ?)
-                  ORDER BY page ASC, chunk_index ASC
-                  LIMIT ${CONTEXT_QUERY_LIMIT}`,
-            args: [docId, page, chunkIndex],
-          });
-          for (const row of afterResult.rows) {
-            const next = decodeContextRow(row, "expand chunk context");
-            if (
-              content.length + next.content.length >
-              maxChars * CONTEXT_LENGTH_TOLERANCE
-            ) {
-              break;
-            }
-            content = `${content}\n${next.content}`;
-            endPage = next.page;
-            endChunkIndex = next.chunkIndex;
-          }
+        const afterResult = await client.execute({
+          sql: `SELECT content
+                FROM chunks
+                WHERE doc_id = ?
+                  AND (page, chunk_index) > (?, ?)
+                ORDER BY page ASC, chunk_index ASC
+                LIMIT ${CONTEXT_QUERY_LIMIT}`,
+          args: [docId, page, chunkIndex],
+        });
+        for (const row of afterResult.rows) {
+          const next = decodeContextRow(row, "expand chunk context");
+          if (!fits(next)) break;
+          content = `${content}\n${next}`;
         }
 
-        return {
-          content,
-          startChunk: `p${startPage}c${startChunkIndex}`,
-          endChunk: `p${endPage}c${endChunkIndex}`,
-        };
+        return content;
       }),
   };
 }
@@ -678,11 +565,7 @@ function makeMaintenanceRepository(
         if (statements.length > 0) {
           await client.batch(statements, "write");
         }
-        return {
-          orphanedChunks,
-          orphanedEmbeddings,
-          zeroVectorEmbeddings: 0,
-        };
+        return { orphanedChunks, orphanedEmbeddings };
       }),
 
     checkpoint: () =>

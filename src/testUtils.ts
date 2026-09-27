@@ -1,4 +1,10 @@
 import { rmSync } from "fs";
+import { Effect } from "effect";
+import {
+  DocumentIntegrityRepository,
+  type ChunkInput,
+} from "./services/StorageRepositories.js";
+import type { Document } from "./types.js";
 
 type EnvSnapshot = Record<string, string | undefined>;
 
@@ -81,3 +87,14 @@ export async function removeDirWithRetries(
       `Last error: ${lastError?.message ?? "unknown"}`,
   );
 }
+
+export const TEST_SOURCE_IDENTITY = {
+  algorithm: "sha256",
+  hash: "a".repeat(64),
+} as const;
+
+/** Stores a new document and its chunks, without vectors, through the ingestion write path. */
+export const insertDocument = (doc: Document, chunks: ChunkInput[] = []) =>
+  Effect.flatMap(DocumentIntegrityRepository, (integrity) =>
+    integrity.replaceDocument(doc, chunks, [], TEST_SOURCE_IDENTITY, "add"),
+  );

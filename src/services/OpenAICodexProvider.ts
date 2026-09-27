@@ -22,12 +22,12 @@ const MISSING_RUNTIME_ERROR =
 const AUTHENTICATION_ERROR =
   "Codex authentication is missing or expired. Run: poink providers login --provider openai-codex";
 
-export type CodexProviderManager = {
+type CodexProviderManager = {
   getLanguageModel(modelId: string): LanguageModelV4;
   close(): Promise<void>;
 };
 
-export type CodexCommand = {
+type CodexCommand = {
   command: string;
   args: string[];
 };
@@ -184,21 +184,6 @@ function runtimeCommand({ path }: CodexRuntime): CodexCommand {
   return /\.[cm]?js$/i.test(path)
     ? { command: process.execPath, args: [path] }
     : { command: path, args: [] };
-}
-
-export function buildOpenAICodexLoginCommand(
-  config: Config,
-  options: { deviceAuth?: boolean } = {},
-): CodexCommand {
-  const base = resolveOpenAICodexCommand(config);
-  return {
-    command: base.command,
-    args: [
-      ...base.args,
-      "login",
-      ...(options.deviceAuth ? ["--device-auth"] : []),
-    ],
-  };
 }
 
 export async function runOpenAICodexLogin(
@@ -387,7 +372,7 @@ function getErrorMessage(error: unknown): string {
   return String(error);
 }
 
-export function describeOpenAICodexRuntimeError(error: unknown): string {
+function describeOpenAICodexRuntimeError(error: unknown): string {
   return codexRuntimeError(error).reason;
 }
 

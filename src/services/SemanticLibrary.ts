@@ -1,6 +1,5 @@
 import { Context, Duration, Effect, Layer } from "effect";
 import {
-  type Config,
   DocumentSearchResult,
   DocumentNotFoundError,
   SemanticSearchProviderError,
@@ -78,7 +77,7 @@ function mergeHybridResults(
   return results;
 }
 
-const makeSemanticLibraryService = (_config: Config) =>
+const makeSemanticLibraryService = () =>
   Effect.gen(function* () {
     const documents = yield* DocumentRepository;
     const search = yield* SearchRepository;
@@ -175,9 +174,9 @@ const makeSemanticLibraryService = (_config: Config) =>
         }),
 
       /**
-       * Re-embeds every chunk, concept vector, and cluster summary with the
-       * configured model and swaps them in atomically. This is how a library
-       * moves to a different embedding model or dimension.
+       * Re-embeds every chunk and concept vector with the configured model
+       * and swaps them in atomically. This is how a library moves to a
+       * different embedding model or dimension.
        */
       rebuildEmbeddings: (
         onDocument: (
@@ -215,32 +214,10 @@ const makeSemanticLibraryService = (_config: Config) =>
                   })),
                 );
 
-                const summaries = yield* staging.listClusterSummaries();
-                const withText = summaries.filter(
-                  (summary): summary is { id: number; summary: string } =>
-                    summary.summary !== null,
-                );
-                const summaryVectors = yield* embedTexts(
-                  withText.map((summary) => summary.summary),
-                );
-                const vectorById = new Map(
-                  withText.map((summary, index) => [
-                    summary.id,
-                    summaryVectors[index]!,
-                  ]),
-                );
-                yield* staging.stageClusterSummaryEmbeddings(
-                  summaries.map((summary) => ({
-                    id: summary.id,
-                    embedding: vectorById.get(summary.id) ?? null,
-                  })),
-                );
-
                 return {
                   documents: docs.length,
                   chunks: chunkCount,
                   concepts: concepts.length,
-                  clusterSummaries: summaries.length,
                   dimensions,
                 };
               }),
@@ -260,6 +237,6 @@ export class SemanticLibrary extends Context.Tag("SemanticLibrary")<
   SemanticLibraryService
 >() {}
 
-export function makeSemanticLibrary(config: Config) {
-  return Layer.effect(SemanticLibrary, makeSemanticLibraryService(config));
+export function makeSemanticLibrary() {
+  return Layer.effect(SemanticLibrary, makeSemanticLibraryService());
 }

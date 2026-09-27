@@ -24,7 +24,7 @@ import type {
   SearchRequest,
 } from "../searchInput.js";
 
-export type SearchDocumentOutput = {
+type SearchDocumentOutput = {
   chunkId: string;
   docId: string;
   title: string;
@@ -38,7 +38,6 @@ export type SearchDocumentOutput = {
     scoreType: DocumentSearchResult["scoreType"];
     vectorScore?: number;
     ftsRank?: number;
-    expandedRange?: { start: number; end: number };
   };
 };
 
@@ -132,9 +131,6 @@ export function toSearchDocumentOutput(
         ? { vectorScore: result.vectorScore }
         : {}),
       ...(result.ftsRank !== undefined ? { ftsRank: result.ftsRank } : {}),
-      ...(expandChars > 0 && result.expandedRange
-        ? { expandedRange: result.expandedRange }
-        : {}),
     };
   }
 
@@ -248,7 +244,6 @@ function runSingleSearch(
       expand: expandChars,
       conceptsOnly,
       docsOnly,
-      includeClusters,
     } = input;
     const tags = tag ? [tag] : undefined;
     if (!query) {
@@ -286,7 +281,6 @@ function runSingleSearch(
             tags,
             hybrid: !ftsOnly,
             expandChars,
-            includeClusterSummaries: includeClusters,
           }),
           documentMode,
         )
@@ -320,7 +314,6 @@ function runSingleSearch(
             expandChars,
             conceptsOnly,
             docsOnly,
-            includeClusters,
           },
           ...compactPayload,
         }
@@ -332,12 +325,8 @@ function runSingleSearch(
         title: result.title,
         docId: result.docId,
         chunkId: result.chunkId,
-        score: result.score,
       })),
-      concepts: conceptResults.map((concept) => ({
-        id: concept.id,
-        prefLabel: concept.prefLabel,
-      })),
+      concepts: conceptResults.map((concept) => ({ id: concept.id })),
       hadExpand: expandChars > 0,
       wasFts: ftsOnly,
     };
@@ -473,7 +462,6 @@ function runSearchPack(
         title: result.title,
         docId: result.docId,
         chunkId: result.chunkId,
-        score: result.score,
       })),
     };
 

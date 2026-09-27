@@ -26,7 +26,6 @@ interface RebuildSummary {
   embedding: { provider: string; model: string };
   dimensions: number;
   concepts: number;
-  clusterSummaries: number;
 }
 
 function createReindexOutput(
@@ -42,11 +41,7 @@ function createReindexOutput(
       docId: docId ?? null,
       rebuild,
     },
-    agentResult: {
-      _tag: "reindex",
-      count: summary.succeeded,
-      errors: summary.failed,
-    },
+    agentResult: { _tag: "reindex" },
   };
 }
 
@@ -111,7 +106,7 @@ function rebuildLibrary(
       Console.log(`[${index + 1}/${total}] ${doc.title}`),
     );
     yield* Console.log(
-      `\nOK Rebuilt ${rebuilt.chunks} chunk vector(s) across ${rebuilt.documents} document(s), ${rebuilt.concepts} concept vector(s), and ${rebuilt.clusterSummaries} cluster summaries (${rebuilt.dimensions} dimensions)`,
+      `\nOK Rebuilt ${rebuilt.chunks} chunk vector(s) across ${rebuilt.documents} document(s) and ${rebuilt.concepts} concept vector(s) (${rebuilt.dimensions} dimensions)`,
     );
 
     return createReindexOutput(
@@ -128,7 +123,6 @@ function rebuildLibrary(
         embedding: { provider: embedding.provider, model: embedding.model },
         dimensions: rebuilt.dimensions,
         concepts: rebuilt.concepts,
-        clusterSummaries: rebuilt.clusterSummaries,
       },
     );
   });
@@ -173,5 +167,5 @@ export function runReindexCommand(
         ? yield* reindexDocument(context, options.doc, cleanFirst)
         : yield* rebuildLibrary(context, cleanFirst);
     }),
-    options);
+  );
 }

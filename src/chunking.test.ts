@@ -6,25 +6,11 @@ import {
   buildChunkerMetadata,
   buildChunkOverlapPrefix,
   chunkNormalizedText,
-  inferFileTypeFromPath,
   parseChunkerMetadata,
 } from "./chunking.js";
 import { Document } from "./types.js";
 
 const CONFIG = { chunkSize: 512, chunkOverlap: 50 };
-
-test.each([
-  ["paper.pdf", "pdf"],
-  ["notes.md", "markdown"],
-  ["NOTES.MD", "markdown"],
-  ["notes.markdown", "markdown"],
-  ["brief.docx", "docx"],
-  ["draft.odt", "odt"],
-  ["draft.fodt", "odt"],
-  ["notes.txt", "txt"],
-] as const)("infers %s as %s", (path, fileType) => {
-  expect(inferFileTypeFromPath(path)).toBe(fileType);
-});
 
 test("rejects invalid chunking config when overlap is not smaller than chunk size", () => {
   expect(() => assertValidChunking(100, 100)).toThrow(

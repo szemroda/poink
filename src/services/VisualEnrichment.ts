@@ -11,7 +11,7 @@ import { OfficeExtractor } from "./OfficeExtractor.js";
 import { PDFExtractor } from "./PDFExtractor.js";
 import type { DetectedSourceType } from "./SourceFileType.js";
 
-export type VisualSourceKind = "pdf" | "docx";
+type VisualSourceKind = "pdf" | "docx";
 export type VisualsMode = "disabled" | "config" | "explicit";
 
 export interface ExtractedDocumentImage {
@@ -31,9 +31,7 @@ export interface ExtractedDocumentImage {
 
 export interface VisualDescriptionChunk {
   page: number;
-  chunkIndex: number;
   content: string;
-  embeddingContent?: string;
 }
 
 export class VisualEnrichmentError {
@@ -109,7 +107,7 @@ const systemPrompt = dedent`
   If text or numbers are unreadable, say so instead of guessing.
 `;
 
-export function buildVisualPrompt(
+function buildVisualPrompt(
   image: ExtractedDocumentImage,
   options: { title?: string },
 ): string {
@@ -242,7 +240,7 @@ export function makeVisualEnrichment(config: Config) {
           const retained = filterVisualImages(extracted, visualsConfig);
           return yield* Effect.forEach(
             retained,
-            (image, index) =>
+            (image) =>
               Effect.tryPromise({
                 try: (signal) =>
                   describeImage(
@@ -266,7 +264,6 @@ export function makeVisualEnrichment(config: Config) {
                 }),
                 Effect.map((description) => ({
                   page: image.page,
-                  chunkIndex: index,
                   content: buildVisualChunkContent(image, description),
                 })),
               ),

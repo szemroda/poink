@@ -140,7 +140,6 @@ describe("VisualEnrichment", () => {
     expect(Either.getOrThrow(result)).toEqual([
       {
         page: 2,
-        chunkIndex: 0,
         content: expect.stringContaining("A concise visual description."),
       },
     ]);
@@ -190,9 +189,9 @@ describe("VisualEnrichment", () => {
 
     expect(maxActive).toBe(2);
     expect(Either.getOrThrow(result)).toEqual([
-      { page: 2, chunkIndex: 0, content: expect.stringContaining("Description 1") },
-      { page: 2, chunkIndex: 1, content: expect.stringContaining("Description 2") },
-      { page: 2, chunkIndex: 2, content: expect.stringContaining("Description 3") },
+      { page: 2, content: expect.stringContaining("Description 1") },
+      { page: 2, content: expect.stringContaining("Description 2") },
+      { page: 2, content: expect.stringContaining("Description 3") },
     ]);
   });
 

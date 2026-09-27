@@ -92,7 +92,7 @@ function makeTestConfig(libraryPath: string, options: TestConfigOptions) {
     },
     models: modelsFor(options.modelProvider ?? "ollama"),
     providers: {
-      ollama: { baseUrl: "http://127.0.0.1:1", autoPull: true },
+      ollama: { baseUrl: "http://127.0.0.1:1" },
       gateway: { apiKeyEnv: "AI_GATEWAY_API_KEY" },
       openai: {
         apiKeyEnv: "OPENAI_API_KEY",

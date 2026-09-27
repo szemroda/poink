@@ -111,7 +111,7 @@ function runShowConfig(
       `Judge:       ${config.models.judge.provider} / ${config.models.judge.model} (reasoning: ${config.models.judge.reasoning ?? "provider default"})`,
       `OpenAI Codex:${openAICodexRoles.length > 0 ? ` configured for ${openAICodexRoles.join(", ")}` : " not configured for language roles"}`,
       "",
-      `Ollama:      ${config.providers.ollama.baseUrl} (auto-pull: ${config.providers.ollama.autoPull ? "on" : "off"})`,
+      `Ollama:      ${config.providers.ollama.baseUrl}`,
       "",
       "Storage:     libSQL",
       `Database:    ${config.storage.libsql.url}`,
@@ -155,7 +155,7 @@ function runShowConfig(
           defaultFormat: config.cli.globalFlags.format,
         },
       },
-      agentResult: { _tag: "config" as const, subcommand: "show" },
+      agentResult: { _tag: "config" as const },
     };
   });
 }
@@ -197,7 +197,7 @@ function runGetConfig(
     );
     return {
       resultPayload: { path, value: outputValue },
-      agentResult: { _tag: "config" as const, subcommand: "get" },
+      agentResult: { _tag: "config" as const },
     };
   });
 }
@@ -262,7 +262,6 @@ function runSetConfig(
       resultPayload: { path, value: outputValue },
       agentResult: {
         _tag: "config" as const,
-        subcommand: "set",
         embeddingChanged:
           before.provider !== after.provider || before.model !== after.model,
       },
@@ -299,7 +298,7 @@ export function runConfigCommand(
     return Console.log(JSON.stringify(CONFIG_JSON_SCHEMA, null, 2)).pipe(
       Effect.as({
         resultPayload: CONFIG_JSON_SCHEMA,
-        agentResult: { _tag: "config" as const, subcommand: "schema" },
+        agentResult: { _tag: "config" as const },
       }),
     );
   }

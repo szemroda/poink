@@ -47,7 +47,6 @@ function runStoreLibraryCommand(
         contextGlobals.verbose,
         options,
       ),
-    options,
   );
 }
 

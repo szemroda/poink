@@ -114,7 +114,6 @@ export function runAddCommand(
         }
 
         const filename = filenameFromURL(pathOrUrl);
-        localPath = join(downloadsDir, filename);
 
         if (!title) {
           title = basename(filename).replace(DOCUMENT_TITLE_EXTENSION_RE, "");
@@ -233,5 +232,5 @@ export function runAddCommand(
         agentResult: { _tag: "add" as const, title: doc.title, id: doc.id },
       };
     }),
-    options);
+  );
 }

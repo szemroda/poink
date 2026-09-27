@@ -47,7 +47,6 @@ export type PageExtractionOptions = {
   outputFormats: ReadonlySet<PageExportFormat>;
   outputDirectory?: string;
   pngWidth: number;
-  cwd?: string;
 };
 
 export type PageExtractionResult = {
@@ -735,7 +734,7 @@ async function prepareOutput(
   }
   return prepareExplicitOutput(
     options.outputDirectory,
-    options.cwd ?? process.cwd(),
+    process.cwd(),
     documentId,
     pages,
     options.outputFormats,

@@ -15,7 +15,7 @@ import * as yauzl from "yauzl";
 import { DOMParser } from "@xmldom/xmldom";
 import { resolveUserPath } from "../pathUtils.js";
 import { readFileBytes } from "../runtime.js";
-import { LibraryConfig, type DocumentFileType } from "../types.js";
+import type { LibraryConfig } from "../types.js";
 import { chunkText, sanitizeText } from "./PDFExtractor.js";
 import type { ExtractedDocumentImage } from "./VisualEnrichment.js";
 import type { OfficeSourceFormat } from "./SourceFileType.js";
@@ -39,19 +39,18 @@ export class OfficeExtractionError extends Schema.TaggedError<OfficeExtractionEr
 // Types
 // ============================================================================
 
-export interface ExtractedOfficeSection {
+interface ExtractedOfficeSection {
   section: number;
   heading: string;
   text: string;
 }
 
-export interface ExtractedOfficeDocument {
-  fileType: Extract<DocumentFileType, "docx" | "odt">;
+interface ExtractedOfficeDocument {
   sections: ExtractedOfficeSection[];
   sectionCount: number;
 }
 
-export interface ProcessedChunk {
+interface ProcessedChunk {
   page: number;
   chunkIndex: number;
   content: string;
@@ -555,7 +554,6 @@ async function extractDocx(path: string): Promise<ExtractedOfficeDocument> {
   }
 
   return {
-    fileType: "docx",
     sections,
     sectionCount: sections.length,
   };
@@ -672,7 +670,6 @@ async function extractOdt(
 
   const sections = sectionsFromOdfXml(xml);
   return {
-    fileType: "odt",
     sections,
     sectionCount: sections.length,
   };
@@ -744,7 +741,3 @@ export function makeOfficeExtractor(config: LibraryConfig) {
     },
   );
 }
-
-export const OfficeExtractorLive = Layer.unwrapEffect(
-  Effect.sync(() => makeOfficeExtractor(LibraryConfig.fromEnv())),
-);

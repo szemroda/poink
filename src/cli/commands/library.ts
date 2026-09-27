@@ -12,7 +12,7 @@ import {
   type DocRelocateCommandError,
 } from "./docRelocate.js";
 
-export type DocumentSummary = Pick<
+type DocumentSummary = Pick<
   Document,
   "id" | "title" | "pageCount" | "tags" | "fileType"
 >;
@@ -33,7 +33,7 @@ type EffectMethodError<T> = T extends (
   ? E
   : never;
 
-export type LibraryCommandError =
+type LibraryCommandError =
   | CLIError
   | DocRelocateCommandError
   | PageExtractCommandError
@@ -51,16 +51,6 @@ export function toDocumentSummary(doc: Document): DocumentSummary {
     tags: [...doc.tags],
     fileType: doc.fileType,
   };
-}
-
-function optionValue(args: string[], name: string): string | undefined {
-  const equalsPrefix = `${name}=`;
-  for (let index = 0; index < args.length; index++) {
-    const arg = args[index]!;
-    if (arg === name) return args[index + 1];
-    if (arg.startsWith(equalsPrefix)) return arg.slice(equalsPrefix.length);
-  }
-  return undefined;
 }
 
 function failWithMessage(
@@ -119,14 +109,12 @@ const runChunkCommand: LibraryCommandHandler = ({
     return { resultPayload: chunk, agentResult: null };
   });
 
-function pageOptionValue(
-  args: string[],
-  options: Record<string, unknown>,
-): string | undefined {
+/** `--page` arrives as a string from commander and as a number from MCP. */
+function pageOptionValue(options: Record<string, unknown>): string | undefined {
   if (typeof options.page === "number" || typeof options.page === "string") {
     return String(options.page);
   }
-  return optionValue(args.slice(3), "--page");
+  return undefined;
 }
 
 const runDocumentChunksCommand: LibraryCommandHandler = ({
@@ -160,7 +148,7 @@ const runDocumentChunksCommand: LibraryCommandHandler = ({
       );
     }
 
-    const pageValue = pageOptionValue(args, options);
+    const pageValue = pageOptionValue(options);
     const page = pageValue ? Number(pageValue) : undefined;
     if (page !== undefined && (Number.isNaN(page) || page <= 0)) {
       return yield* failWithMessage(
@@ -281,24 +269,14 @@ const runPageCommand: LibraryCommandHandler = ({
     return { resultPayload, agentResult: null };
   });
 
-function tagOptionValue(
-  args: string[],
-  options: Record<string, unknown>,
-): string | undefined {
-  return typeof options.tag === "string"
-    ? options.tag
-    : optionValue(args.slice(1), "--tag");
-}
-
 const runListCommand: LibraryCommandHandler = ({
-  args,
   library,
   Console,
   verbose,
   options,
 }) =>
   Effect.gen(function* () {
-    const tag = tagOptionValue(args, options);
+    const tag = typeof options.tag === "string" ? options.tag : undefined;
     const docs = yield* library.list(tag);
     const resultPayload = verbose
       ? { tag: tag ?? null, documents: docs }
@@ -319,7 +297,6 @@ const runListCommand: LibraryCommandHandler = ({
       resultPayload,
       agentResult: {
         _tag: "list",
-        count: docs.length,
         tag,
         firstDoc:
           docs.length > 0
@@ -370,7 +347,6 @@ const runReadCommand: LibraryCommandHandler = ({
       agentResult: {
         _tag: "read",
         title: doc.title,
-        id: doc.id,
         tags: [...doc.tags],
       },
     };
@@ -393,7 +369,7 @@ const runRemoveCommand: LibraryCommandHandler = ({ args, library, Console }) =>
     yield* Console.log(`OK Removed: ${doc.title}`);
     return {
       resultPayload: doc,
-      agentResult: { _tag: "remove", title: doc.title },
+      agentResult: { _tag: "remove" },
     };
   });
 
@@ -431,12 +407,7 @@ const runStatsCommand: LibraryCommandHandler = ({ library, Console }) =>
     yield* Console.log(`Location:   ${stats.libraryPath}`);
     return {
       resultPayload: stats,
-      agentResult: {
-        _tag: "stats",
-        documents: stats.documents,
-        chunks: stats.chunks,
-        embeddings: stats.embeddings,
-      },
+      agentResult: { _tag: "stats", documents: stats.documents },
     };
   });
 

@@ -5,7 +5,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, test } from "vitest";
 import { Config, Document, SearchOptions } from "../types.js";
-import { removeDirWithRetries } from "../testUtils.js";
+import {
+  TEST_SOURCE_IDENTITY,
+  insertDocument,
+  removeDirWithRetries,
+} from "../testUtils.js";
 import {
   DocumentIntegrityRepository,
   DocumentRepository,
@@ -70,11 +74,6 @@ function makeChunk(
   return { id, docId: "doc-1", page: 1, chunkIndex: 0, content, ...overrides };
 }
 
-const TEST_SOURCE_IDENTITY = {
-  algorithm: "sha256" as const,
-  hash: "a".repeat(64),
-};
-
 type StorageServices =
   | DocumentRepository
   | DocumentIntegrityRepository
@@ -131,14 +130,15 @@ describe("libSQL storage", () => {
   });
 
   test("shares one database across document and taxonomy services", async () => {
+    const url = fileDatabaseUrl();
+    const doc = makeDocument();
     await runStorage(
-      makeConfig(),
+      makeConfig(url),
       Effect.gen(function* () {
         const documents = yield* DocumentRepository;
         const taxonomy = yield* TaxonomyService;
-        const doc = makeDocument();
 
-        yield* documents.addDocument(doc);
+        yield* insertDocument(doc);
         yield* taxonomy.addConcept({
           id: "concept-1",
           prefLabel: "Concept",
@@ -146,16 +146,17 @@ describe("libSQL storage", () => {
         yield* taxonomy.assignToDocument(doc.id, "concept-1");
 
         expect(yield* documents.getDocument(doc.id)).toEqual(doc);
-        expect(yield* taxonomy.getDocumentConcepts(doc.id)).toEqual([
-          {
-            docId: doc.id,
-            conceptId: "concept-1",
-            confidence: 1,
-            source: "llm",
-          },
-        ]);
       }),
     );
+
+    const assignments = await withClient(url, (execute) =>
+      execute(
+        "SELECT doc_id, concept_id, confidence, source FROM document_concepts",
+      ),
+    );
+    expect(assignments.rows.map((row) => ({ ...row }))).toEqual([
+      { doc_id: doc.id, concept_id: "concept-1", confidence: 1, source: "llm" },
+    ]);
   });
 
   test("atomically replaces a document, chunks, and embeddings", async () => {
@@ -367,32 +368,22 @@ describe("libSQL storage", () => {
     await runStorage(
       makeConfig(),
       Effect.gen(function* () {
-        const documents = yield* DocumentRepository;
         const search = yield* SearchRepository;
-        yield* documents.addDocument(makeDocument());
-        yield* documents.addDocument(makeDocument("other"));
-        yield* documents.addChunks([
+        yield* insertDocument(makeDocument(), [
           makeChunk("e", "E", { page: 3 }),
           makeChunk("b", "B", { chunkIndex: 1 }),
           makeChunk("c", "C", { page: 2 }),
           makeChunk("a", "A"),
           makeChunk("d", "D", { page: 2, chunkIndex: 1 }),
+        ]);
+        yield* insertDocument(makeDocument("other"), [
           makeChunk("other", "Other", { docId: "other", page: 2 }),
         ]);
 
-        for (const [direction, content, startChunk, endChunk] of [
-          ["before", "A\nB\nC", "p1c0", "p2c0"],
-          ["after", "C\nD\nE", "p2c0", "p3c0"],
-          ["both", "A\nB\nC\nD\nE", "p1c0", "p3c0"],
-        ] as const) {
-          expect(yield* search.getExpandedContext("doc-1", 2, 0, {
-            direction,
-            maxChars: 100,
-          })).toEqual({ content, startChunk, endChunk });
-        }
-        expect(yield* search.getExpandedContext("doc-1", 2, 0, {
-          maxChars: 1,
-        })).toEqual({ content: "C", startChunk: "p2c0", endChunk: "p2c0" });
+        expect(yield* search.getExpandedContext("doc-1", 2, 0, 100)).toBe(
+          "A\nB\nC\nD\nE",
+        );
+        expect(yield* search.getExpandedContext("doc-1", 2, 0, 1)).toBe("C");
       }),
     );
   });
@@ -471,9 +462,7 @@ describe("libSQL storage", () => {
     const url = fileDatabaseUrl();
     await runStorage(
       makeConfig(url),
-      Effect.flatMap(DocumentRepository, (documents) =>
-        documents.addDocument(makeDocument()),
-      ),
+      insertDocument(makeDocument()),
     );
     await withClient(url, (execute) =>
       execute(
@@ -679,12 +668,6 @@ describe("libSQL storage", () => {
           yield* taxonomy.storeConceptEmbedding("concept-1", [1, 0, 0]);
         }),
       );
-      await withClient(url, (execute) =>
-        execute(
-          `INSERT INTO cluster_summaries (id, centroid, summary, embedding, chunk_count)
-           VALUES (1, vector32('[1, 0, 0]'), 'Summary', vector32('[1, 0, 0]'), 1)`,
-        ),
-      );
 
       const modelB = withEmbeddingModel(url, "model-b");
       const vector = [0, 0, 0, 1];
@@ -698,21 +681,12 @@ describe("libSQL storage", () => {
             yield* staging.stageConceptEmbeddings([
               { conceptId: "concept-1", embedding: vector },
             ]);
-            yield* staging.stageClusterSummaryEmbeddings([
-              { id: 1, embedding: vector },
-            ]);
-            return {
-              concepts: yield* staging.listEmbeddedConcepts(),
-              clusterSummaries: yield* staging.listClusterSummaries(),
-            };
+            return yield* staging.listEmbeddedConcepts();
           }),
         ),
       );
 
-      expect(sources).toEqual({
-        concepts: [{ id: "concept-1", prefLabel: "Concept" }],
-        clusterSummaries: [{ id: 1, summary: "Summary" }],
-      });
+      expect(sources).toEqual([{ id: "concept-1", prefLabel: "Concept" }]);
       expect(await readIdentity(url)).toEqual({
         "embedding.dimensions": "4",
         "embedding.provider": Config.Default.models.embedding.provider,
@@ -724,23 +698,13 @@ describe("libSQL storage", () => {
           const search = yield* SearchRepository;
           const taxonomy = yield* TaxonomyService;
           return {
-            hits: yield* search.vectorSearch(
-              vector,
-              new SearchOptions({ includeClusterSummaries: true }),
-            ),
+            hits: yield* search.vectorSearch(vector),
             concepts: yield* taxonomy.findSimilarConcepts(vector, 0.9),
           };
         }),
       );
-      expect(found.hits.map((hit) => hit.chunkId).sort()).toEqual([
-        "cluster-summary-1",
-        "doc-1-chunk",
-      ]);
+      expect(found.hits.map((hit) => hit.chunkId)).toEqual(["doc-1-chunk"]);
       expect(found.concepts.map((concept) => concept.id)).toEqual(["concept-1"]);
-      const centroid = await withClient(url, (execute) =>
-        execute("SELECT centroid FROM cluster_summaries"),
-      );
-      expect(centroid.rows[0]?.centroid).toBeNull();
       expect(await readStagingTables(url)).toEqual([]);
     });
 
@@ -766,7 +730,7 @@ describe("libSQL storage", () => {
           "newer rebuild",
         );
         await vectors.dropStaging(first);
-        expect(await staged()).toBe(3);
+        expect(await staged()).toBe(2);
         await vectors.commitStaging(4, second);
         expect(await staged()).toBe(0);
       } finally {
@@ -889,9 +853,7 @@ describe("libSQL storage", () => {
     const url = fileDatabaseUrl();
     await runStorage(
       makeConfig(url),
-      Effect.flatMap(DocumentRepository, (documents) =>
-        documents.addDocument(makeDocument()),
-      ),
+      insertDocument(makeDocument()),
     );
     await withClient(url, (execute) =>
       execute("UPDATE documents SET tags = '{invalid' WHERE id = 'doc-1'"),

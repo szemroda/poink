@@ -1,11 +1,12 @@
 import { Effect, Layer } from "effect";
 import { describe, expect, it } from "vitest";
 import { getPathFilename } from "../pathUtils.js";
+import { insertDocument } from "../testUtils.js";
 import { Config, Document } from "../types.js";
 import { EmbeddingProvider } from "./EmbeddingProvider.js";
-import { makeStorageLayer } from "./StorageLayer.js";
-import { DocumentRepository } from "./StorageRepositories.js";
-import { TaxonomyService } from "./TaxonomyService.js";
+import { LibSQLClient, makeLibSQLClient } from "./LibSQLClient.js";
+import { makeLibSQLRepositories } from "./LibSQLRepositories.js";
+import { makeTaxonomyService, TaxonomyService } from "./TaxonomyService.js";
 import {
   AutoTagger,
   cleanTitle,
@@ -89,7 +90,11 @@ describe("AutoTagger.assignConcepts", () => {
       ...Config.Default,
       storage: { libsql: { url: ":memory:" } },
     });
-    const storage = makeStorageLayer(config);
+    // Exposes the raw client too: no service reads document_concepts back.
+    const storage = Layer.merge(
+      makeLibSQLRepositories(),
+      makeTaxonomyService(),
+    ).pipe(Layer.provideMerge(makeLibSQLClient(config)));
     const embeddings = Layer.succeed(EmbeddingProvider, {
       provider: "ollama",
       checkHealth: () => Effect.void,
@@ -116,9 +121,8 @@ describe("AutoTagger.assignConcepts", () => {
 
     const assigned = await Effect.runPromise(
       Effect.gen(function* () {
-        const documents = yield* DocumentRepository;
         const taxonomy = yield* TaxonomyService;
-        yield* documents.addDocument(
+        yield* insertDocument(
           new Document({
             id: "doc-1",
             title: "Notes",
@@ -135,11 +139,16 @@ describe("AutoTagger.assignConcepts", () => {
 
         const tagger = yield* AutoTagger;
         yield* tagger.assignConcepts("doc-1", enrichment);
-        return yield* taxonomy.getDocumentConcepts("doc-1");
+        const { client } = yield* LibSQLClient;
+        return yield* Effect.promise(() =>
+          client.execute(
+            "SELECT concept_id FROM document_concepts WHERE doc_id = 'doc-1'",
+          ),
+        );
       }).pipe(Effect.provide(layer), Effect.scoped),
     );
 
-    expect(assigned.map((assignment) => assignment.conceptId).sort()).toEqual([
+    expect(assigned.rows.map((row) => row.concept_id).sort()).toEqual([
       "programming/rust",
       "programming/zig",
     ]);

@@ -17,9 +17,7 @@ function makeResult(
     scoreType: "cosine_similarity",
     vectorScore: 0.75,
     matchType: "vector",
-    entityType: "document",
     expandedContent: "context before\nmatching chunk\ncontext after",
-    expandedRange: { start: 2, end: 4 },
     ...overrides,
   });
 }
@@ -63,7 +61,6 @@ describe("search output projection", () => {
       rawScore: 0.75,
       scoreType: "cosine_similarity",
       vectorScore: 0.75,
-      expandedRange: { start: 2, end: 4 },
     });
     expect(output).not.toHaveProperty("rawScore");
     expect(output).not.toHaveProperty("expandedContent");

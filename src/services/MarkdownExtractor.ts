@@ -24,7 +24,7 @@ import {
   MarkdownExtractionError,
   MarkdownNotFoundError,
 } from "../errors.js";
-import { LibraryConfig } from "../types.js";
+import type { LibraryConfig } from "../types.js";
 
 export {
   MarkdownExtractionError,
@@ -38,20 +38,16 @@ export {
 /**
  * Frontmatter data extracted from markdown
  */
-export interface MarkdownFrontmatter {
+interface MarkdownFrontmatter {
   title?: string;
-  description?: string;
-  tags?: string[];
-  [key: string]: unknown;
 }
 
 /**
  * A section of markdown content, typically delimited by headings
  */
-export interface ExtractedSection {
+interface ExtractedSection {
   section: number;
   heading: string;
-  headingLevel: number;
   headingPath: string[];
   text: string;
 }
@@ -59,16 +55,14 @@ export interface ExtractedSection {
 /**
  * Result of extracting markdown content
  */
-export interface ExtractedMarkdown {
-  frontmatter: MarkdownFrontmatter;
+interface ExtractedMarkdown {
   sections: ExtractedSection[];
-  sectionCount: number;
 }
 
 /**
  * A chunk of content ready for embedding
  */
-export interface ProcessedChunk {
+interface ProcessedChunk {
   page: number; // Using section number as "page" for consistency with PDF model
   chunkIndex: number;
   content: string;
@@ -77,7 +71,6 @@ export interface ProcessedChunk {
 interface ProcessedMarkdown {
   pageCount: number;
   chunks: ProcessedChunk[];
-  frontmatter: MarkdownFrontmatter;
 }
 
 // ============================================================================
@@ -88,7 +81,7 @@ export class MarkdownExtractor extends Context.Tag("MarkdownExtractor")<
   MarkdownExtractor,
   {
     /**
-     * Extract markdown into sections with frontmatter
+     * Extract markdown into heading-delimited sections
      */
     readonly extract: (
       path: string,
@@ -126,7 +119,7 @@ export class MarkdownExtractor extends Context.Tag("MarkdownExtractor")<
 /**
  * Sanitize text by removing null bytes that crash PostgreSQL TEXT columns
  */
-export function sanitizeText(text: string): string {
+function sanitizeText(text: string): string {
   // biome-ignore lint/suspicious/noControlCharactersInRegex: intentionally stripping null bytes
   return text.replace(/\x00/g, "");
 }
@@ -228,7 +221,6 @@ function parseMarkdownAST(content: string): ExtractedSection[] {
   const sections: ExtractedSection[] = [];
   let currentSection = 0;
   let currentHeading = "";
-  let currentHeadingLevel = 0;
   let currentHeadingPath: string[] = [];
   let currentContent: RootContent[] = [];
   const headingStack: string[] = [];
@@ -247,7 +239,6 @@ function parseMarkdownAST(content: string): ExtractedSection[] {
         sections.push({
           section: currentSection || 1,
           heading: currentHeading,
-          headingLevel: currentHeadingLevel,
           headingPath: currentHeadingPath,
           text,
         });
@@ -269,13 +260,9 @@ function parseMarkdownAST(content: string): ExtractedSection[] {
       // Start new section
       currentSection = sections.length + 1;
       currentHeading = mdastToString(node);
-      currentHeadingLevel = node.depth;
-      headingStack[currentHeadingLevel - 1] = currentHeading;
-      headingStack.length = currentHeadingLevel;
-      currentHeadingPath = compactHeadingPath(
-        headingStack,
-        currentHeadingLevel,
-      );
+      headingStack[node.depth - 1] = currentHeading;
+      headingStack.length = node.depth;
+      currentHeadingPath = compactHeadingPath(headingStack, node.depth);
       currentContent = [];
     } else {
       // Add to current section content
@@ -295,15 +282,7 @@ function parseMarkdownAST(content: string): ExtractedSection[] {
 function extractFrontmatterData(content: string): MarkdownFrontmatter {
   try {
     const { data } = matter(content);
-    return {
-      ...data,
-      title: typeof data.title === "string" ? data.title : undefined,
-      description:
-        typeof data.description === "string" ? data.description : undefined,
-      tags: Array.isArray(data.tags)
-        ? data.tags.filter((t): t is string => typeof t === "string")
-        : undefined,
-    };
+    return typeof data.title === "string" ? { title: data.title } : {};
   } catch {
     return {};
   }
@@ -489,14 +468,9 @@ function processSections(
 export function makeMarkdownExtractor(config: LibraryConfig) {
   return Layer.succeed(MarkdownExtractor, {
     extract: (path: string) =>
-      Effect.map(readMarkdownContent(path), (content) => {
-        const sections = parseMarkdownAST(content);
-        return {
-          frontmatter: extractFrontmatterData(content),
-          sections,
-          sectionCount: sections.length,
-        };
-      }),
+      Effect.map(readMarkdownContent(path), (content) => ({
+        sections: parseMarkdownAST(content),
+      })),
 
     process: (path: string) =>
       Effect.map(readMarkdownContent(path), (content) => {
@@ -504,7 +478,6 @@ export function makeMarkdownExtractor(config: LibraryConfig) {
         return {
           pageCount: sections.length,
           chunks: processSections(sections, config),
-          frontmatter: extractFrontmatterData(content),
         };
       }),
 
@@ -514,7 +487,3 @@ export function makeMarkdownExtractor(config: LibraryConfig) {
       ),
   });
 }
-
-export const MarkdownExtractorLive = Layer.unwrapEffect(
-  Effect.sync(() => makeMarkdownExtractor(LibraryConfig.fromEnv())),
-);

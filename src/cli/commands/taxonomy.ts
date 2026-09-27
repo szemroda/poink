@@ -273,7 +273,7 @@ function runList(
           ? concepts.map(publicConcept)
           : concepts.map(summarizeConcept),
       },
-      { _tag: "taxonomyList", count: concepts.length },
+      { _tag: "taxonomyList" },
     );
   });
 }
@@ -550,10 +550,7 @@ export function runTaxonomyCommand(
   globals: GlobalCLIOptions<SearchCliLibrary>,
   options: TaxonomyCommandOptions = {},
 ) {
-  return runCommandWithContext(
-    args,
-    globals,
-    (context) => runTaxonomySubcommand(context, options),
-    options,
+  return runCommandWithContext(args, globals, (context) =>
+    runTaxonomySubcommand(context, options),
   );
 }

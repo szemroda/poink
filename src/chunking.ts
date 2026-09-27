@@ -33,9 +33,6 @@ type ChunkerAssessment = {
 };
 
 const CHUNK_UNIT = "chars" as const;
-const MARKDOWN_EXTENSIONS = [".md", ".markdown"] as const;
-const ODT_EXTENSIONS = [".odt", ".fodt"] as const;
-const TXT_EXTENSIONS = [".txt"] as const;
 
 export const CURRENT_CHUNKER: Record<DocumentFileType, ChunkerIdentity> = {
   // v7: shared chunking preserves short trailing chunks + optional visual enrichment chunks
@@ -76,10 +73,6 @@ function hardSplitText(text: string, chunkSize: number): string[] {
     chunks.push(text.slice(index, index + chunkSize).trim());
   }
   return chunks;
-}
-
-function hasExtension(path: string, extensions: readonly string[]): boolean {
-  return extensions.some((extension) => path.endsWith(extension));
 }
 
 function chunkerAssessment(
@@ -147,7 +140,7 @@ export function applyAdjacentChunkOverlap(
   });
 }
 
-export function splitMarkdownTable(table: string, maxSize: number): string[] {
+function splitMarkdownTable(table: string, maxSize: number): string[] {
   const lines = table.trim().split("\n");
   if (lines.length < 3) return [table];
 
@@ -265,15 +258,6 @@ export function chunkNormalizedText(
   );
 }
 
-export function inferFileTypeFromPath(path: string): DocumentFileType {
-  const lower = path.toLowerCase();
-  if (hasExtension(lower, MARKDOWN_EXTENSIONS)) return "markdown";
-  if (lower.endsWith(".docx")) return "docx";
-  if (hasExtension(lower, ODT_EXTENSIONS)) return "odt";
-  if (hasExtension(lower, TXT_EXTENSIONS)) return "txt";
-  return "pdf";
-}
-
 export function assertValidChunking(
   chunkSize: number,
   chunkOverlap: number,
@@ -324,7 +308,7 @@ export function parseChunkerMetadata(value: unknown): ChunkerMetadata | null {
   return { id, version, unit, chunkSize, chunkOverlap };
 }
 
-export function getDocChunkerMetadata(doc: Document): ChunkerMetadata | null {
+function getDocChunkerMetadata(doc: Document): ChunkerMetadata | null {
   return parseChunkerMetadata(doc.metadata?.chunker);
 }
 
@@ -332,9 +316,7 @@ export function assessDocChunker(
   doc: Document,
   config: ChunkingConfig,
 ): ChunkerAssessment {
-  const fileType =
-    doc.fileType ?? (doc.path ? inferFileTypeFromPath(doc.path) : "pdf");
-  const expected = buildChunkerMetadata(fileType, config);
+  const expected = buildChunkerMetadata(doc.fileType, config);
   const actual = getDocChunkerMetadata(doc);
 
   if (!actual) {

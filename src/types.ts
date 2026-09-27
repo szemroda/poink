@@ -3,10 +3,6 @@
  */
 
 import { Schema } from "effect";
-export {
-  MarkdownExtractionError,
-  MarkdownNotFoundError,
-} from "./errors.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
 import { homedir } from "os";
@@ -15,7 +11,6 @@ import {
   DEFAULT_CLI_OUTPUT_FORMAT,
   DEFAULT_SERVER_AUTH_TOKEN_ENV,
   OUTPUT_FORMATS,
-  type OutputFormat,
 } from "./agent/protocol.js";
 import { assertValidChunking } from "./chunking.js";
 
@@ -57,12 +52,7 @@ export class PDFChunk extends Schema.Class<PDFChunk>("PDFChunk")({
 }) {}
 
 /**
- * Entity type discriminator for unified search results
- */
-export type EntityType = "document" | "concept";
-
-/**
- * Document search result with entity type discriminator
+ * Document search result
  */
 export class DocumentSearchResult extends Schema.Class<DocumentSearchResult>(
   "DocumentSearchResult"
@@ -84,37 +74,9 @@ export class DocumentSearchResult extends Schema.Class<DocumentSearchResult>(
   /** Optional component score for FTS results (raw FTS rank; often negative, more negative = better) */
   ftsRank: Schema.optional(Schema.Number),
   matchType: Schema.Literal("vector", "fts", "hybrid"),
-  /** Cluster summaries are synthetic hits with no backing document chunk. */
-  entityType: Schema.Literal("document", "cluster_summary"),
   /** Expanded context around the match (only populated when expandChars > 0) */
   expandedContent: Schema.optional(Schema.String),
-  /** Range of chunk indices included in expandedContent */
-  expandedRange: Schema.optional(
-    Schema.Struct({ start: Schema.Number, end: Schema.Number })
-  ),
 }) {}
-
-/**
- * Concept search result from taxonomy/SKOS
- */
-export class ConceptSearchResult extends Schema.Class<ConceptSearchResult>(
-  "ConceptSearchResult"
-)({
-  conceptId: Schema.String,
-  prefLabel: Schema.String,
-  definition: Schema.String,
-  /** Normalized score in 0..1 */
-  score: Schema.Number,
-  /** Raw score from the underlying engine (cosine similarity) */
-  rawScore: Schema.Number,
-  scoreType: Schema.Literal("cosine_similarity"),
-  entityType: Schema.Literal("concept"),
-}) {}
-
-/**
- * Unified search result - can be either document or concept
- */
-export type UnifiedSearchResult = DocumentSearchResult | ConceptSearchResult;
 
 // ============================================================================
 // Configuration
@@ -134,10 +96,6 @@ function joinForBase(basePath: string, ...segments: string[]): string {
     : join(basePath, ...segments);
 }
 
-export function getDefaultLibraryPath(): string {
-  return joinForBase(resolveHomeDir(), ".poink");
-}
-
 export function expandHomePath(path: string): string {
   if (path === "~") return resolveHomeDir();
   if (path.startsWith("~/") || path.startsWith("~\\")) {
@@ -155,11 +113,11 @@ const DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 const DEFAULT_GOOGLE_BASE_URL = "https://generativelanguage.googleapis.com/v1beta";
 const DEFAULT_ANTHROPIC_BASE_URL = "https://api.anthropic.com/v1";
 const DEFAULT_LIBSQL_URL = "file:~/.poink/library.db";
-export const DEFAULT_URL_DOWNLOAD_MAX_FILE_SIZE = "100mb";
-export const DEFAULT_URL_DOWNLOAD_TIMEOUT = "30s";
-export const DEFAULT_URL_DOWNLOAD_MAX_REDIRECTS = 5;
-export const DEFAULT_VISUALS_MAX_IMAGE_BYTES = "5mb";
-export const DEFAULT_VISUALS_MAX_IMAGES_PER_DOCUMENT = 100;
+const DEFAULT_URL_DOWNLOAD_MAX_FILE_SIZE = "100mb";
+const DEFAULT_URL_DOWNLOAD_TIMEOUT = "30s";
+const DEFAULT_URL_DOWNLOAD_MAX_REDIRECTS = 5;
+const DEFAULT_VISUALS_MAX_IMAGE_BYTES = "5mb";
+const DEFAULT_VISUALS_MAX_IMAGES_PER_DOCUMENT = 100;
 
 function defaultLibraryConfig() {
   return { path: DEFAULT_LIBRARY_PATH };
@@ -229,7 +187,6 @@ function defaultProvidersConfig() {
   return {
     ollama: {
       baseUrl: DEFAULT_OLLAMA_BASE_URL,
-      autoPull: true,
     },
     gateway: {
       apiKeyEnv: "AI_GATEWAY_API_KEY",
@@ -315,10 +272,6 @@ export class LibraryConfig extends Schema.Class<LibraryConfig>("LibraryConfig")(
     chunkOverlap: Schema.Number,
   }
 ) {
-  static readonly Default = new LibraryConfig(
-    getLibraryConfigProps(getDefaultLibraryPath()),
-  );
-
   static fromConfig(config: Config): LibraryConfig {
     const libraryPath = resolveLibraryPath(config);
     const props = getLibraryConfigProps(libraryPath);
@@ -328,10 +281,6 @@ export class LibraryConfig extends Schema.Class<LibraryConfig>("LibraryConfig")(
       chunkSize: chunking.chunkSize,
       chunkOverlap: chunking.chunkOverlap,
     });
-  }
-
-  static fromEnv(): LibraryConfig {
-    return LibraryConfig.fromConfig(loadConfig());
   }
 }
 
@@ -359,7 +308,6 @@ const REASONING_LEVELS = [
   "xhigh",
 ] as const;
 export type ReasoningLevel = (typeof REASONING_LEVELS)[number];
-export type CLIOutputFormat = OutputFormat;
 
 const EmbeddingProviderNameSchema = Schema.Literal(
   "ollama",
@@ -485,9 +433,6 @@ export class Config extends Schema.Class<Config>("Config")({
     ollama: Schema.optionalWith(Schema.Struct({
       baseUrl: Schema.optionalWith(Schema.String, {
         default: () => DEFAULT_OLLAMA_BASE_URL,
-      }),
-      autoPull: Schema.optionalWith(Schema.Boolean, {
-        default: () => true,
       }),
     }), {
       default: () => defaultProvidersConfig().ollama,
@@ -725,7 +670,7 @@ export function resolveLibsqlAuthToken(config: Config): string | undefined {
   return resolved;
 }
 
-export function resolveChunkingConfig(config: Config) {
+function resolveChunkingConfig(config: Config) {
   assertValidChunking(config.chunking.size, config.chunking.overlap);
   return {
     chunkSize: config.chunking.size,
@@ -903,19 +848,10 @@ export function saveConfig(config: Config): void {
 export class SearchOptions extends Schema.Class<SearchOptions>("SearchOptions")(
   {
     limit: Schema.optionalWith(Schema.Number, { default: () => 10 }),
-    threshold: Schema.optionalWith(Schema.Number, { default: () => 0.0 }),
     tags: Schema.optional(Schema.Array(Schema.String)),
     hybrid: Schema.optionalWith(Schema.Boolean, { default: () => true }),
     /** Max chars for expanded context per result. 0 = no expansion (default) */
     expandChars: Schema.optionalWith(Schema.Number, { default: () => 0 }),
-    /** Filter by entity types. Default: both documents and concepts */
-    entityTypes: Schema.optional(
-      Schema.Array(Schema.Literal("document", "concept"))
-    ),
-    /** Include cluster summaries in search results (RAPTOR-style multi-scale retrieval). Default: false */
-    includeClusterSummaries: Schema.optionalWith(Schema.Boolean, {
-      default: () => false,
-    }),
   }
 ) {}
 
@@ -1036,11 +972,6 @@ export class GoogleError extends Schema.TaggedError<GoogleError>()(
 
 export class AnthropicError extends Schema.TaggedError<AnthropicError>()(
   "AnthropicError",
-  { reason: Schema.String }
-) {}
-
-export class DatabaseError extends Schema.TaggedError<DatabaseError>()(
-  "DatabaseError",
   { reason: Schema.String }
 ) {}
 

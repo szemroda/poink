@@ -10,7 +10,6 @@ const PROVIDERS_LOGIN_HINT = "poink providers login --provider openai-codex";
 const PROVIDERS_LOGIN_TEXT_HINT = `${PROVIDERS_LOGIN_HINT} --format text`;
 
 type ProvidersLoginOptions = {
-  provider?: string;
   deviceAuth: boolean;
 };
 
@@ -70,13 +69,12 @@ function parseProvidersLoginOptions(
     );
   }
 
-  const provider =
-    typeof options.provider === "string" ? options.provider : undefined;
-  validateProvider(provider);
+  validateProvider(
+    typeof options.provider === "string" ? options.provider : undefined,
+  );
   validateInteractiveFormat(format);
 
   return {
-    provider,
     deviceAuth: isEnabled(options, "deviceAuth", "device-auth"),
   };
 }
@@ -138,7 +136,7 @@ export function runProvidersCommand(
         provider: OPENAI_CODEX_PROVIDER,
         authenticated: true,
       },
-      agentResult: { _tag: "config", subcommand: "providers login" },
+      agentResult: { _tag: "config" },
     };
   });
 }

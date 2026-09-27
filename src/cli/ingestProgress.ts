@@ -3,33 +3,28 @@ import { basename } from "path";
 export interface FileStatus {
   path: string;
   filename: string;
-  status: "pending" | "chunking" | "embedding" | "done" | "error";
+  status: "chunking" | "embedding" | "done" | "error";
   chunks?: number;
   error?: string;
 }
 
-export interface IngestState {
-  phase: "discovering" | "processing" | "done" | "error";
+interface IngestState {
+  phase: "processing" | "done";
   totalFiles: number;
   processedFiles: number;
   currentFile?: FileStatus;
-  recentFiles: FileStatus[];
   errors: FileStatus[];
-  startTime: number;
-  endTime?: number;
   checkpointInProgress?: boolean;
   checkpointMessage?: string;
   lastCheckpointAt?: number;
 }
 
-export function createInitialState(): IngestState {
+export function createInitialState(totalFiles: number): IngestState {
   return {
-    phase: "discovering",
-    totalFiles: 0,
+    phase: "processing",
+    totalFiles,
     processedFiles: 0,
-    recentFiles: [],
     errors: [],
-    startTime: Date.now(),
   };
 }
 
@@ -93,14 +88,6 @@ export function renderIngestProgress(initialState: IngestState) {
         const succeeded = state.processedFiles - failed;
         writeLine(`Done: ${succeeded} succeeded, ${failed} failed`);
       }
-    },
-
-    isCancelled() {
-      return false;
-    },
-
-    cleanup() {
-      // Line-based progress has no terminal state to clear.
     },
 
     getState() {

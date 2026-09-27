@@ -7,7 +7,6 @@ import { generateHints, generateNextActions } from "../agent/hints.js";
 import { describeError } from "../errors.js";
 import {
   DEFAULT_CLI_OUTPUT_FORMAT,
-  OUTPUT_FORMATS,
   type LogLevel,
   type NextAction,
   type OutputFormat,
@@ -27,17 +26,11 @@ import {
 } from "../services/SourceFileType.js";
 import type { Concept, TaxonomyService } from "../services/TaxonomyService.js";
 import type { Config } from "../types.js";
-import { parseArgs } from "./args.js";
 import type {
   CliCommandOutput,
   CliConsole,
 } from "./commands/types.js";
 import type { InvocationTiming } from "./timing.js";
-
-export {
-  parseArgs,
-  shouldCheckpoint,
-} from "./args.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 export let VERSION = "0.0.0";
@@ -91,7 +84,6 @@ export type GlobalCLIOptions<
   L extends Pick<CliLibrary, "stats"> = CliLibrary,
 > = {
   format: OutputFormat;
-  configuredDefaultFormat: OutputFormat;
   pretty: boolean;
   verbose: boolean;
   logLevel: LogLevel;
@@ -111,23 +103,10 @@ export type BaseCommandExecutionContext<
   L extends Pick<CliLibrary, "stats"> = CliLibrary,
 > = {
   args: string[];
-  options: Record<string, unknown>;
   globals: GlobalCLIOptions<L>;
   command: string;
   format: OutputFormat;
   Console: CliConsole;
-  getLoadedLibraryStats: () => Effect.Effect<
-    | {
-        _tag: "Right";
-        right: {
-          documents: number;
-          chunks: number;
-          embeddings: number;
-          libraryPath: string;
-        };
-      }
-    | { _tag: "Left" }
-  >;
 };
 
 export type CommandExecutionContext<
@@ -144,7 +123,6 @@ export type CommandBodyOutput = CliCommandOutput & {
 export type CommandExecutionOutput = {
   command: string;
   result: unknown;
-  agentResult: CommandBodyOutput["agentResult"];
   nextActions?: NextAction[];
 };
 
@@ -158,7 +136,6 @@ export function runCommandWithContext<
   execute: (
     context: BaseCommandExecutionContext<L>,
   ) => Effect.Effect<CommandBodyOutput, E, R>,
-  options: Record<string, unknown> = {},
 ): Effect.Effect<CommandExecutionOutput, E, R> {
   return Effect.gen(function* () {
     const { format, verbose } = globals;
@@ -173,15 +150,10 @@ export function runCommandWithContext<
 
     const context: BaseCommandExecutionContext<L> = {
       args,
-      options,
       globals,
       command,
       format,
       Console,
-      getLoadedLibraryStats: () =>
-        globals.library
-          ? Effect.either(globals.library.stats())
-          : Effect.succeed({ _tag: "Left" as const }),
     };
 
     const output = yield* execute(context).pipe(
@@ -213,8 +185,7 @@ export function runCommandWithContext<
 
     return {
       command: output.command ?? command,
-      result: output.resultPayload ?? output.agentResult,
-      agentResult: output.agentResult,
+      result: output.resultPayload,
       nextActions,
     };
   });
@@ -230,18 +201,13 @@ export function runCommandWithLibraryContext<
   execute: (
     context: CommandExecutionContext<L>,
   ) => Effect.Effect<CommandBodyOutput, E, R>,
-  options: Record<string, unknown> = {},
 ): Effect.Effect<CommandExecutionOutput, E, R> {
-  return runCommandWithContext(
-    args,
-    globals,
-    (context) =>
-      execute({
-        ...context,
-        globals,
-        library: globals.library,
-      }),
-    options,
+  return runCommandWithContext(args, globals, (context) =>
+    execute({
+      ...context,
+      globals,
+      library: globals.library,
+    }),
   );
 }
 
@@ -395,70 +361,4 @@ export function buildTreeStructure(
 
 export function resolveConfiguredDefaultFormat(config: Config): OutputFormat {
   return config.cli.globalFlags.format ?? DEFAULT_CLI_OUTPUT_FORMAT;
-}
-
-export function parseServeCommandOptions(args: string[]): {
-  host?: string;
-  port?: number;
-  authToken?: string;
-} {
-  const opts = parseArgs(args);
-  const overrides: { host?: string; port?: number; authToken?: string } = {};
-  if ("host" in opts) {
-    if (typeof opts.host !== "string" || opts.host.length === 0) {
-      throw new CLIError("INVALID_FLAG", "Invalid --host value");
-    }
-    overrides.host = opts.host;
-  }
-  if ("port" in opts) {
-    const port =
-      typeof opts.port === "string" ? Number.parseInt(opts.port, 10) : NaN;
-    if (!Number.isInteger(port) || port < 1 || port > 65535) {
-      throw new CLIError(
-        "INVALID_FLAG",
-        "Invalid --port value (expected integer 1-65535)",
-      );
-    }
-    overrides.port = port;
-  }
-  if ("auth-token" in opts) {
-    if (
-      typeof opts["auth-token"] !== "string" ||
-      opts["auth-token"].length === 0
-    ) {
-      throw new CLIError("INVALID_FLAG", "Invalid --auth-token value");
-    }
-    overrides.authToken = opts["auth-token"];
-  }
-  return overrides;
-}
-
-export function isOutputFormat(value: unknown): value is OutputFormat {
-  return (
-    typeof value === "string" && OUTPUT_FORMATS.includes(value as OutputFormat)
-  );
-}
-
-export function installOpenAICodexShutdownHandlers(): () => void {
-  let shuttingDown = false;
-  const shutdown = async (signal: NodeJS.Signals) => {
-    if (shuttingDown) return;
-    shuttingDown = true;
-    removeHandlers();
-    try {
-      const { closeOpenAICodexProviderManager } =
-        await import("../services/OpenAICodexProvider.js");
-      await closeOpenAICodexProviderManager();
-    } catch {
-      // Ignore cleanup errors during signal shutdown.
-    }
-    process.exit(signal === "SIGINT" ? 130 : 143);
-  };
-  const removeHandlers = () => {
-    process.off("SIGINT", shutdown);
-    process.off("SIGTERM", shutdown);
-  };
-  process.once("SIGINT", shutdown);
-  process.once("SIGTERM", shutdown);
-  return removeHandlers;
 }

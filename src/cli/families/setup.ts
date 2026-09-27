@@ -27,7 +27,6 @@ function runProvidersWithContext(
         options,
         globals.config,
       ),
-    options,
   );
 }
 

@@ -43,7 +43,7 @@ export async function buildSearchLayer(config: Config) {
   const storage = makeStorageLayer(config);
   const embedding = makeEmbeddingProvider(config);
   const store = makeLibraryStore(config).pipe(Layer.provide(storage));
-  const semantic = makeSemanticLibrary(config).pipe(
+  const semantic = makeSemanticLibrary().pipe(
     Layer.provide(Layer.merge(storage, embedding)),
   );
   return Layer.mergeAll(storage, store, semantic, embedding);
@@ -108,7 +108,7 @@ export async function buildIngestionLayer(config: Config) {
     Layer.provide(ingestionDependencies),
   );
   const store = makeLibraryStore(config).pipe(Layer.provide(storage));
-  const semantic = makeSemanticLibrary(config).pipe(
+  const semantic = makeSemanticLibrary().pipe(
     Layer.provide(Layer.merge(storage, embedding)),
   );
   const autoTagger = makeAutoTagger(config).pipe(
@@ -143,8 +143,4 @@ export async function buildDiagnosticsLayer(config: Config) {
   const embedding = makeEmbeddingProvider(config);
   const store = makeLibraryStore(config).pipe(Layer.provide(storage));
   return Layer.mergeAll(storage, store, embedding);
-}
-
-export async function buildFullServerLayer(config: Config) {
-  return buildIngestionLayer(config);
 }

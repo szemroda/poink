@@ -8,6 +8,7 @@
  */
 
 import { isIP } from "node:net";
+import type { Config } from "../types.js";
 
 export const DEFAULT_CLI_OUTPUT_FORMAT = "text" as const;
 export const OUTPUT_FORMATS = [DEFAULT_CLI_OUTPUT_FORMAT, "json", "ndjson"] as const;
@@ -22,13 +23,13 @@ export interface NextAction {
   description?: string;
 }
 
-export interface AgentErrorShape {
+interface AgentErrorShape {
   code: string;
   message: string;
   details?: unknown;
 }
 
-export interface TimingMeta {
+interface TimingMeta {
   totalMs: number;
   commandMs?: number;
 }
@@ -50,20 +51,11 @@ export interface ServerConfigShape {
   auth: ServerAuthConfig;
 }
 
-export interface ServerConfigOverrides {
+interface ServerConfigOverrides {
   host?: string;
   port?: number;
   authToken?: string;
 }
-
-export const DEFAULT_SERVER_CONFIG: ServerConfigShape = {
-  host: "127.0.0.1",
-  port: 3838,
-  auth: {
-    enabled: false,
-    tokenEnv: DEFAULT_SERVER_AUTH_TOKEN_ENV,
-  },
-};
 
 export type AgentEnvelope<T> =
   | {
@@ -150,24 +142,18 @@ export function toJsonLine(
   return `${JSON.stringify(value, null, indentation)}\n`;
 }
 
+/** Applies `serve` CLI overrides to the configured server; a CLI token enables auth. */
 export function resolveServerConfig(
-  config: Partial<ServerConfigShape> | undefined,
-  overrides?: ServerConfigOverrides,
+  config: Config["server"],
+  overrides: ServerConfigOverrides = {},
 ): ServerConfigShape {
-  const configuredAuth = config?.auth;
-  const authTokenOverride = overrides?.authToken;
-
   return {
-    host: overrides?.host ?? config?.host ?? DEFAULT_SERVER_CONFIG.host,
-    port: overrides?.port ?? config?.port ?? DEFAULT_SERVER_CONFIG.port,
+    host: overrides.host ?? config.host,
+    port: overrides.port ?? config.port,
     auth: {
-      enabled:
-        typeof authTokenOverride === "string"
-          ? true
-          : configuredAuth?.enabled ?? DEFAULT_SERVER_CONFIG.auth.enabled,
-      token: authTokenOverride ?? configuredAuth?.token,
-      tokenEnv:
-        configuredAuth?.tokenEnv ?? DEFAULT_SERVER_CONFIG.auth.tokenEnv,
+      enabled: overrides.authToken !== undefined || config.auth.enabled,
+      token: overrides.authToken ?? config.auth.token,
+      tokenEnv: config.auth.tokenEnv,
     },
   };
 }
@@ -180,7 +166,7 @@ function normalizeBindHost(host: string): string {
   return trimmed;
 }
 
-export function isLoopbackBindHost(host: string): boolean {
+function isLoopbackBindHost(host: string): boolean {
   const normalized = normalizeBindHost(host);
   if (normalized === "localhost") {
     return true;

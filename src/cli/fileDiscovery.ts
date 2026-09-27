@@ -8,12 +8,12 @@ export type IngestSelectionFilters = {
   exclude: string[];
 };
 
-export type IngestSelectionFilterSource = {
+type IngestSelectionFilterSource = {
   include: readonly string[];
   exclude: readonly string[];
 };
 
-export type IngestSelectionOptionValues = {
+type IngestSelectionOptionValues = {
   include?: unknown;
   exclude?: unknown;
 };

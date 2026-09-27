@@ -6,7 +6,6 @@ import { connectMcpServer } from "./mcp.js";
 
 const globals: GlobalCLIOptions = {
   format: "json",
-  configuredDefaultFormat: "json",
   pretty: false,
   verbose: false,
   logLevel: "error",

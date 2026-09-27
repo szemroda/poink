@@ -1,10 +1,7 @@
 import type { InStatement } from "@libsql/client";
 import { Effect } from "effect";
 import type { LibSQLClientService } from "./LibSQLClient.js";
-import {
-  decodeClusterSummarySourceRow,
-  decodeConceptSourceRow,
-} from "./LibSQLRows.js";
+import { decodeConceptSourceRow } from "./LibSQLRows.js";
 import { stagingTable, tableExists } from "./LibSQLSchema.js";
 import {
   storageEffect,
@@ -49,17 +46,6 @@ export function makeVectorRebuildRepository({
         );
       }),
 
-    listClusterSummaries: () =>
-      storageEffect("list cluster summaries", async () => {
-        if (!(await tableExists(client, "cluster_summaries"))) return [];
-        const result = await client.execute(
-          "SELECT id, summary FROM cluster_summaries ORDER BY id",
-        );
-        return result.rows.map((row) =>
-          decodeClusterSummarySourceRow(row, "list cluster summaries"),
-        );
-      }),
-
     stageChunkEmbeddings: (items) =>
       stageRows("stage chunk embeddings", () =>
         items.map((item) => ({
@@ -85,22 +71,6 @@ export function makeVectorRebuildRepository({
             vectorArg(item.embedding, dimension),
             item.conceptId,
           ],
-        })),
-      ),
-
-    // Centroids are derived from old-model chunk vectors, so they are dropped.
-    stageClusterSummaryEmbeddings: (items) =>
-      stageRows("stage cluster summary embeddings", () =>
-        items.map((item) => ({
-          sql: `INSERT INTO ${stagingTable("cluster_summaries")}
-                  (id, summary, embedding, concept_id, concept_confidence,
-                   chunk_count, created_at)
-                SELECT id, summary, ${item.embedding ? "vector32(?)" : "NULL"},
-                       concept_id, concept_confidence, chunk_count, created_at
-                FROM cluster_summaries WHERE id = ?`,
-          args: item.embedding
-            ? [vectorArg(item.embedding, dimension), item.id]
-            : [item.id],
         })),
       ),
   });

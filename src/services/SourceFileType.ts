@@ -12,7 +12,7 @@ import {
   MAX_TEXT_SOURCE_BYTES,
 } from "./SourceFileLimits.js";
 
-export type SourceFormat =
+type SourceFormat =
   | "pdf"
   | "markdown-text"
   | "plain-text"

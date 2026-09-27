@@ -31,7 +31,7 @@ export type ProviderError =
   | OpenAIError
   | OpenAICodexError
   | OpenRouterError;
-export type ConfiguredLanguageRole = "enrichment" | "judge";
+type ConfiguredLanguageRole = "enrichment" | "judge";
 
 export interface ResolvedEmbeddingModel {
   readonly provider: SupportedProvider;
@@ -39,7 +39,7 @@ export interface ResolvedEmbeddingModel {
   readonly model: EmbeddingModelV4;
 }
 
-export interface ResolvedLanguageModel {
+interface ResolvedLanguageModel {
   readonly provider: SupportedProvider;
   readonly modelId: string;
   readonly model: LanguageModelV4;
@@ -299,10 +299,6 @@ function createConfiguredOllamaProvider(config: Config) {
   });
 }
 
-function normalizeModelId(modelId: string): string {
-  return modelId.toLowerCase();
-}
-
 function getModelCacheKey(
   provider: SupportedProvider,
   modelId: string,
@@ -409,13 +405,6 @@ export async function getConfiguredEmbeddingModel(
   });
 }
 
-function getConfiguredLanguageConfig(
-  config: Config,
-  role: ConfiguredLanguageRole,
-): Config["models"][ConfiguredLanguageRole] {
-  return getModelConfig(config, role);
-}
-
 export async function resolveLanguageModel(
   config: Config,
   provider: SupportedProvider,
@@ -453,10 +442,7 @@ export async function resolveLanguageModel(
 export async function getConfiguredLanguageModel(
   config: Config,
   role: ConfiguredLanguageRole,
-  override?: { provider?: SupportedProvider; modelId?: string },
 ): Promise<ResolvedLanguageModel> {
-  const roleConfig = getConfiguredLanguageConfig(config, role);
-  const provider = override?.provider ?? roleConfig.provider;
-  const modelId = override?.modelId ?? roleConfig.model;
-  return resolveLanguageModel(config, provider, modelId, roleConfig.reasoning);
+  const { provider, model, reasoning } = config.models[role];
+  return resolveLanguageModel(config, provider, model, reasoning);
 }

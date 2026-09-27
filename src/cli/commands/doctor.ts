@@ -221,9 +221,7 @@ function readWALHealth(walPath: string) {
     catch: () => undefined,
   }).pipe(
     Effect.orElseSucceed(() => 0),
-    Effect.map((totalSizeBytes) =>
-      assessWALHealth({ fileCount: 1, totalSizeBytes }),
-    ),
+    Effect.map(assessWALHealth),
   );
 }
 
@@ -566,7 +564,7 @@ export function runDoctorCommand(
         yield* Console.log("OK Ollama is ready");
         return {
           resultPayload: { reachable: true },
-          agentResult: { _tag: "check" as const, reachable: true },
+          agentResult: { _tag: "check" as const },
         };
       }
 
@@ -639,7 +637,7 @@ export function runDoctorCommand(
             process.stdout.isTTY === true,
           )
         : sourceIntegrityInitial;
-      const doctorHealth = assessDoctorHealth({
+      const doctorChecks = assessDoctorHealth({
         walHealth,
         ollamaReachable,
         orphanedData,
@@ -647,8 +645,8 @@ export function runDoctorCommand(
       });
       const sourceCheck = sourceIntegrityHealthCheck(sourceIntegrity);
       const checks = openAICodexCheck
-        ? [...doctorHealth.checks, sourceCheck, openAICodexCheck]
-        : [...doctorHealth.checks, sourceCheck];
+        ? [...doctorChecks, sourceCheck, openAICodexCheck]
+        : [...doctorChecks, sourceCheck];
       const healthy = checks.every((check) => check.healthy);
 
       const resultPayload = {
@@ -686,11 +684,10 @@ export function runDoctorCommand(
         agentResult: {
           _tag: "doctor" as const,
           healthy,
-          chunkerOutdated: chunker.outdated,
           chunkerMissing: chunker.missing,
           chunkerMismatch: chunker.mismatch,
         },
       };
     }),
-    options);
+  );
 }

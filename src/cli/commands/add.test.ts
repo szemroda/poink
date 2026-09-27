@@ -93,7 +93,6 @@ describe("runAddCommand --enrich", () => {
         ["add", sourcePath],
         {
           format: "json",
-          configuredDefaultFormat: "json",
           pretty: false,
           verbose: false,
           logLevel: "error",

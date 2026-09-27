@@ -4,7 +4,6 @@ import {
   type ToolCallback,
 } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import * as z from "zod/v4";
@@ -33,6 +32,7 @@ import { waitForShutdownSignal } from "../runtime.js";
 import {
   dispatchCommand,
   type CommandServices,
+  type McpCommandArgv,
 } from "./commands.js";
 import { withConfiguredLogging } from "./runtime.js";
 import { runSearchCommand } from "./commands/search.js";
@@ -48,7 +48,7 @@ import {
 
 type CommandInvocation =
   | { search: SearchRequest }
-  | { argv: string[]; options?: Record<string, unknown> };
+  | { argv: McpCommandArgv; options?: Record<string, unknown> };
 
 type CommandOutput = {
   command: string;
@@ -150,7 +150,7 @@ export async function connectMcpServer<E>(
     const command =
       "search" in invocation
         ? invocation.search.command
-        : invocation.argv[0] ?? "cli";
+        : invocation.argv[0];
 
     const commandProgram = Effect.gen(function* () {
       const store = yield* LibraryStore;
@@ -327,7 +327,7 @@ export async function connectMcpServer<E>(
     description: "Render taxonomy hierarchy (full or rooted).",
     inputSchema: z.object({ rootId: z.string().optional() }),
   }, (input) => {
-    const argv = ["taxonomy", "tree"];
+    const argv: McpCommandArgv = ["taxonomy", "tree"];
     if (typeof input.rootId === "string" && input.rootId.length > 0) argv.push(input.rootId);
     return { argv };
   });

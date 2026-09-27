@@ -1,8 +1,6 @@
 import { Effect } from "effect";
-import {
-  DEFAULT_SERVER_CONFIG,
-  OUTPUT_FORMATS,
-} from "../../agent/protocol.js";
+import { OUTPUT_FORMATS } from "../../agent/protocol.js";
+import { Config } from "../../types.js";
 import {
   VERSION,
   runCommandWithContext,
@@ -138,7 +136,7 @@ function buildCapabilitiesResult() {
       commandCapability(
         "reindex",
         ["reindex", "[--clean]", "[--doc <id>]"],
-        "Rebuild every vector (chunks, concepts, cluster summaries) with the configured embedding model in one atomic swap; required after changing models.embedding. --doc re-embeds one document with the library's current model",
+        "Rebuild every vector (chunks and concepts) with the configured embedding model in one atomic swap; required after changing models.embedding. --doc re-embeds one document with the library's current model",
       ),
       commandCapability(
         "config",
@@ -167,7 +165,7 @@ function buildCapabilitiesResult() {
           "[--port <port>]",
           "[--auth-token <token>]",
         ],
-        `Start MCP server over HTTP (default ${DEFAULT_SERVER_CONFIG.host}:${DEFAULT_SERVER_CONFIG.port}; non-loopback hosts require bearer auth)`,
+        `Start MCP server over HTTP (default ${Config.Default.server.host}:${Config.Default.server.port}; non-loopback hosts require bearer auth)`,
       ),
     ],
   };

@@ -207,7 +207,6 @@ describe("OpenDocument extraction", () => {
     },
   ])("extracts heading sections from $name", async ({ write }) => {
     await expect(extract(await write())).resolves.toEqual({
-      fileType: "odt",
       sections: SAMPLE_ODF_SECTIONS,
       sectionCount: 2,
     });
@@ -305,7 +304,6 @@ describe("DOCX extraction", () => {
     );
 
     await expect(extract(path)).resolves.toEqual({
-      fileType: "docx",
       sections: [
         {
           section: 1,

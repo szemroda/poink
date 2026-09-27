@@ -34,7 +34,7 @@ export class EmbeddingProvider extends Context.Tag("EmbeddingProvider")<
     readonly embed: (text: string) => Effect.Effect<number[], EmbeddingError>;
     readonly embedBatch: (
       texts: string[],
-      concurrency?: number,
+      concurrency: number,
     ) => Effect.Effect<number[][], EmbeddingError>;
     readonly checkHealth: () => Effect.Effect<void, EmbeddingError>;
     readonly provider: SupportedProvider;
@@ -266,7 +266,8 @@ export function makeEmbeddingProvider(config: Config) {
       embed: wrapQueryCache((text: string) =>
         Effect.map(runEmbed([text]), (embeddings) => embeddings[0] as number[]),
       ),
-      embedBatch: (texts: string[], concurrency = 10) => runEmbed(texts, concurrency),
+      embedBatch: (texts: string[], concurrency: number) =>
+        runEmbed(texts, concurrency),
       checkHealth: () => Effect.asVoid(runEmbed(["health check"])),
       provider: config.models.embedding.provider,
     };

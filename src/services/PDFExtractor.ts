@@ -14,7 +14,7 @@ import {
 import { resolveUserPath } from "../pathUtils.js";
 import { fileExists, readFileBytes } from "../runtime.js";
 import {
-  LibraryConfig,
+  type LibraryConfig,
   PDFExtractionError,
   PDFNotFoundError,
 } from "../types.js";
@@ -34,7 +34,7 @@ export interface ExtractedPDF {
   pageCount: number;
 }
 
-export interface ProcessedChunk {
+interface ProcessedChunk {
   page: number;
   chunkIndex: number;
   content: string;
@@ -522,7 +522,3 @@ export function makePDFExtractor(config: LibraryConfig) {
     }),
   );
 }
-
-export const PDFExtractorLive = Layer.unwrapEffect(
-  Effect.sync(() => makePDFExtractor(LibraryConfig.fromEnv())),
-);

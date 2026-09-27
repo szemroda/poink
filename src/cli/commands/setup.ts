@@ -753,7 +753,7 @@ export function runSetupCommand(
       if (!plan) {
         return {
           resultPayload: { applied: false },
-          agentResult: { _tag: "config", subcommand: `setup ${subcommand}` },
+          agentResult: { _tag: "config" },
         };
       }
 
@@ -767,7 +767,7 @@ export function runSetupCommand(
             wouldInitialize: plan.shouldInitialize,
             codexAuthAction: plan.codexAuthAction,
           },
-          agentResult: { _tag: "config", subcommand: `setup ${subcommand}` },
+          agentResult: { _tag: "config" },
         };
       }
 
@@ -783,11 +783,9 @@ export function runSetupCommand(
         },
         agentResult: {
           _tag: "config",
-          subcommand: `setup ${subcommand}`,
           embeddingChanged: changesExistingEmbeddingModel(plan),
         },
       };
     }),
-    options,
   );
 }
